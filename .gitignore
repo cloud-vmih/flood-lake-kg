@@ -1,0 +1,37 @@
+# Local geospatial data lake and legacy datasets
+dataset/
+
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Incomplete downloads and temporary outputs
+*.partial
+*.tmp
+*.temp
+
+# Editor and office lock files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+~$*
+.~lock.*#
