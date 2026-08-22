@@ -197,6 +197,25 @@ def test_remote_asset_rejects_credential_bearing_values(kwargs: dict[str, object
         RemoteAsset.model_validate(values)
 
 
+def test_remote_asset_accepts_only_positive_conservative_budget_bound() -> None:
+    values = {
+        "asset_id": "bounded",
+        "source_id": "fixture",
+        "source_version": "1",
+        "uri": "https://example.invalid/bounded.bin",
+        "target_relative_path": Path("raw/bounded.bin"),
+        "media_type": "application/octet-stream",
+        "license_id": "fixture",
+    }
+
+    bounded = RemoteAsset.model_validate({**values, "budget_size_bytes": 1024})
+
+    assert bounded.budget_size_bytes == 1024
+    for invalid in (0, -1):
+        with pytest.raises(ValidationError):
+            RemoteAsset.model_validate({**values, "budget_size_bytes": invalid})
+
+
 def test_source_settings_reject_nested_credential_key() -> None:
     with pytest.raises(ValidationError):
         SourceSpec(

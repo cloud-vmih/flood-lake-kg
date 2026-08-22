@@ -193,6 +193,7 @@ class RemoteAsset(ImmutableModel):
     media_type: str
     license_id: str
     expected_size: int | None = None
+    budget_size_bytes: int | None = Field(default=None, gt=0)
     expected_checksum: str | None = None
     source_valid_time: str | None = None
     request_method: str = "GET"
