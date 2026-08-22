@@ -37,6 +37,23 @@ def test_budget_rejects_insufficient_post_download_space(fake_disk_usage) -> Non
     assert decision.projected_free_bytes == 9 * 2**30
 
 
+def test_budget_allows_exact_soft_cap_and_free_reserve(fake_disk_usage) -> None:
+    budget = StorageBudget(
+        Path("/data"),
+        soft_cap_bytes=8 * 2**30,
+        minimum_free_bytes=10 * 2**30,
+        existing_new_raw_bytes=7 * 2**30,
+    )
+
+    cap_decision = budget.preflight(new_bytes=1 * 2**30, temporary_bytes=0)
+    reserve_decision = StorageBudget(
+        Path("/data"), soft_cap_bytes=32 * 2**30, minimum_free_bytes=10 * 2**30
+    ).preflight(new_bytes=20 * 2**30, temporary_bytes=0)
+
+    assert cap_decision.allowed
+    assert reserve_decision.allowed
+
+
 def test_budget_uses_validated_study_area_storage_limits() -> None:
     config = StudyAreaConfig(new_raw_soft_cap_gib=1.5, minimum_free_gib=2.5)
 

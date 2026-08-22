@@ -22,6 +22,7 @@ LEGAL_TRANSITIONS: dict[AssetStatus, set[AssetStatus]] = {
     AssetStatus.STALE: {AssetStatus.FETCHING, AssetStatus.HARMONIZED, AssetStatus.DERIVED},
     AssetStatus.QUARANTINED: set(),
 }
+_PROTECTED_TRANSITION_FIELDS = frozenset({"asset_id", "status"})
 
 
 class IllegalTransition(ValueError):
@@ -99,12 +100,26 @@ class AssetCatalog:
                 return record
         raise KeyError(asset_id)
 
-    def transition(self, asset_id: str, target: AssetStatus, **updates: object) -> AssetRecord:
+    def transition(
+        self, record_id: str | None = None, target: AssetStatus | None = None, **updates: object
+    ) -> AssetRecord:
         """Apply a legal lifecycle transition and atomically persist the replacement."""
-        record = self.get(asset_id)
+        if record_id is None:
+            record_id = updates.pop("asset_id", None)
+            if not isinstance(record_id, str):
+                raise TypeError("transition requires an asset_id")
+        if _PROTECTED_TRANSITION_FIELDS.intersection(updates):
+            raise ValueError("transition updates cannot modify protected fields")
+        if target is None:
+            raise TypeError("transition requires a target status")
+
+        record = self.get(record_id)
         if target not in LEGAL_TRANSITIONS[record.status]:
             raise IllegalTransition(f"{record.status} -> {target}")
-        changed = record.model_copy(update={"status": target, **updates})
+        values = record.model_dump(mode="python")
+        values.update(updates)
+        values["status"] = target
+        changed = AssetRecord.model_validate(values)
         self.upsert(changed)
         return changed
 

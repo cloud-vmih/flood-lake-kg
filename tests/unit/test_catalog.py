@@ -7,7 +7,14 @@ import pytest
 from pydantic import ValidationError
 
 from flashflood_data.catalog import IllegalTransition, sha256_bundle, sha256_file
-from flashflood_data.models import AssetStatus, RunRecord
+from flashflood_data.models import (
+    AssetStatus,
+    RemoteAsset,
+    RunRecord,
+    SourceFile,
+    SourceSpec,
+    ValidationResult,
+)
 
 
 def test_sha256_file_and_bundle_are_deterministic(tmp_path: Path) -> None:
@@ -55,6 +62,39 @@ def test_catalog_allows_legal_transition_and_persists_it(catalog, raw_asset) -> 
     assert catalog.get(raw_asset.asset_id).status is AssetStatus.FETCHING
 
 
+def test_catalog_transition_retains_documented_asset_id_keyword(catalog, raw_asset) -> None:
+    catalog.upsert(raw_asset)
+
+    changed = catalog.transition(asset_id=raw_asset.asset_id, target=AssetStatus.FETCHING)
+
+    assert changed.status is AssetStatus.FETCHING
+
+
+@pytest.mark.parametrize("protected_key", ["asset_id", "status"])
+def test_catalog_rejects_transition_updates_to_protected_fields(
+    catalog, raw_asset, protected_key: str
+) -> None:
+    catalog.upsert(raw_asset)
+
+    with pytest.raises(ValueError, match="protected"):
+        catalog.transition(
+            raw_asset.asset_id,
+            AssetStatus.FETCHING,
+            **{protected_key: "replacement"},
+        )
+
+    assert catalog.get(raw_asset.asset_id) == raw_asset
+
+
+def test_catalog_validates_transition_updates(catalog, raw_asset) -> None:
+    catalog.upsert(raw_asset)
+
+    with pytest.raises(ValidationError):
+        catalog.transition(raw_asset.asset_id, AssetStatus.FETCHING, size_bytes=-1)
+
+    assert catalog.get(raw_asset.asset_id) == raw_asset
+
+
 def test_catalog_reuses_only_verified_terminal_assets(catalog, raw_asset) -> None:
     reusable = raw_asset.model_copy(
         update={
@@ -91,3 +131,137 @@ def test_catalog_records_run_lifecycle(catalog) -> None:
 def test_asset_records_are_immutable(raw_asset) -> None:
     with pytest.raises(ValidationError):
         raw_asset.status = AssetStatus.FETCHING
+
+
+def test_model_copy_revalidates_updates(raw_asset) -> None:
+    with pytest.raises(ValidationError):
+        raw_asset.model_copy(update={"size_bytes": -1})
+
+
+def test_models_accept_safe_public_source_configuration() -> None:
+    remote = RemoteAsset(
+        asset_id="dem-glo30",
+        source_id="copernicus-dem",
+        source_version="2021",
+        uri="https://example.invalid/files/dem.tif?tile=N20E104",
+        target_relative_path=Path("raw/dem.tif"),
+        media_type="image/tiff",
+        license_id="copernicus",
+        request_form={"product": "GLO-30"},
+    )
+    source = SourceSpec(
+        source_id="copernicus-dem",
+        adapter="copernicus",
+        version="2021",
+        license_id="copernicus",
+        settings={"endpoint": "https://example.invalid/catalog?page=1", "retry": {"count": 2}},
+    )
+
+    assert remote.uri == "https://example.invalid/files/dem.tif?tile=N20E104"
+    assert SourceFile(sources=[source]).sources == (source,)
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"source_uri": "https://user:pass@example.invalid/asset.bin"},
+        {"source_uri": "https://example.invalid/asset.bin?access_token=secret-value"},
+        {"error_message": "download failed: password=secret-value"},
+    ],
+)
+def test_asset_record_rejects_credential_bearing_values(raw_asset, update: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        raw_asset.model_copy(update=update)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"uri": "https://user:pass@example.invalid/dem.tif"},
+        {"request_form": {"Authorization": "Bearer secret-value"}},
+    ],
+)
+def test_remote_asset_rejects_credential_bearing_values(kwargs: dict[str, object]) -> None:
+    values: dict[str, object] = {
+        "asset_id": "dem-glo30",
+        "source_id": "copernicus-dem",
+        "source_version": "2021",
+        "uri": "https://example.invalid/dem.tif",
+        "target_relative_path": Path("raw/dem.tif"),
+        "media_type": "image/tiff",
+        "license_id": "copernicus",
+    }
+    values.update(kwargs)
+
+    with pytest.raises(ValidationError):
+        RemoteAsset.model_validate(values)
+
+
+def test_source_settings_reject_nested_credential_key() -> None:
+    with pytest.raises(ValidationError):
+        SourceSpec(
+            source_id="dem",
+            adapter="copernicus",
+            version="2021",
+            license_id="copernicus",
+            settings={"transport": {"Api-Key": "secret-value"}},
+        )
+
+
+def test_credential_rejection_does_not_echo_secret_in_error_text() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        RemoteAsset(
+            asset_id="dem-glo30",
+            source_id="copernicus-dem",
+            source_version="2021",
+            uri="https://example.invalid/dem.tif?token=secret-value",
+            target_relative_path=Path("raw/dem.tif"),
+            media_type="image/tiff",
+            license_id="copernicus",
+        )
+
+    assert "secret-value" not in str(exc_info.value)
+
+
+def test_models_deep_freeze_nested_containers() -> None:
+    source = SourceSpec(
+        source_id="safe-source",
+        adapter="fixture",
+        version="1",
+        license_id="fixture-license",
+        settings={"nested": {"values": ["one"]}},
+    )
+    validation = ValidationResult(
+        passed=True,
+        checks={"checksum": True},
+        metrics={"count": 1},
+        messages=["safe"],
+    )
+    source_file = SourceFile(sources=[source])
+
+    with pytest.raises(TypeError):
+        source.settings["new"] = "value"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        source.settings["nested"]["values"] = ()  # type: ignore[index]
+    with pytest.raises(TypeError):
+        validation.metrics["count"] = 2  # type: ignore[index]
+    with pytest.raises(TypeError):
+        source_file.sources[0] = source  # type: ignore[index]
+
+    assert source.settings["nested"]["values"] == ("one",)
+    assert validation.messages == ("safe",)
+
+
+def test_model_copy_revalidates_and_deep_freezes_nested_containers() -> None:
+    source = SourceSpec(
+        source_id="safe-source",
+        adapter="fixture",
+        version="1",
+        license_id="fixture-license",
+    )
+    copied = source.model_copy(update={"settings": {"nested": {"values": ["one"]}}})
+
+    with pytest.raises(TypeError):
+        copied.settings["nested"]["values"] = ()  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        source.model_copy(update={"settings": {"token": "secret-value"}})
