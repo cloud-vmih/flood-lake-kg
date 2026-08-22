@@ -1,7 +1,8 @@
 .PHONY: setup test lint
 
 setup:
-	.venv/bin/pip install -r requirements.lock
+	.venv/bin/python -m pip install -r requirements.lock
+	.venv/bin/python -m pip install --no-deps -e .
 
 test:
 	.venv/bin/pytest
