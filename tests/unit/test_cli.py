@@ -25,7 +25,7 @@ def test_cli_lists_static_stages() -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ("inventory", "fetch", "validate", "harmonize", "derive", "map", "run-static", "cleanup"),
+    ("fetch", "validate", "harmonize", "derive", "map", "run-static", "cleanup"),
 )
 def test_static_stage_reports_unavailable_for_explicit_root(command: str, tmp_path: Path) -> None:
     result = CliRunner().invoke(app, [command, "--root", str(tmp_path)])

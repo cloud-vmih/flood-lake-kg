@@ -1,10 +1,20 @@
 """Command-line shell for independently runnable static pipeline stages."""
 
 import json
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, NoReturn
+from uuid import uuid4
 
 import typer
+
+from flashflood_data.catalog import AssetCatalog
+from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
+from flashflood_data.models import RunRecord
+from flashflood_data.paths import ProjectPaths
+from flashflood_data.sources.base import SourceContext
+from flashflood_data.sources.existing import inventory_existing
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -16,9 +26,43 @@ def stage_unavailable(stage: str) -> NoReturn:
 
 
 @app.command()
-def inventory(root: Annotated[Path | None, typer.Option("--root")] = None) -> NoReturn:
+def inventory(
+    root: Annotated[Path | None, typer.Option("--root")] = None,
+    rehash: Annotated[bool, typer.Option("--rehash")] = False,
+) -> None:
     """Inventory existing static source assets."""
-    stage_unavailable("inventory")
+    paths = ProjectPaths.discover(root)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    study_path = paths.root / "config" / "study_area.yaml"
+    study_area = load_study_area(study_path) if study_path.is_file() else StudyAreaConfig()
+    config_body = json.dumps(study_area.model_dump(mode="json"), sort_keys=True)
+    run_id = f"inventory-{uuid4().hex}"
+    catalog.begin_run(
+        RunRecord(
+            run_id=run_id,
+            command="inventory",
+            started_at=datetime.now(UTC),
+            config_fingerprint=sha256(config_body.encode("utf-8")).hexdigest(),
+        )
+    )
+    context = SourceContext(
+        paths=paths,
+        catalog=catalog,
+        study_area=study_area,
+        environment=EnvironmentSettings(_env_file=paths.root / ".env"),
+        run_id=run_id,
+    )
+    try:
+        records = inventory_existing(context, rehash=rehash)
+    except BaseException:
+        catalog.end_run(run_id, "failed", datetime.now(UTC))
+        raise
+    catalog.end_run(run_id, "succeeded", datetime.now(UTC))
+    report = json.loads((paths.catalog / "inventory.json").read_text(encoding="utf-8"))
+    if report["asset_count"] != len(records):
+        raise RuntimeError("inventory report count does not match registered records")
+    typer.echo(json.dumps(report, sort_keys=True))
 
 
 @app.command()
