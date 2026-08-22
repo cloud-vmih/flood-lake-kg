@@ -1,0 +1,26 @@
+sources:
+  - source_id: hydrobasins_v1c
+    adapter: existing
+    version: "1c"
+    license_id: HydroSHEDS-free-academic
+    settings: {inventory_source_id: hydrobasins_v1c}
+  - source_id: basinatlas_v10
+    adapter: existing
+    version: "10"
+    license_id: HydroATLAS-free-academic
+    settings: {inventory_source_id: basinatlas_v10}
+  - source_id: hydrorivers_v10
+    adapter: existing
+    version: "10"
+    license_id: HydroSHEDS-free-academic
+    settings: {inventory_source_id: hydrorivers_v10}
+  - source_id: worldpop_vnm_2025
+    adapter: existing
+    version: R2025A-v1
+    license_id: CC-BY-4.0
+    settings: {inventory_source_id: worldpop_vnm_2025}
+  - source_id: historical_flood_evidence_2020_2026
+    adapter: existing
+    version: "2026-08-14"
+    license_id: project-evidence-compilation
+    settings: {inventory_source_id: historical_flood_evidence_2020_2026}
