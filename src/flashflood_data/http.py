@@ -1,5 +1,6 @@
 """Safe streaming HTTP acquisition for immutable raw source assets."""
 
+import errno
 import fcntl
 import hmac
 import json
@@ -15,7 +16,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Final
+from typing import BinaryIO, Final
 from urllib.parse import unquote_plus
 from uuid import uuid4
 
@@ -34,8 +35,9 @@ from flashflood_data.models import (
 from flashflood_data.paths import ProjectPaths
 
 _CONTENT_RANGE: Final = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
-_AUTHORIZATION: Final = re.compile(
-    r"(?i)(\bauthorization\s*[:=]\s*)[^\r\n;]+"
+_STRONG_ETAG: Final = re.compile(r'^"[\x21\x23-\x7e\x80-\xff]*"$')
+_AUTHORIZATION_FIELD: Final = re.compile(
+    r"(?i)(^|[\s;,])(authorization\s*[:=]\s*)"
 )
 _BEARER: Final = re.compile(r"(?i)(\bbearer\s+)[^\s;,]+")
 _URL_USERINFO: Final = re.compile(r"(?i)(https?://)[^/@\s]+@")
@@ -90,6 +92,10 @@ class _ResumeState:
     validator_value: str | None = None
     verified_size_bytes: int | None = None
     verified_checksum: str | None = None
+    pending_quarantine_path: str | None = None
+    pending_quarantine_error: str | None = None
+    pending_quarantine_size_bytes: int | None = None
+    pending_quarantine_checksum: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,7 +113,7 @@ def _redact(value: str, environment: EnvironmentSettings | None = None) -> str:
         return match.group(0)
 
     redacted = _QUERY_PARAMETER.sub(redact_query, value)
-    redacted = _AUTHORIZATION.sub(r"\1[REDACTED]", redacted)
+    redacted = _redact_authorization_fields(redacted)
     redacted = _BEARER.sub(r"\1[REDACTED]", redacted)
     redacted = _URL_USERINFO.sub(r"\1[REDACTED]@", redacted)
     if environment is not None:
@@ -115,6 +121,36 @@ def _redact(value: str, environment: EnvironmentSettings | None = None) -> str:
             if secret is not None and (plain := secret.get_secret_value()):
                 redacted = redacted.replace(plain, "[REDACTED]")
     return redacted
+
+
+def _redact_authorization_fields(value: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in _AUTHORIZATION_FIELD.finditer(value):
+        if match.start() < cursor:
+            continue
+        end = match.end()
+        quote: str | None = None
+        escaped = False
+        while end < len(value):
+            character = value[end]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == quote:
+                    quote = None
+            elif character in {'"', "'"}:
+                quote = character
+            elif character in ";\r\n":
+                break
+            end += 1
+        parts.append(value[cursor : match.end()])
+        parts.append("[REDACTED]")
+        cursor = end
+    parts.append(value[cursor:])
+    return "".join(parts)
 
 
 class SecretRedactionFilter(logging.Filter):
@@ -190,6 +226,7 @@ class HttpFetcher:
             return existing
 
         partial = Path(f"{final_path}.partial")
+        self._reconcile_pending_quarantine(remote, partial, run_id, size_bound)
         self._begin_catalog(remote, final_path, run_id)
         for attempt in range(1, self.max_attempts + 1):
             published = False
@@ -213,9 +250,11 @@ class HttpFetcher:
                 try:
                     self.sleep(delay)
                 except Exception as sleep_error:
+                    self._discard_resume(remote, partial)
                     self._mark_failed(remote.asset_id, "retry_delay_failed")
                     raise DownloadFailed(f"download failed: {remote.asset_id}") from sleep_error
             except httpx.HTTPStatusError as exc:
+                self._discard_resume(remote, partial)
                 self._mark_failed(remote.asset_id, f"http_{exc.response.status_code}")
                 raise DownloadFailed(f"download failed: {remote.asset_id}") from exc
             except PayloadMismatch:
@@ -227,14 +266,17 @@ class HttpFetcher:
                 self._quarantine(partial, remote, run_id, "range_body_length_mismatch")
                 raise AssertionError("unreachable")
             except _UnsafePartialResponse as exc:
+                self._discard_resume(remote, partial)
                 self._mark_failed(remote.asset_id, exc.code)
                 raise DownloadFailed(f"{exc.code}: {remote.asset_id}") from exc
             except ExistingAssetConflict:
+                self._discard_resume(remote, partial)
                 self._mark_failed(remote.asset_id, "existing_asset_conflict")
                 raise
             except Exception as exc:
-                if published:
+                if published or self._has_pending_quarantine(remote):
                     raise
+                self._discard_resume(remote, partial)
                 self._mark_failed(remote.asset_id, "download_error")
                 raise DownloadFailed(f"download failed: {remote.asset_id}") from exc
         raise AssertionError("unreachable")
@@ -453,20 +495,41 @@ class HttpFetcher:
                     )
                     return None
 
+                self._stream_full_response(response, partial, remote, size_bound)
+                return None
+        raise AssertionError("unreachable")
+
+    def _stream_full_response(
+        self,
+        response: httpx.Response,
+        partial: Path,
+        remote: RemoteAsset,
+        size_bound: int,
+    ) -> None:
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            handle = partial.open("wb")
+        except Exception:
+            self._discard_resume(remote, partial)
+            raise
+        with handle:
+            try:
                 validator = self._response_validator(response)
                 if validator is None:
                     self._resume_state_path(remote).unlink(missing_ok=True)
                 else:
                     self._write_resume_state(remote, validator)
-                self._stream_response(
-                    response,
-                    partial,
-                    mode="wb",
-                    initial_size=0,
-                    size_bound=size_bound,
-                )
-                return None
-        raise AssertionError("unreachable")
+            except Exception:
+                handle.seek(0)
+                handle.truncate(0)
+                self._resume_state_path(remote).unlink(missing_ok=True)
+                raise
+            self._stream_chunks(
+                response,
+                handle,
+                initial_size=0,
+                size_bound=size_bound,
+            )
 
     def _stream_response(
         self,
@@ -479,22 +542,43 @@ class HttpFetcher:
         expected_body_bytes: int | None = None,
     ) -> None:
         body_bytes = 0
-        written = initial_size
         partial.parent.mkdir(parents=True, exist_ok=True)
         with partial.open(mode) as handle:
-            for chunk in response.iter_raw():
-                if expected_body_bytes is not None and body_bytes + len(chunk) > expected_body_bytes:
-                    allowed = max(expected_body_bytes - body_bytes, 0)
-                    handle.write(chunk[:allowed])
-                    raise _RangeBodyMismatch
-                if written + len(chunk) > size_bound:
-                    handle.write(chunk[: max(size_bound - written, 0)])
-                    raise _BoundExceeded
-                handle.write(chunk)
-                body_bytes += len(chunk)
-                written += len(chunk)
+            body_bytes = self._stream_chunks(
+                response,
+                handle,
+                initial_size=initial_size,
+                size_bound=size_bound,
+                expected_body_bytes=expected_body_bytes,
+            )
         if expected_body_bytes is not None and body_bytes != expected_body_bytes:
             raise _RangeBodyMismatch
+
+    @staticmethod
+    def _stream_chunks(
+        response: httpx.Response,
+        handle: BinaryIO,
+        *,
+        initial_size: int,
+        size_bound: int,
+        expected_body_bytes: int | None = None,
+    ) -> int:
+        body_bytes = 0
+        written = initial_size
+        for chunk in response.iter_raw():
+            if expected_body_bytes is not None and body_bytes + len(chunk) > expected_body_bytes:
+                allowed = max(expected_body_bytes - body_bytes, 0)
+                handle.write(chunk[:allowed])
+                raise _RangeBodyMismatch
+            if written + len(chunk) > size_bound:
+                handle.write(chunk[: max(size_bound - written, 0)])
+                raise _BoundExceeded
+            handle.write(chunk)
+            body_bytes += len(chunk)
+            written += len(chunk)
+        if expected_body_bytes is not None and body_bytes != expected_body_bytes:
+            raise _RangeBodyMismatch
+        return body_bytes
 
     def _owned_resume_state(
         self, remote: RemoteAsset, partial: Path
@@ -563,16 +647,111 @@ class HttpFetcher:
             and hmac.compare_digest(state.verified_checksum, checksum)
         )
 
+    def _has_pending_quarantine(self, remote: RemoteAsset) -> bool:
+        state = self._read_resume_state(self._resume_state_path(remote))
+        return (
+            state is not None
+            and state.remote_fingerprint == self._remote_fingerprint(remote)
+            and state.pending_quarantine_path is not None
+            and state.pending_quarantine_error is not None
+            and state.pending_quarantine_size_bytes is not None
+            and state.pending_quarantine_checksum is not None
+        )
+
+    def _reconcile_pending_quarantine(
+        self,
+        remote: RemoteAsset,
+        partial: Path,
+        run_id: str,
+        size_bound: int,
+    ) -> None:
+        state = self._read_resume_state(self._resume_state_path(remote))
+        pending_values = (
+            None if state is None else state.pending_quarantine_path,
+            None if state is None else state.pending_quarantine_error,
+            None if state is None else state.pending_quarantine_size_bytes,
+            None if state is None else state.pending_quarantine_checksum,
+        )
+        if all(value is None for value in pending_values):
+            return
+        if state is None or any(value is None for value in pending_values):
+            raise ExistingAssetConflict(
+                f"invalid pending quarantine state: {remote.asset_id}"
+            )
+        try:
+            current = self.catalog.get(remote.asset_id)
+        except KeyError as exc:
+            raise ExistingAssetConflict(
+                f"pending quarantine has no catalog row: {remote.asset_id}"
+            ) from exc
+        final_path = self._target_path(remote)
+        self._require_catalog_identity(current, remote, final_path)
+        quarantine_root = (self.paths.raw / "_quarantine").resolve()
+        evidence = Path(state.pending_quarantine_path)
+        resolved_evidence = evidence.resolve()
+        try:
+            resolved_evidence.relative_to(quarantine_root)
+        except ValueError as exc:
+            raise ExistingAssetConflict(
+                f"pending quarantine path escaped raw quarantine: {remote.asset_id}"
+            ) from exc
+        pending_size = state.pending_quarantine_size_bytes
+        pending_checksum = state.pending_quarantine_checksum
+        allowed_errors = {
+            "budget_size_exceeded",
+            "checksum_mismatch",
+            "range_body_length_mismatch",
+            "size_mismatch",
+        }
+        matches = (
+            current.status is AssetStatus.FETCHING
+            and state.remote_fingerprint == self._remote_fingerprint(remote)
+            and evidence.is_absolute()
+            and resolved_evidence == evidence
+            and state.pending_quarantine_error in allowed_errors
+            and pending_size <= size_bound
+            and partial.is_file()
+            and resolved_evidence.is_file()
+            and partial.stat().st_size == pending_size
+            and resolved_evidence.stat().st_size == pending_size
+            and hmac.compare_digest(sha256_file(partial), pending_checksum)
+            and hmac.compare_digest(sha256_file(resolved_evidence), pending_checksum)
+        )
+        if not matches:
+            raise ExistingAssetConflict(
+                f"pending quarantine evidence requires operator action: {remote.asset_id}"
+            )
+        self.catalog.transition(
+            remote.asset_id,
+            AssetStatus.QUARANTINED,
+            storage_path=str(evidence),
+            size_bytes=pending_size,
+            checksum=pending_checksum,
+            retrieved_at=datetime.now(UTC),
+            pipeline_run_id=run_id,
+            error_code=state.pending_quarantine_error,
+            error_message=self._quarantine_error_message(state.pending_quarantine_error),
+        )
+        self._cleanup_success(remote, partial)
+        raise PayloadMismatch(f"{state.pending_quarantine_error}: {remote.asset_id}")
+
     def _discard_resume(self, remote: RemoteAsset, partial: Path) -> None:
         partial.unlink(missing_ok=True)
         self._resume_state_path(remote).unlink(missing_ok=True)
 
     @staticmethod
     def _response_validator(response: httpx.Response) -> tuple[str, str] | None:
-        for header in ("ETag", "Last-Modified"):
-            value = response.headers.get(header)
-            if value:
-                return header, value
+        etag = response.headers.get("ETag")
+        if etag is not None and _STRONG_ETAG.fullmatch(etag.strip()) is not None:
+            return "ETag", etag
+        last_modified = response.headers.get("Last-Modified")
+        if last_modified is not None:
+            try:
+                parsed = parsedate_to_datetime(last_modified)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if parsed.tzinfo is not None:
+                return "Last-Modified", last_modified
         return None
 
     @staticmethod
@@ -649,23 +828,26 @@ class HttpFetcher:
         quarantine_root = (self.paths.raw / "_quarantine").resolve()
         quarantine_dir.relative_to(quarantine_root)
         quarantine_dir.mkdir(parents=True, exist_ok=True)
-        for _ in range(100):
-            quarantine = quarantine_dir / f"{partial.name}.{uuid4().hex}"
-            try:
-                os.link(partial, quarantine)
-            except FileExistsError:
-                continue
-            try:
-                partial.unlink()
-            except OSError:
-                pass
-            break
-        else:
-            raise DownloadFailed(f"could not reserve quarantine target: {remote.asset_id}")
         try:
-            self._resume_state_path(remote).unlink(missing_ok=True)
-        except OSError:
-            self.logger.warning("best-effort quarantine state cleanup failed")
+            quarantine = self._publish_quarantine_evidence(
+                partial, quarantine_dir, actual_size, actual_checksum
+            )
+        except Exception:
+            self._discard_resume(remote, partial)
+            raise
+        state = _ResumeState(
+            remote_fingerprint=self._remote_fingerprint(remote),
+            pending_quarantine_path=str(quarantine),
+            pending_quarantine_error=error_code,
+            pending_quarantine_size_bytes=actual_size,
+            pending_quarantine_checksum=actual_checksum,
+        )
+        try:
+            self._persist_resume_state(remote, state)
+        except Exception:
+            quarantine.unlink(missing_ok=True)
+            self._discard_resume(remote, partial)
+            raise
         self.catalog.transition(
             remote.asset_id,
             AssetStatus.QUARANTINED,
@@ -675,9 +857,65 @@ class HttpFetcher:
             retrieved_at=datetime.now(UTC),
             pipeline_run_id=run_id,
             error_code=error_code,
-            error_message=f"downloaded payload failed {error_code.removesuffix('_mismatch')} validation",
+            error_message=self._quarantine_error_message(error_code),
         )
+        self._cleanup_success(remote, partial)
         raise PayloadMismatch(f"{error_code}: {remote.asset_id}")
+
+    @staticmethod
+    def _quarantine_error_message(error_code: str) -> str:
+        return (
+            "downloaded payload failed "
+            f"{error_code.removesuffix('_mismatch')} validation"
+        )
+
+    def _publish_quarantine_evidence(
+        self,
+        partial: Path,
+        quarantine_dir: Path,
+        expected_size: int,
+        expected_checksum: str,
+    ) -> Path:
+        for _ in range(100):
+            quarantine = quarantine_dir / f"{partial.name}.{uuid4().hex}"
+            try:
+                os.link(partial, quarantine)
+                return quarantine
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+            try:
+                descriptor = os.open(
+                    quarantine,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                continue
+            try:
+                destination = os.fdopen(descriptor, "wb")
+                descriptor = -1
+                with destination, partial.open("rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        destination.write(chunk)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                if (
+                    quarantine.stat().st_size != expected_size
+                    or not hmac.compare_digest(
+                        sha256_file(quarantine), expected_checksum
+                    )
+                ):
+                    raise OSError("quarantine evidence verification failed")
+                return quarantine
+            except Exception:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                quarantine.unlink(missing_ok=True)
+                raise
+        raise DownloadFailed("could not reserve an exclusive quarantine target")
 
     @staticmethod
     def _publish_without_overwrite(partial: Path, final_path: Path) -> None:

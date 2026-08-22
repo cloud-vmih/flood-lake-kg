@@ -1,7 +1,9 @@
+import errno
 import fcntl
 import hashlib
 import json
 import logging
+import os
 import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -45,6 +47,17 @@ class InterruptedStream(httpx.SyncByteStream):
     def __iter__(self) -> Iterator[bytes]:
         yield self.prefix
         raise httpx.ReadError("fixture interrupted stream")
+
+
+class CloseFaultStream(httpx.SyncByteStream):
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield self.payload
+
+    def close(self) -> None:
+        raise httpx.ProtocolError("fixture response close failure")
 
 
 @pytest.fixture
@@ -313,6 +326,48 @@ def test_timeout_and_network_failures_are_retried(
 
     assert route.call_count == 2
     assert sleeps == [1]
+
+
+@respx.mock
+def test_response_close_fault_discards_resume_state_and_later_restarts_without_range(
+    fetcher: HttpFetcher,
+    project_paths,
+    catalog,
+    remote_asset: RemoteAsset,
+) -> None:
+    payload = b"valid-payload"
+    respx.get(remote_asset.uri).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"ETag": '"fixture-v1"'},
+            stream=CloseFaultStream(payload),
+        )
+    )
+
+    with pytest.raises(DownloadFailed, match="download failed"):
+        fetcher.fetch(remote_asset, "run-close-fault")
+
+    target = project_paths.dataset / remote_asset.target_relative_path
+    partial = Path(f"{target}.partial")
+    partial_existed_after_failure = partial.exists()
+    state_existed_after_failure = bool(
+        list((project_paths.catalog / "download_state").glob("*.json"))
+    )
+    assert catalog.get(remote_asset.asset_id).status is AssetStatus.FAILED
+    requests: list[httpx.Request] = []
+
+    def restarted(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=payload)
+
+    respx.get(remote_asset.uri).mock(side_effect=restarted)
+
+    record = fetcher.fetch(remote_asset, "run-after-close-fault")
+
+    assert not partial_existed_after_failure
+    assert not state_existed_after_failure
+    assert "Range" not in requests[0].headers
+    assert record.status is AssetStatus.FETCHED
 
 
 @respx.mock
@@ -612,6 +667,143 @@ def test_non_resumable_response_restarts_instead_of_appending(
     assert Path(record.storage_path).read_bytes() == payload
 
 
+@respx.mock
+def test_full_restart_open_failure_discards_stale_owned_bytes_before_next_request(
+    fetcher: HttpFetcher,
+    project_paths,
+    catalog,
+    remote_asset: RemoteAsset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"abcdef"
+    remote = remote_asset.model_copy(update={"expected_size": len(payload)})
+    _interrupt_owned_partial(project_paths, catalog, remote)
+    target = project_paths.dataset / remote.target_relative_path
+    partial = Path(f"{target}.partial")
+    real_open = Path.open
+    fail_once = True
+
+    def fail_first_truncate(path: Path, mode: str = "r", *args, **kwargs):
+        nonlocal fail_once
+        if path == partial and mode == "wb" and fail_once:
+            fail_once = False
+            raise OSError("fixture truncate failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_first_truncate)
+    requests: list[httpx.Request] = []
+
+    def full_response(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, headers={"ETag": '"fixture-v2"'}, content=payload)
+
+    respx.get(remote.uri).mock(side_effect=full_response)
+
+    with pytest.raises(DownloadFailed, match="download failed"):
+        fetcher.fetch(remote, "run-truncate-failure")
+
+    assert not partial.exists()
+    assert not list((project_paths.catalog / "download_state").glob("*.json"))
+
+    record = fetcher.fetch(remote, "run-after-truncate-failure")
+
+    assert requests[0].headers["Range"] == "bytes=3-"
+    assert "Range" not in requests[1].headers
+    assert Path(record.storage_path).read_bytes() == payload
+
+
+@respx.mock
+def test_full_restart_sidecar_failure_leaves_no_owned_bytes_or_range_resume(
+    fetcher: HttpFetcher,
+    project_paths,
+    catalog,
+    remote_asset: RemoteAsset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"abcdef"
+    remote = remote_asset.model_copy(update={"expected_size": len(payload)})
+    target = project_paths.dataset / remote.target_relative_path
+    partial = Path(f"{target}.partial")
+    state_dir = project_paths.catalog / "download_state"
+    real_replace = Path.replace
+    fail_once = True
+
+    def fail_first_state_publish(path: Path, destination: object):
+        nonlocal fail_once
+        destination_path = Path(destination)
+        if (
+            fail_once
+            and destination_path.parent == state_dir
+            and destination_path.suffix == ".json"
+        ):
+            fail_once = False
+            raise OSError("fixture sidecar publication failure")
+        return real_replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_first_state_publish)
+    requests: list[httpx.Request] = []
+
+    def full_response(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, headers={"ETag": '"fixture-v1"'}, content=payload)
+
+    respx.get(remote.uri).mock(side_effect=full_response)
+
+    with pytest.raises(DownloadFailed, match="download failed"):
+        fetcher.fetch(remote, "run-sidecar-failure")
+
+    assert not partial.exists()
+    assert not list(state_dir.glob("*.json"))
+
+    record = fetcher.fetch(remote, "run-after-sidecar-failure")
+
+    assert "Range" not in requests[1].headers
+    assert Path(record.storage_path).read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"ETag": 'W/"fixture-v1"'},
+        {"Last-Modified": "not-an-http-date"},
+    ],
+    ids=["weak-etag", "invalid-last-modified"],
+)
+@respx.mock
+def test_invalid_response_validator_cannot_own_partial_or_enable_range_resume(
+    fetcher: HttpFetcher,
+    project_paths,
+    catalog,
+    remote_asset: RemoteAsset,
+    headers: dict[str, str],
+) -> None:
+    payload = b"abcdef"
+    remote = remote_asset.model_copy(update={"expected_size": len(payload)})
+    respx.get(remote.uri).mock(
+        return_value=httpx.Response(200, headers=headers, stream=InterruptedStream(b"abc"))
+    )
+
+    with pytest.raises(DownloadFailed):
+        _single_attempt_fetcher(project_paths, catalog).fetch(remote, "run-invalid-validator")
+
+    state_exists_after_failure = bool(
+        list((project_paths.catalog / "download_state").glob("*.json"))
+    )
+    requests: list[httpx.Request] = []
+
+    def restarted(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=payload)
+
+    respx.get(remote.uri).mock(side_effect=restarted)
+
+    record = fetcher.fetch(remote, "run-after-invalid-validator")
+
+    assert not state_exists_after_failure
+    assert "Range" not in requests[0].headers
+    assert Path(record.storage_path).read_bytes() == payload
+
+
 @pytest.mark.parametrize(
     "update,error_code",
     [
@@ -707,6 +899,241 @@ def test_quarantine_collision_never_overwrites_existing_evidence(
 
     with pytest.raises(PayloadMismatch):
         fetcher.fetch(remote, "run-collision")
+
+    assert collision.read_bytes() == b"prior-evidence"
+    assert (quarantine_dir / "payload.bin.partial.fresh").read_bytes() == b"valid-payload"
+
+
+@respx.mock
+def test_quarantine_cross_filesystem_fallback_copies_and_verifies_evidence(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"valid-payload"
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+
+    def cross_filesystem_link(source: object, destination: object) -> None:
+        raise OSError(errno.EXDEV, "fixture cross-device link", destination)
+
+    monkeypatch.setattr(os, "link", cross_filesystem_link)
+    respx.get(remote.uri).mock(return_value=httpx.Response(200, content=payload))
+
+    with pytest.raises(PayloadMismatch, match="checksum_mismatch"):
+        fetcher.fetch(remote, "run-quarantine-exdev")
+
+    record = catalog.get(remote.asset_id)
+    evidence = Path(record.storage_path)
+    partial = Path(f"{project_paths.dataset / remote.target_relative_path}.partial")
+    assert record.status is AssetStatus.QUARANTINED
+    assert evidence.read_bytes() == payload
+    assert hashlib.sha256(evidence.read_bytes()).hexdigest() == record.checksum
+    assert not partial.exists()
+
+
+@respx.mock
+def test_quarantine_copy_failure_removes_incomplete_evidence_and_owned_partial(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    target = project_paths.dataset / remote.target_relative_path
+    partial = Path(f"{target}.partial")
+
+    def cross_filesystem_link(source: object, destination: object) -> None:
+        raise OSError(errno.EXDEV, "fixture cross-device link", destination)
+
+    real_open = Path.open
+    partial_read_count = 0
+
+    def fail_copy_read(path: Path, mode: str = "r", *args, **kwargs):
+        nonlocal partial_read_count
+        if path == partial and mode == "rb":
+            partial_read_count += 1
+            if partial_read_count == 3:
+                raise OSError("fixture quarantine copy read failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", cross_filesystem_link)
+    monkeypatch.setattr(Path, "open", fail_copy_read)
+    respx.get(remote.uri).mock(
+        return_value=httpx.Response(200, headers={"ETag": '"fixture-v1"'}, content=b"valid-payload")
+    )
+
+    with pytest.raises(DownloadFailed, match="download failed"):
+        fetcher.fetch(remote, "run-quarantine-copy-failure")
+
+    opaque = hashlib.sha256(remote.asset_id.encode("utf-8")).hexdigest()
+    quarantine_dir = project_paths.raw / "_quarantine" / opaque
+    assert partial_read_count == 3
+    assert not list(quarantine_dir.iterdir())
+    assert not partial.exists()
+    assert not list((project_paths.catalog / "download_state").glob("*.json"))
+    assert catalog.get(remote.asset_id).status is AssetStatus.FAILED
+
+
+@respx.mock
+def test_pending_quarantine_reconciles_without_network_after_catalog_failure(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"valid-payload"
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    route = respx.get(remote.uri).mock(
+        return_value=httpx.Response(200, headers={"ETag": '"fixture-v1"'}, content=payload)
+    )
+    real_transition = catalog.transition
+    fail_once = True
+
+    def failing_transition(record_id=None, target=None, **updates):
+        nonlocal fail_once
+        if target is AssetStatus.QUARANTINED and fail_once:
+            fail_once = False
+            raise RuntimeError("fixture quarantine catalog failure")
+        return real_transition(record_id, target, **updates)
+
+    monkeypatch.setattr(catalog, "transition", failing_transition)
+
+    with pytest.raises(RuntimeError, match="quarantine catalog failure"):
+        fetcher.fetch(remote, "run-quarantine-catalog-failure")
+
+    target = project_paths.dataset / remote.target_relative_path
+    partial = Path(f"{target}.partial")
+    state_path = next((project_paths.catalog / "download_state").glob("*.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    evidence = Path(state["pending_quarantine_path"])
+    assert catalog.get(remote.asset_id).status is AssetStatus.FETCHING
+    assert partial.read_bytes() == payload
+    assert evidence.read_bytes() == payload
+    assert state["pending_quarantine_error"] == "checksum_mismatch"
+    assert state["pending_quarantine_size_bytes"] == len(payload)
+    assert state["pending_quarantine_checksum"] == hashlib.sha256(payload).hexdigest()
+    calls_before = route.call_count
+
+    with pytest.raises(PayloadMismatch, match="checksum_mismatch"):
+        fetcher.fetch(remote, "run-quarantine-reconcile")
+
+    assert route.call_count == calls_before
+    assert catalog.get(remote.asset_id).status is AssetStatus.QUARANTINED
+    assert evidence.read_bytes() == payload
+    assert not partial.exists()
+    assert not state_path.exists()
+
+
+@respx.mock
+def test_tampered_pending_quarantine_path_is_rejected_without_network_or_overwrite(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"valid-payload"
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    route = respx.get(remote.uri).mock(
+        return_value=httpx.Response(200, headers={"ETag": '"fixture-v1"'}, content=payload)
+    )
+    real_transition = catalog.transition
+    fail_once = True
+
+    def failing_transition(record_id=None, target=None, **updates):
+        nonlocal fail_once
+        if target is AssetStatus.QUARANTINED and fail_once:
+            fail_once = False
+            raise RuntimeError("fixture quarantine catalog failure")
+        return real_transition(record_id, target, **updates)
+
+    monkeypatch.setattr(catalog, "transition", failing_transition)
+    with pytest.raises(RuntimeError, match="quarantine catalog failure"):
+        fetcher.fetch(remote, "run-quarantine-pending")
+
+    state_path = next((project_paths.catalog / "download_state").glob("*.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    legitimate_evidence = Path(state["pending_quarantine_path"])
+    outside = project_paths.root / "fixture-do-not-overwrite.bin"
+    outside.write_bytes(b"operator-data")
+    state["pending_quarantine_path"] = str(outside)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    calls_before = route.call_count
+
+    with pytest.raises(ExistingAssetConflict, match="escaped raw quarantine"):
+        fetcher.fetch(remote, "run-tampered-quarantine-state")
+
+    assert route.call_count == calls_before
+    assert outside.read_bytes() == b"operator-data"
+    assert legitimate_evidence.read_bytes() == payload
+    assert catalog.get(remote.asset_id).status is AssetStatus.FETCHING
+
+
+@respx.mock
+def test_quarantine_retains_partial_and_pending_state_until_catalog_transition_succeeds(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"valid-payload"
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    target = project_paths.dataset / remote.target_relative_path
+    partial = Path(f"{target}.partial")
+    real_transition = catalog.transition
+    observed_pending_state: dict[str, object] = {}
+
+    def inspect_transition(record_id=None, target=None, **updates):
+        if target is AssetStatus.QUARANTINED:
+            state_path = next((project_paths.catalog / "download_state").glob("*.json"))
+            observed_pending_state.update(json.loads(state_path.read_text(encoding="utf-8")))
+            assert partial.read_bytes() == payload
+            assert Path(str(observed_pending_state["pending_quarantine_path"])).read_bytes() == payload
+        return real_transition(record_id, target, **updates)
+
+    monkeypatch.setattr(catalog, "transition", inspect_transition)
+    respx.get(remote.uri).mock(
+        return_value=httpx.Response(200, headers={"ETag": '"fixture-v1"'}, content=payload)
+    )
+
+    with pytest.raises(PayloadMismatch, match="checksum_mismatch"):
+        fetcher.fetch(remote, "run-quarantine-retention")
+
+    assert observed_pending_state["pending_quarantine_error"] == "checksum_mismatch"
+    assert not partial.exists()
+
+
+@respx.mock
+def test_cross_filesystem_quarantine_collision_retries_without_overwrite(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    opaque = hashlib.sha256(remote.asset_id.encode("utf-8")).hexdigest()
+    quarantine_dir = project_paths.raw / "_quarantine" / opaque
+    quarantine_dir.mkdir(parents=True)
+    collision = quarantine_dir / "payload.bin.partial.collision"
+    collision.write_bytes(b"prior-evidence")
+    names = iter([SimpleNamespace(hex="collision"), SimpleNamespace(hex="fresh")])
+
+    def collision_then_cross_device(source: object, destination: object) -> None:
+        if Path(destination) == collision:
+            raise FileExistsError(destination)
+        raise OSError(errno.EXDEV, "fixture cross-device link", destination)
+
+    monkeypatch.setattr("flashflood_data.http.uuid4", lambda: next(names))
+    monkeypatch.setattr(os, "link", collision_then_cross_device)
+    respx.get(remote.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
+
+    with pytest.raises(PayloadMismatch):
+        fetcher.fetch(remote, "run-cross-device-collision")
 
     assert collision.read_bytes() == b"prior-evidence"
     assert (quarantine_dir / "payload.bin.partial.fresh").read_bytes() == b"valid-payload"
@@ -1159,3 +1586,83 @@ def test_redaction_filter_handles_digest_google_signatures_and_non_string_args()
     assert "tile=N21E103" in rendered
     assert "safe=value" in rendered
     assert "safe-header=kept" in rendered
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        (
+            'Authorization: Digest username="fixture-user;role=fixture-role", '
+            'response="fixture-response"; X-Safe: kept'
+        ),
+        (
+            'Authorization: Digest username="fixture-user\\\";fixture-suffix", '
+            'response="fixture-response"; X-Safe: kept'
+        ),
+    ],
+    ids=["quoted-semicolon", "escaped-quote"],
+)
+def test_redaction_filter_consumes_quoted_digest_values_to_unquoted_separator(
+    authorization: str,
+) -> None:
+    record = logging.LogRecord(
+        "fixture", logging.ERROR, __file__, 1, authorization, (), None
+    )
+
+    assert SecretRedactionFilter().filter(record)
+    rendered = record.getMessage()
+
+    for secret in (
+        "fixture-user",
+        "fixture-role",
+        "fixture-suffix",
+        "fixture-response",
+    ):
+        assert secret not in rendered
+    assert rendered == "Authorization: [REDACTED]; X-Safe: kept"
+
+
+def test_redaction_filter_treats_authorization_query_as_query_not_header() -> None:
+    record = logging.LogRecord(
+        "fixture",
+        logging.ERROR,
+        __file__,
+        1,
+        (
+            "url=https://example.invalid/file?authorization=fixture-query-secret&"
+            "safe=kept&tile=N21E103"
+        ),
+        (),
+        None,
+    )
+
+    assert SecretRedactionFilter().filter(record)
+
+    assert record.getMessage() == (
+        "url=https://example.invalid/file?authorization=[REDACTED]&"
+        "safe=kept&tile=N21E103"
+    )
+
+
+def test_redaction_filter_stops_authorization_at_multiline_header_boundary() -> None:
+    record = logging.LogRecord(
+        "fixture",
+        logging.ERROR,
+        __file__,
+        1,
+        (
+            'Authorization: Digest username="fixture-multiline-secret"\n'
+            "X-Safe: kept\n"
+            "url=https://example.invalid/file?X-Goog-Signature=fixture-google&safe=yes"
+        ),
+        (),
+        None,
+    )
+
+    assert SecretRedactionFilter().filter(record)
+    rendered = record.getMessage()
+
+    assert "fixture-multiline-secret" not in rendered
+    assert "fixture-google" not in rendered
+    assert "X-Safe: kept" in rendered
+    assert "safe=yes" in rendered
