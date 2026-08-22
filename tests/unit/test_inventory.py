@@ -425,3 +425,88 @@ def test_validation_accepts_valid_zip_csv_and_python(tmp_path: Path) -> None:
     assert validate_known_format(archive, "application/zip", (archive,)).passed
     assert validate_known_format(csv_path, "text/csv", (csv_path,)).passed
     assert validate_known_format(python_path, "text/x-python", (python_path,)).passed
+
+
+def test_inventory_refreshes_duplicate_topology_when_canonical_copy_changes(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    copies = {name: context.paths.dataset / "copies" / name / "same.bin" for name in ("b", "c")}
+    for path in copies.values():
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"identical")
+    rule = _rule("copies/**/same.bin")
+    initial = inventory_existing(context, rules=(rule,))
+    initial_by_path = {Path(record.storage_path): record for record in initial}
+
+    earlier = context.paths.dataset / "copies" / "a" / "same.bin"
+    earlier.parent.mkdir(parents=True)
+    earlier.write_bytes(b"identical")
+    with_earlier = inventory_existing(context, rules=(rule,))
+    new_canonical = with_earlier[0]
+
+    assert [Path(record.storage_path) for record in with_earlier] == [
+        earlier,
+        copies["b"],
+        copies["c"],
+    ]
+    assert [record.duplicate_of_asset_id for record in with_earlier] == [
+        None,
+        new_canonical.asset_id,
+        new_canonical.asset_id,
+    ]
+    assert context.catalog.get(initial_by_path[copies["b"]].asset_id) == with_earlier[1]
+    assert context.catalog.get(initial_by_path[copies["c"]].asset_id) == with_earlier[2]
+    assert with_earlier[1].status is initial_by_path[copies["b"]].status
+    assert with_earlier[1].checksum == initial_by_path[copies["b"]].checksum
+
+    earlier.unlink()
+    without_earlier = inventory_existing(context, rules=(rule,))
+
+    assert [Path(record.storage_path) for record in without_earlier] == [
+        copies["b"],
+        copies["c"],
+    ]
+    assert without_earlier[0].duplicate_of_asset_id is None
+    assert without_earlier[1].duplicate_of_asset_id == without_earlier[0].asset_id
+    assert context.catalog.get(without_earlier[0].asset_id) == without_earlier[0]
+    assert context.catalog.get(without_earlier[1].asset_id) == without_earlier[1]
+
+
+def test_inventory_refreshes_only_allowlisted_terminal_annotations(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    payload = context.paths.dataset / "legacy" / "annotated.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"stable")
+    rule = _rule("legacy/annotated.bin")
+    original = inventory_existing(context, rules=(rule,))[0]
+    stale = original.model_copy(update={"metadata_json": '{"stale":true}'})
+    context.catalog.upsert(stale)
+
+    refreshed = inventory_existing(context, rules=(rule,))[0]
+
+    assert refreshed.metadata_json == original.metadata_json
+    assert refreshed.model_dump(exclude={"metadata_json", "duplicate_of_asset_id"}) == (
+        stale.model_dump(exclude={"metadata_json", "duplicate_of_asset_id"})
+    )
+    assert context.catalog.get(original.asset_id) == refreshed
+
+
+def test_annotation_refresh_never_masks_non_allowlisted_identity_conflict(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    payload = context.paths.dataset / "legacy" / "identity.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"stable")
+    rule = _rule("legacy/identity.bin")
+    original = inventory_existing(context, rules=(rule,))[0]
+    conflicting = original.model_copy(
+        update={"license_id": "different-license", "metadata_json": '{"stale":true}'}
+    )
+    context.catalog.upsert(conflicting)
+
+    with pytest.raises(RuntimeError, match="conflicting existing inventory asset"):
+        inventory_existing(context, rules=(rule,))
+
+    assert context.catalog.get(original.asset_id) == conflicting

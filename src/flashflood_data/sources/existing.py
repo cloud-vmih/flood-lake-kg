@@ -314,6 +314,15 @@ def inventory_existing(
             if existing.status is AssetStatus.QUARANTINED:
                 raise InventoryConflict(f"quarantined existing inventory asset: {asset_id}")
             if existing.status in _REUSABLE_STATUSES:
+                annotation_updates = {
+                    field: getattr(discovered, field)
+                    for field in ("duplicate_of_asset_id", "metadata_json")
+                    if getattr(existing, field) != getattr(discovered, field)
+                }
+                if annotation_updates:
+                    existing = context.catalog.upsert(
+                        existing.model_copy(update=annotation_updates)
+                    )
                 records.append(existing)
                 continue
             if existing.status not in _RECOVERABLE_STATUSES:
