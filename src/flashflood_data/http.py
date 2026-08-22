@@ -37,7 +37,8 @@ from flashflood_data.paths import ProjectPaths
 _CONTENT_RANGE: Final = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
 _STRONG_ETAG: Final = re.compile(r'^"[\x21\x23-\x7e\x80-\xff]*"$')
 _AUTHORIZATION_FIELD: Final = re.compile(
-    r"(?i)(^|[\s;,])(authorization\s*[:=]\s*)"
+    r"(?i)(^|[\s;,{])(?P<key_quote>['\"]?)authorization"
+    r"(?P=key_quote)\s*[:=]\s*(?P<value_quote>['\"]?)"
 )
 _BEARER: Final = re.compile(r"(?i)(\bbearer\s+)[^\s;,]+")
 _URL_USERINFO: Final = re.compile(r"(?i)(https?://)[^/@\s]+@")
@@ -62,6 +63,10 @@ class ExistingAssetConflict(DownloadFailed):
 
 class DownloadLocked(DownloadFailed):
     """Raised when another process owns the target's download lock."""
+
+
+class _ResumeCleanupError(DownloadFailed):
+    pass
 
 
 class _RetryableStatus(Exception):
@@ -130,6 +135,22 @@ def _redact_authorization_fields(value: str) -> str:
         if match.start() < cursor:
             continue
         end = match.end()
+        value_quote = match.group("value_quote")
+        if value_quote:
+            escaped = False
+            while end < len(value):
+                character = value[end]
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == value_quote:
+                    break
+                end += 1
+            parts.append(value[cursor : match.end()])
+            parts.append("[REDACTED]")
+            cursor = end
+            continue
         quote: str | None = None
         escaped = False
         while end < len(value):
@@ -221,6 +242,7 @@ class HttpFetcher:
     def _fetch_locked(
         self, remote: RemoteAsset, run_id: str, final_path: Path, size_bound: int
     ) -> AssetRecord:
+        self._read_resume_state(self._resume_state_path(remote))
         existing = self._existing_record(remote, final_path, run_id)
         if existing is not None:
             return existing
@@ -250,12 +272,17 @@ class HttpFetcher:
                 try:
                     self.sleep(delay)
                 except Exception as sleep_error:
-                    self._discard_resume(remote, partial)
-                    self._mark_failed(remote.asset_id, "retry_delay_failed")
+                    self._discard_and_mark_failed(
+                        remote, partial, "retry_delay_failed"
+                    )
                     raise DownloadFailed(f"download failed: {remote.asset_id}") from sleep_error
+            except _ResumeCleanupError:
+                self._mark_failed(remote.asset_id, "resume_cleanup_failed")
+                raise
             except httpx.HTTPStatusError as exc:
-                self._discard_resume(remote, partial)
-                self._mark_failed(remote.asset_id, f"http_{exc.response.status_code}")
+                self._discard_and_mark_failed(
+                    remote, partial, f"http_{exc.response.status_code}"
+                )
                 raise DownloadFailed(f"download failed: {remote.asset_id}") from exc
             except PayloadMismatch:
                 raise
@@ -266,18 +293,17 @@ class HttpFetcher:
                 self._quarantine(partial, remote, run_id, "range_body_length_mismatch")
                 raise AssertionError("unreachable")
             except _UnsafePartialResponse as exc:
-                self._discard_resume(remote, partial)
-                self._mark_failed(remote.asset_id, exc.code)
+                self._discard_and_mark_failed(remote, partial, exc.code)
                 raise DownloadFailed(f"{exc.code}: {remote.asset_id}") from exc
             except ExistingAssetConflict:
-                self._discard_resume(remote, partial)
-                self._mark_failed(remote.asset_id, "existing_asset_conflict")
+                self._discard_and_mark_failed(
+                    remote, partial, "existing_asset_conflict"
+                )
                 raise
             except Exception as exc:
                 if published or self._has_pending_quarantine(remote):
                     raise
-                self._discard_resume(remote, partial)
-                self._mark_failed(remote.asset_id, "download_error")
+                self._discard_and_mark_failed(remote, partial, "download_error")
                 raise DownloadFailed(f"download failed: {remote.asset_id}") from exc
         raise AssertionError("unreachable")
 
@@ -631,9 +657,50 @@ class HttpFetcher:
     @staticmethod
     def _read_resume_state(path: Path) -> _ResumeState | None:
         try:
-            return _ResumeState(**json.loads(path.read_text(encoding="utf-8")))
-        except (FileNotFoundError, TypeError, ValueError, json.JSONDecodeError):
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             return None
+        except (OSError, UnicodeError) as exc:
+            raise ExistingAssetConflict(
+                f"corrupt download sidecar: {path.name}"
+            ) from exc
+        try:
+            values = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ExistingAssetConflict(
+                f"corrupt download sidecar: {path.name}"
+            ) from exc
+        string_fields = {
+            "pending_quarantine_checksum",
+            "pending_quarantine_error",
+            "pending_quarantine_path",
+            "remote_fingerprint",
+            "validator_header",
+            "validator_value",
+            "verified_checksum",
+        }
+        integer_fields = {
+            "pending_quarantine_size_bytes",
+            "verified_size_bytes",
+        }
+        if (
+            not isinstance(values, dict)
+            or "remote_fingerprint" not in values
+            or not set(values) <= string_fields | integer_fields
+            or any(
+                value is not None and not isinstance(value, str)
+                for key, value in values.items()
+                if key in string_fields
+            )
+            or any(
+                value is not None
+                and (isinstance(value, bool) or not isinstance(value, int))
+                for key, value in values.items()
+                if key in integer_fields
+            )
+        ):
+            raise ExistingAssetConflict(f"corrupt download sidecar: {path.name}")
+        return _ResumeState(**values)
 
     def _publication_state_matches(
         self, remote: RemoteAsset, size_bytes: int, checksum: str
@@ -695,6 +762,13 @@ class HttpFetcher:
             raise ExistingAssetConflict(
                 f"pending quarantine path escaped raw quarantine: {remote.asset_id}"
             ) from exc
+        expected_owner_dir = (
+            quarantine_root / sha256(remote.asset_id.encode("utf-8")).hexdigest()
+        ).resolve()
+        if resolved_evidence.parent != expected_owner_dir:
+            raise ExistingAssetConflict(
+                f"pending quarantine evidence ownership conflict: {remote.asset_id}"
+            )
         pending_size = state.pending_quarantine_size_bytes
         pending_checksum = state.pending_quarantine_checksum
         allowed_errors = {
@@ -736,8 +810,27 @@ class HttpFetcher:
         raise PayloadMismatch(f"{state.pending_quarantine_error}: {remote.asset_id}")
 
     def _discard_resume(self, remote: RemoteAsset, partial: Path) -> None:
-        partial.unlink(missing_ok=True)
-        self._resume_state_path(remote).unlink(missing_ok=True)
+        first_error: Exception | None = None
+        for path in (partial, self._resume_state_path(remote)):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise _ResumeCleanupError(
+                f"download cleanup failed: {remote.asset_id}"
+            ) from first_error
+
+    def _discard_and_mark_failed(
+        self, remote: RemoteAsset, partial: Path, error_code: str
+    ) -> None:
+        try:
+            self._discard_resume(remote, partial)
+        except _ResumeCleanupError:
+            self._mark_failed(remote.asset_id, error_code)
+            raise
+        self._mark_failed(remote.asset_id, error_code)
 
     @staticmethod
     def _response_validator(response: httpx.Response) -> tuple[str, str] | None:

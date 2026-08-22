@@ -385,6 +385,55 @@ def test_permanent_client_error_is_not_retried(
 
 
 @respx.mock
+def test_partial_cleanup_fault_still_removes_sidecar_marks_failed_and_prevents_resume(
+    fetcher: HttpFetcher,
+    project_paths,
+    catalog,
+    remote_asset: RemoteAsset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"abcdef"
+    remote = remote_asset.model_copy(update={"expected_size": len(payload)})
+    _interrupt_owned_partial(project_paths, catalog, remote)
+    target = project_paths.dataset / remote.target_relative_path
+    partial = Path(f"{target}.partial")
+    state_path = next((project_paths.catalog / "download_state").glob("*.json"))
+    real_unlink = Path.unlink
+    fail_once = True
+
+    def fail_first_partial_unlink(path: Path, *args, **kwargs):
+        nonlocal fail_once
+        if path == partial and fail_once:
+            fail_once = False
+            raise OSError("fixture partial cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_first_partial_unlink)
+    requests: list[httpx.Request] = []
+
+    def fail_then_restart(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(404)
+        return httpx.Response(200, content=payload)
+
+    respx.get(remote.uri).mock(side_effect=fail_then_restart)
+
+    with pytest.raises(DownloadFailed, match="cleanup failed"):
+        fetcher.fetch(remote, "run-cleanup-fault")
+
+    assert partial.exists()
+    assert not state_path.exists()
+    assert catalog.get(remote.asset_id).status is AssetStatus.FAILED
+
+    record = fetcher.fetch(remote, "run-after-cleanup-fault")
+
+    assert requests[0].headers["Range"] == "bytes=3-"
+    assert "Range" not in requests[1].headers
+    assert Path(record.storage_path).read_bytes() == payload
+
+
+@respx.mock
 def test_compatible_partial_response_is_appended(
     fetcher: HttpFetcher, project_paths, catalog, remote_asset: RemoteAsset
 ) -> None:
@@ -438,6 +487,74 @@ def test_partial_without_sidecar_is_discarded_and_restarted(
     record = fetcher.fetch(remote, "run-no-owner")
 
     assert Path(record.storage_path).read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    "sidecar_text",
+    [
+        "{",
+        json.dumps({"remote_fingerprint": "fixture", "future_field": "unknown"}),
+        json.dumps({"remote_fingerprint": 123}),
+    ],
+    ids=["malformed-json", "unknown-field", "type-invalid"],
+)
+@respx.mock
+def test_corrupt_existing_sidecar_fails_closed_before_catalog_or_request(
+    fetcher: HttpFetcher,
+    project_paths,
+    catalog,
+    remote_asset: RemoteAsset,
+    sidecar_text: str,
+) -> None:
+    target = project_paths.dataset / remote_asset.target_relative_path
+    partial = Path(f"{target}.partial")
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"uncertain-bytes")
+    state_path = fetcher.lock_path(remote_asset).with_suffix(".json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(sidecar_text, encoding="utf-8")
+    route = respx.get(remote_asset.uri).mock(
+        return_value=httpx.Response(200, content=b"valid-payload")
+    )
+
+    with pytest.raises(ExistingAssetConflict, match="corrupt download sidecar"):
+        fetcher.fetch(remote_asset, "run-corrupt-sidecar")
+
+    assert not route.called
+    assert partial.read_bytes() == b"uncertain-bytes"
+    assert state_path.read_text(encoding="utf-8") == sidecar_text
+    with pytest.raises(KeyError):
+        catalog.get(remote_asset.asset_id)
+
+
+@respx.mock
+def test_unreadable_existing_sidecar_is_audit_conflict_before_request(
+    fetcher: HttpFetcher,
+    catalog,
+    remote_asset: RemoteAsset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = fetcher.lock_path(remote_asset).with_suffix(".json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text("{}", encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def unreadable_sidecar(path: Path, *args, **kwargs):
+        if path == state_path:
+            raise PermissionError("fixture unreadable sidecar")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable_sidecar)
+    route = respx.get(remote_asset.uri).mock(
+        return_value=httpx.Response(200, content=b"valid-payload")
+    )
+
+    with pytest.raises(ExistingAssetConflict, match="corrupt download sidecar"):
+        fetcher.fetch(remote_asset, "run-unreadable-sidecar")
+
+    assert not route.called
+    with pytest.raises(KeyError):
+        catalog.get(remote_asset.asset_id)
 
 
 @respx.mock
@@ -1029,6 +1146,48 @@ def test_pending_quarantine_reconciles_without_network_after_catalog_failure(
 
 
 @respx.mock
+def test_corrupt_pending_quarantine_sidecar_fails_closed_without_transition_or_request(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    route = respx.get(remote.uri).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"ETag": '"fixture-v1"'},
+            content=b"valid-payload",
+        )
+    )
+    real_transition = catalog.transition
+    fail_once = True
+
+    def failing_transition(record_id=None, target=None, **updates):
+        nonlocal fail_once
+        if target is AssetStatus.QUARANTINED and fail_once:
+            fail_once = False
+            raise RuntimeError("fixture quarantine catalog failure")
+        return real_transition(record_id, target, **updates)
+
+    monkeypatch.setattr(catalog, "transition", failing_transition)
+    with pytest.raises(RuntimeError, match="quarantine catalog failure"):
+        fetcher.fetch(remote, "run-pending-corrupt")
+
+    state_path = next((project_paths.catalog / "download_state").glob("*.json"))
+    state_path.write_text("{", encoding="utf-8")
+    fetching = catalog.get(remote.asset_id)
+    calls_before = route.call_count
+
+    with pytest.raises(ExistingAssetConflict, match="corrupt download sidecar"):
+        fetcher.fetch(remote, "run-corrupt-pending-reconcile")
+
+    assert route.call_count == calls_before
+    assert catalog.get(remote.asset_id) == fetching
+
+
+@respx.mock
 def test_tampered_pending_quarantine_path_is_rejected_without_network_or_overwrite(
     fetcher: HttpFetcher,
     project_paths,
@@ -1071,6 +1230,57 @@ def test_tampered_pending_quarantine_path_is_rejected_without_network_or_overwri
     assert outside.read_bytes() == b"operator-data"
     assert legitimate_evidence.read_bytes() == payload
     assert catalog.get(remote.asset_id).status is AssetStatus.FETCHING
+
+
+@respx.mock
+def test_pending_quarantine_cannot_reconcile_evidence_owned_by_another_asset(
+    fetcher: HttpFetcher,
+    project_paths,
+    remote_asset: RemoteAsset,
+    catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"valid-payload"
+    remote = remote_asset.model_copy(update={"expected_checksum": "0" * 64})
+    route = respx.get(remote.uri).mock(
+        return_value=httpx.Response(
+            200,
+            headers={"ETag": '"fixture-v1"'},
+            content=payload,
+        )
+    )
+    real_transition = catalog.transition
+    fail_once = True
+
+    def failing_transition(record_id=None, target=None, **updates):
+        nonlocal fail_once
+        if target is AssetStatus.QUARANTINED and fail_once:
+            fail_once = False
+            raise RuntimeError("fixture quarantine catalog failure")
+        return real_transition(record_id, target, **updates)
+
+    monkeypatch.setattr(catalog, "transition", failing_transition)
+    with pytest.raises(RuntimeError, match="quarantine catalog failure"):
+        fetcher.fetch(remote, "run-cross-asset-pending")
+
+    state_path = next((project_paths.catalog / "download_state").glob("*.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    other_asset_hash = hashlib.sha256(b"fixture-other-asset").hexdigest()
+    other_asset_dir = project_paths.raw / "_quarantine" / other_asset_hash
+    other_asset_dir.mkdir(parents=True)
+    other_evidence = other_asset_dir / "payload.bin.partial.other-owner"
+    other_evidence.write_bytes(payload)
+    state["pending_quarantine_path"] = str(other_evidence.resolve())
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    fetching = catalog.get(remote.asset_id)
+    calls_before = route.call_count
+
+    with pytest.raises(ExistingAssetConflict, match="evidence ownership"):
+        fetcher.fetch(remote, "run-cross-asset-reconcile")
+
+    assert route.call_count == calls_before
+    assert catalog.get(remote.asset_id) == fetching
+    assert other_evidence.read_bytes() == payload
 
 
 @respx.mock
@@ -1666,3 +1876,43 @@ def test_redaction_filter_stops_authorization_at_multiline_header_boundary() -> 
     assert "fixture-google" not in rendered
     assert "X-Safe: kept" in rendered
     assert "safe=yes" in rendered
+
+
+@pytest.mark.parametrize(
+    "message,expected,secret",
+    [
+        (
+            (
+                "{'Authorization': 'Digest fixture-dict-secret;fixture-suffix', "
+                "'safe': 'kept'}"
+            ),
+            "{'Authorization': '[REDACTED]', 'safe': 'kept'}",
+            "fixture-dict-secret",
+        ),
+        (
+            '{"Authorization": "Basic fixture-json-secret", "safe": "kept"}',
+            '{"Authorization": "[REDACTED]", "safe": "kept"}',
+            "fixture-json-secret",
+        ),
+        (
+            '{"Authorization": "FixtureScheme fixture-custom-secret", "safe": "kept"}',
+            '{"Authorization": "[REDACTED]", "safe": "kept"}',
+            "fixture-custom-secret",
+        ),
+    ],
+    ids=["python-dict-digest", "json-basic", "json-custom-scheme"],
+)
+def test_redaction_filter_handles_quoted_mapping_authorization_fields(
+    message: str,
+    expected: str,
+    secret: str,
+) -> None:
+    record = logging.LogRecord(
+        "fixture", logging.ERROR, __file__, 1, message, (), None
+    )
+
+    assert SecretRedactionFilter().filter(record)
+
+    assert secret not in record.getMessage()
+    assert "fixture-suffix" not in record.getMessage()
+    assert record.getMessage() == expected
