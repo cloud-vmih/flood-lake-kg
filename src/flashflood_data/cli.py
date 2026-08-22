@@ -11,7 +11,7 @@ import typer
 
 from flashflood_data.catalog import AssetCatalog
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
-from flashflood_data.models import RunRecord
+from flashflood_data.models import AssetStatus, RunRecord
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.sources.base import SourceContext
 from flashflood_data.sources.existing import inventory_existing
@@ -46,23 +46,33 @@ def inventory(
             config_fingerprint=sha256(config_body.encode("utf-8")).hexdigest(),
         )
     )
-    context = SourceContext(
-        paths=paths,
-        catalog=catalog,
-        study_area=study_area,
-        environment=EnvironmentSettings(_env_file=paths.root / ".env"),
-        run_id=run_id,
-    )
     try:
+        context = SourceContext(
+            paths=paths,
+            catalog=catalog,
+            study_area=study_area,
+            environment=EnvironmentSettings(_env_file=paths.root / ".env"),
+            run_id=run_id,
+        )
         records = inventory_existing(context, rehash=rehash)
-    except BaseException:
+        report = json.loads((paths.catalog / "inventory.json").read_text(encoding="utf-8"))
+        if not isinstance(report, dict) or type(report.get("asset_count")) is not int:
+            raise ValueError("inventory report has no integer asset_count")
+        if report["asset_count"] != len(records):
+            raise ValueError("inventory report count does not match registered records")
+        if any(record.status is AssetStatus.FAILED for record in records):
+            raise ValueError("one or more inventory assets failed validation")
+        typer.echo(json.dumps(report, sort_keys=True))
+    except Exception as exc:
         catalog.end_run(run_id, "failed", datetime.now(UTC))
-        raise
+        typer.echo(
+            json.dumps(
+                {"error_code": "inventory_failed", "stage": "inventory", "status": "failed"}
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
     catalog.end_run(run_id, "succeeded", datetime.now(UTC))
-    report = json.loads((paths.catalog / "inventory.json").read_text(encoding="utf-8"))
-    if report["asset_count"] != len(records):
-        raise RuntimeError("inventory report count does not match registered records")
-    typer.echo(json.dumps(report, sort_keys=True))
 
 
 @app.command()

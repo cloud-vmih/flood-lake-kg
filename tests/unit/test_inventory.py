@@ -4,6 +4,7 @@ import re
 import zipfile
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from openpyxl import Workbook
 
@@ -122,11 +123,19 @@ def test_inventory_registers_discovered_then_validated_and_writes_deterministic_
 
     records = inventory_existing(context, rules=(_rule(),))
     first_report = (context.paths.catalog / "inventory.json").read_bytes()
-    inventory_existing(context, rules=(_rule(),))
+    replay_context = SourceContext(
+        paths=context.paths,
+        catalog=context.catalog,
+        study_area=context.study_area,
+        environment=context.environment,
+        run_id="fixture-inventory-replay",
+    )
+    replayed = inventory_existing(replay_context, rules=(_rule(),))
     second_report = (context.paths.catalog / "inventory.json").read_bytes()
 
     assert records[0].status is AssetStatus.VALIDATED
-    assert observed[:2] == [AssetStatus.DISCOVERED, AssetStatus.VALIDATED]
+    assert replayed == records
+    assert observed == [AssetStatus.DISCOVERED, AssetStatus.VALIDATED]
     assert context.catalog.get(records[0].asset_id).status is AssetStatus.VALIDATED
     assert first_report == second_report
     assert json.loads(first_report) == {
@@ -223,3 +232,196 @@ def test_workbook_validation_streams_rows_when_dimension_metadata_is_absent(
 
     assert result.passed
     assert result.metrics["workbook_data_rows"] == 2
+
+
+def test_inventory_rejects_primary_symlink_escape_before_hash_or_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _context(tmp_path)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"external")
+    link = context.paths.dataset / "legacy" / "escape.bin"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    from flashflood_data import inventory
+
+    hashed: list[Path] = []
+    opened: list[Path] = []
+    real_hash = inventory.sha256_file
+    real_open = Path.open
+
+    def recording_hash(path: Path) -> str:
+        hashed.append(path)
+        return real_hash(path)
+
+    def guarded_open(path: Path, *args, **kwargs):
+        if path.resolve() == outside.resolve():
+            opened.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(inventory, "sha256_file", recording_hash)
+    monkeypatch.setattr(Path, "open", guarded_open)
+
+    with pytest.raises(RuntimeError, match="escapes dataset"):
+        inventory_existing(context, rules=(_rule("legacy/escape.bin"),))
+
+    assert hashed == []
+    assert opened == []
+    assert pd.read_parquet(context.catalog.assets_path).empty
+    assert not (context.paths.catalog / "inventory-cache.json").exists()
+
+
+def test_inventory_rejects_bundle_member_symlink_escape_before_any_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _context(tmp_path)
+    primary = context.paths.dataset / "legacy" / "bundle.shp"
+    primary.parent.mkdir(parents=True)
+    primary.write_bytes(b"\x00\x00\x27\x0a")
+    outside = tmp_path / "outside.dbf"
+    outside.write_bytes(b"external-sidecar")
+    primary.with_suffix(".dbf").symlink_to(outside)
+    from flashflood_data import inventory
+
+    hashed: list[Path] = []
+    opened: list[Path] = []
+    real_hash = inventory.sha256_file
+    real_open = Path.open
+
+    def recording_hash(path: Path) -> str:
+        hashed.append(path)
+        return real_hash(path)
+
+    def guarded_open(path: Path, *args, **kwargs):
+        if path.resolve() == outside.resolve():
+            opened.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(inventory, "sha256_file", recording_hash)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    rule = _rule(
+        "legacy/bundle.shp",
+        media_type="application/x-esri-shapefile",
+        suffixes=(".shp", ".dbf"),
+    )
+
+    with pytest.raises(RuntimeError, match="escapes dataset"):
+        inventory_existing(context, rules=(rule,))
+
+    assert hashed == []
+    assert opened == []
+    assert pd.read_parquet(context.catalog.assets_path).empty
+
+
+def test_inventory_rejects_changed_content_without_overwriting_catalog(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    payload = context.paths.dataset / "legacy" / "stable.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"first")
+    original = inventory_existing(context, rules=(_rule("legacy/stable.bin"),))[0]
+    payload.write_bytes(b"other")
+
+    with pytest.raises(RuntimeError, match="conflicting existing inventory asset"):
+        inventory_existing(context, rules=(_rule("legacy/stable.bin"),), rehash=True)
+
+    assert context.catalog.get(original.asset_id) == original
+
+
+def test_inventory_preserves_matching_quarantined_catalog_row(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    payload = context.paths.dataset / "legacy" / "quarantined.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"stable")
+    original = inventory_existing(context, rules=(_rule("legacy/quarantined.bin"),))[0]
+    quarantined = original.model_copy(update={"status": AssetStatus.QUARANTINED})
+    context.catalog.upsert(quarantined)
+
+    with pytest.raises(RuntimeError, match="quarantined existing inventory asset"):
+        inventory_existing(context, rules=(_rule("legacy/quarantined.bin"),))
+
+    assert context.catalog.get(original.asset_id) == quarantined
+
+
+@pytest.mark.parametrize("location", ["header", "record"])
+def test_csv_validation_rejects_oversize_header_or_record(tmp_path: Path, location: str) -> None:
+    path = tmp_path / "oversize.csv"
+    oversized = "x" * (1024 * 1024 + 1)
+    body = f"{oversized}\n1\n" if location == "header" else f"column\n{oversized}\n"
+    path.write_text(body, encoding="utf-8")
+
+    result = validate_known_format(path, "text/csv", (path,))
+
+    assert not result.passed
+
+
+def test_python_validation_rejects_oversize_source(tmp_path: Path) -> None:
+    path = tmp_path / "oversize.py"
+    path.write_bytes(b"#" * (1024 * 1024 + 1))
+
+    result = validate_known_format(path, "text/x-python", (path,))
+
+    assert not result.passed
+
+
+def test_csv_validation_rejects_malformed_quoted_record(tmp_path: Path) -> None:
+    path = tmp_path / "malformed.csv"
+    path.write_text('column\n"unterminated', encoding="utf-8")
+
+    result = validate_known_format(path, "text/csv", (path,))
+
+    assert not result.passed
+
+
+def test_malformed_xlsx_xml_transitions_catalog_record_to_failed(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    source = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["header"])
+    workbook.save(source)
+    malformed = context.paths.dataset / "legacy" / "malformed.xlsx"
+    malformed.parent.mkdir(parents=True)
+    with (
+        zipfile.ZipFile(source) as archive,
+        zipfile.ZipFile(malformed, "w", compression=zipfile.ZIP_DEFLATED) as destination,
+    ):
+        for member in archive.infolist():
+            body = archive.read(member.filename)
+            if member.filename == "xl/worksheets/sheet1.xml":
+                body = b"<worksheet><broken>"
+            destination.writestr(member, body)
+
+    records = inventory_existing(
+        context,
+        rules=(
+            _rule(
+                "legacy/malformed.xlsx",
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                suffixes=(".xlsx",),
+            ),
+        ),
+    )
+
+    assert records[0].status is AssetStatus.FAILED
+    assert context.catalog.get(records[0].asset_id).status is AssetStatus.FAILED
+
+
+@pytest.mark.parametrize("signature", [b"MM\x00*", b"MM\x00+"])
+def test_tiff_validation_accepts_big_endian_signatures(tmp_path: Path, signature: bytes) -> None:
+    path = tmp_path / "big-endian.tif"
+    path.write_bytes(signature + b"fixture")
+
+    assert validate_known_format(path, "image/tiff", (path,)).passed
+
+
+def test_validation_accepts_valid_zip_csv_and_python(tmp_path: Path) -> None:
+    archive = tmp_path / "valid.zip"
+    with zipfile.ZipFile(archive, "w") as destination:
+        destination.writestr("member.txt", "fixture")
+    csv_path = tmp_path / "valid.csv"
+    csv_path.write_text("column\nvalue\n", encoding="utf-8")
+    python_path = tmp_path / "valid.py"
+    python_path.write_text("value = 1\n", encoding="utf-8")
+
+    assert validate_known_format(archive, "application/zip", (archive,)).passed
+    assert validate_known_format(csv_path, "text/csv", (csv_path,)).passed
+    assert validate_known_format(python_path, "text/x-python", (python_path,)).passed

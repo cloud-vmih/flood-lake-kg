@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from typer.testing import CliRunner
 
 from flashflood_data.catalog import AssetCatalog
@@ -148,5 +149,92 @@ def test_inventory_cli_records_sanitized_run_and_supports_rehash(tmp_path: Path)
     assert (dataset / "catalog" / "inventory.json").read_bytes() == report_before
     runs = pd.read_parquet(dataset / "catalog" / "runs.parquet")
     assert set(runs["command"]) == {"inventory"}
+    assert set(runs["status"]) == {"succeeded"}
     assert str(tmp_path) not in " ".join(runs["command"])
     assert workbook.exists() and workbook.stat().st_mtime_ns == before
+
+
+@pytest.mark.parametrize("constructor", ["EnvironmentSettings", "SourceContext"])
+def test_inventory_cli_marks_run_failed_when_context_construction_fails_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, constructor: str
+) -> None:
+    def fail_construction(*args, **kwargs):
+        raise RuntimeError("fixture context construction failure")
+
+    end_statuses: list[str] = []
+    real_end_run = AssetCatalog.end_run
+
+    def recording_end_run(self, run_id, status, ended_at):
+        end_statuses.append(status)
+        return real_end_run(self, run_id, status, ended_at)
+
+    monkeypatch.setattr(f"flashflood_data.cli.{constructor}", fail_construction)
+    monkeypatch.setattr(AssetCatalog, "end_run", recording_end_run)
+
+    result = CliRunner().invoke(app, ["inventory", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    runs = pd.read_parquet(tmp_path / "dataset" / "catalog" / "runs.parquet")
+    assert runs[["command", "status"]].to_dict("records") == [
+        {"command": "inventory", "status": "failed"}
+    ]
+    assert end_statuses == ["failed"]
+
+
+@pytest.mark.parametrize("report_mode", ["missing", "malformed", "count-mismatch"])
+def test_inventory_cli_marks_run_failed_for_invalid_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_mode: str
+) -> None:
+    def fake_inventory(context, *, rehash=False):
+        report_path = context.paths.catalog / "inventory.json"
+        if report_mode == "malformed":
+            report_path.write_text("not-json", encoding="utf-8")
+        elif report_mode == "count-mismatch":
+            report_path.write_text(json.dumps({"asset_count": 1}), encoding="utf-8")
+        return []
+
+    monkeypatch.setattr("flashflood_data.cli.inventory_existing", fake_inventory)
+
+    result = CliRunner().invoke(app, ["inventory", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    runs = pd.read_parquet(tmp_path / "dataset" / "catalog" / "runs.parquet")
+    assert runs["status"].tolist() == ["failed"]
+
+
+def test_inventory_cli_fails_run_when_any_asset_fails_validation(tmp_path: Path) -> None:
+    raster = tmp_path / "dataset" / "Data" / "vnm_pop_2025_CN_100m_R2025A_v1.tif"
+    raster.parent.mkdir(parents=True)
+    raster.write_bytes(b"invalid-tiff")
+
+    result = CliRunner().invoke(app, ["inventory", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    runs = pd.read_parquet(tmp_path / "dataset" / "catalog" / "runs.parquet")
+    assert runs["status"].tolist() == ["failed"]
+    assets = pd.read_parquet(tmp_path / "dataset" / "catalog" / "assets.parquet")
+    assert assets["status"].tolist() == ["failed"]
+
+
+def test_inventory_cli_marks_run_failed_when_output_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from flashflood_data import cli
+
+    real_echo = cli.typer.echo
+    calls = 0
+
+    def fail_first_output(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("fixture output failure")
+        return real_echo(*args, **kwargs)
+
+    monkeypatch.setattr(cli.typer, "echo", fail_first_output)
+
+    result = CliRunner().invoke(app, ["inventory", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    runs = pd.read_parquet(tmp_path / "dataset" / "catalog" / "runs.parquet")
+    assert runs["status"].tolist() == ["failed"]

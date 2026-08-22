@@ -9,12 +9,54 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import BinaryIO
+from xml.etree.ElementTree import ParseError
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 from flashflood_data.catalog import sha256_file
 from flashflood_data.io_atomic import atomic_target
 from flashflood_data.models import AssetKind, AssetRecord, ValidationResult
+
+MAX_PYTHON_BYTES = 1024 * 1024
+MAX_CSV_RECORD_BYTES = 1024 * 1024
+
+
+class InventoryConflict(RuntimeError):
+    """Raised when existing paths or catalog identity are unsafe to replace."""
+
+
+class ValidationLimitExceeded(ValueError):
+    """Raised when bounded format inspection reaches its explicit ceiling."""
+
+
+class _BoundedCsvLines:
+    """Yield UTF-8 physical lines with a resettable per-record byte budget."""
+
+    def __init__(self, stream: BinaryIO, maximum_bytes: int) -> None:
+        self.stream = stream
+        self.maximum_bytes = maximum_bytes
+        self.consumed = 0
+        self.first_line = True
+
+    def __iter__(self) -> _BoundedCsvLines:
+        return self
+
+    def __next__(self) -> str:
+        remaining = self.maximum_bytes - self.consumed
+        raw = self.stream.readline(remaining + 1)
+        if not raw:
+            raise StopIteration
+        self.consumed += len(raw)
+        if self.consumed > self.maximum_bytes:
+            raise ValidationLimitExceeded("CSV record exceeds validation byte ceiling")
+        encoding = "utf-8-sig" if self.first_line else "utf-8"
+        self.first_line = False
+        return raw.decode(encoding)
+
+    def reset_record_budget(self) -> None:
+        self.consumed = 0
 
 
 @dataclass(frozen=True)
@@ -66,12 +108,13 @@ def cached_sha256(
     path: Path,
     *,
     dataset_root: Path,
+    cache_path: Path | None = None,
     old_entries: dict[str, dict[str, int | str]],
     new_entries: dict[str, dict[str, int | str]],
     rehash: bool,
 ) -> str:
     """Hash a file unless its path, size, and nanosecond mtime match the cache."""
-    relative = path.relative_to(dataset_root).as_posix()
+    relative = (cache_path or path).relative_to(dataset_root).as_posix()
     stat = path.stat()
     cached = old_entries.get(relative)
     if (
@@ -148,15 +191,40 @@ def validate_known_format(
                 workbook.close()
             checks["known_format"] = True
         elif media_type == "text/csv":
-            with path.open("r", encoding="utf-8-sig", newline="") as stream:
-                next(csv.reader(stream))
+            with path.open("rb") as stream:
+                lines = _BoundedCsvLines(stream, MAX_CSV_RECORD_BYTES)
+                previous_limit = csv.field_size_limit()
+                csv.field_size_limit(MAX_CSV_RECORD_BYTES)
+                try:
+                    reader = csv.reader(lines, strict=True)
+                    next(reader)
+                    lines.reset_record_budget()
+                    next(reader, None)
+                finally:
+                    csv.field_size_limit(previous_limit)
             checks["known_format"] = True
         elif media_type == "text/x-python":
-            compile(path.read_text(encoding="utf-8"), path.name, "exec")
+            with path.open("rb") as stream:
+                source = stream.read(MAX_PYTHON_BYTES + 1)
+            if len(source) > MAX_PYTHON_BYTES:
+                raise ValidationLimitExceeded("Python source exceeds validation byte ceiling")
+            compile(source.decode("utf-8-sig"), path.name, "exec")
             checks["known_format"] = True
         else:
             checks["known_format"] = True
-    except (OSError, UnicodeError, SyntaxError, StopIteration, ValueError, zipfile.BadZipFile):
+    except (
+        csv.Error,
+        EOFError,
+        InvalidFileException,
+        KeyError,
+        OSError,
+        ParseError,
+        StopIteration,
+        SyntaxError,
+        UnicodeError,
+        ValueError,
+        zipfile.BadZipFile,
+    ):
         return ValidationResult(
             passed=False,
             checks=checks,
