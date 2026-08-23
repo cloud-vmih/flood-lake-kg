@@ -56,7 +56,13 @@ def build_study_areas(
     )
 
 
-def write_study_areas(areas: StudyAreas, output_dir: Path, storage_crs: str = "EPSG:4326") -> list[Path]:
+def write_study_areas(
+    areas: StudyAreas,
+    output_dir: Path,
+    storage_crs: str = "EPSG:4326",
+    *,
+    include_core: bool = True,
+) -> list[Path]:
     """Persist one deterministic GeoParquet file for every canonical AOI."""
     layers = {
         "core_aoi": areas.core,
@@ -66,6 +72,8 @@ def write_study_areas(areas: StudyAreas, output_dir: Path, storage_crs: str = "E
     }
     paths: list[Path] = []
     for name, geometry in layers.items():
+        if name == "core_aoi" and not include_core:
+            continue
         path = output_dir / f"{name}.geoparquet"
         layer = gpd.GeoDataFrame({"aoi": [name]}, geometry=[geometry], crs=storage_crs)
         paths.append(write_geoparquet(layer, path, storage_crs))

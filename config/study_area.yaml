@@ -10,6 +10,7 @@ minimum_free_gib: 10
 admin_expected_count: 75
 admin_expected_communes: 67
 admin_expected_wards: 8
+historical_event_expected_count: 30
 admin_gap_overlap_max_pct: 0.1
 legal_area_diff_max_pct: 2.0
 commune_basin_coverage_min_pct: 99.5

@@ -142,7 +142,12 @@ def harmonize_hydro(
     hierarchy = build_basin_hierarchy(selected, gpd.read_file(source.l9), gpd.read_file(source.l8))
 
     hydro_dir = paths.harmonized / "hydro"
-    aoi_paths = write_study_areas(study_areas, paths.harmonized / "aoi")
+    aoi_dir = paths.harmonized / "aoi"
+    aoi_paths = write_study_areas(
+        study_areas,
+        aoi_dir,
+        include_core=not (aoi_dir / "core_aoi.geoparquet").is_file(),
+    )
     selected_path = write_geoparquet(selected, hydro_dir / "subbasin_l10.geoparquet")
     hierarchy_path = _write_parquet(hierarchy, hydro_dir / "subbasin_hierarchy.parquet")
 

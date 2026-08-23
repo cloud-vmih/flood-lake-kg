@@ -986,7 +986,8 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
     ]
 
 
-def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
+def _event_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckResult]:
+    expected_count = config.historical_event_expected_count
     path = paths.harmonized / "events" / "historical_flood_event_2020_2026.parquet"
     if not path.is_file():
         return [
@@ -994,7 +995,7 @@ def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
                 "events.historical.matching",
                 False,
                 "fatal",
-                "30 rows with legal match status and confidence",
+                f"{expected_count} rows with legal match status and confidence",
                 "missing",
                 "historical event evidence is missing",
             ),
@@ -1014,7 +1015,7 @@ def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
             events.get("match_confidence", pd.Series(dtype="float64")), errors="coerce"
         )
         valid = (
-            len(events) == 30
+            len(events) == expected_count
             and statuses.isin(_EVENT_STATUSES).all()
             and confidence.between(0, 1).all()
         )
@@ -1024,7 +1025,7 @@ def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
                 "events.historical.matching",
                 valid,
                 "fatal",
-                "30 rows with legal match status and confidence",
+                f"{expected_count} rows with legal match status and confidence",
                 f"{len(events)} rows / {int(statuses.isin(_EVENT_STATUSES).sum())} legal statuses",
                 "historical evidence legal-administration replay",
             ),
@@ -1043,7 +1044,7 @@ def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
                 "events.historical.matching",
                 False,
                 "fatal",
-                "30 rows with legal match status and confidence",
+                f"{expected_count} rows with legal match status and confidence",
                 type(error).__name__,
                 "historical event evidence is unreadable",
             ),
@@ -1176,7 +1177,7 @@ def run_quality_gates(paths: ProjectPaths, config: StudyAreaConfig) -> QAReport:
         *contained("mapping", lambda: _mapping_checks(paths)),
         *contained("raster", lambda: _raster_checks(paths, config)),
         *contained("population", lambda: _population_checks(paths)),
-        *contained("events", lambda: _event_checks(paths)),
+        *contained("events", lambda: _event_checks(paths, config)),
         *contained("raw", lambda: _provenance_checks(paths, config)),
     ]
     ordered = tuple(sorted(checks, key=lambda check: check.check_id))
@@ -1209,9 +1210,14 @@ def task17_qa_handler(
             publish_qa_map(pipeline.paths, pipeline.paths.qa),
         ]
         source = pipeline.source_specs[source_id]
+
+        def asset_suffix(path: Path) -> str:
+            relative = path.relative_to(pipeline.paths.qa)
+            return "-".join((*relative.parent.parts, relative.stem, relative.suffix[1:]))
+
         records = [
             AssetRecord(
-                asset_id=f"task17-qa-{path.stem}",
+                asset_id=f"task17-qa-{asset_suffix(path)}",
                 source_id=source.source_id,
                 source_version=source.version,
                 kind=AssetKind.QA,

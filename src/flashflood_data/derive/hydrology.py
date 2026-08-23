@@ -62,7 +62,9 @@ def derive_hydrology_features(
     with rasterio.open(dem_source) if dem_source is not None else _NoDem() as dataset:
         for basin in selected.itertuples(index=False):
             clipped = metric_rivers.geometry.intersection(basin.geometry)
-            clipped = clipped.loc[clipped.notna() & ~clipped.is_empty]
+            clipped = clipped.loc[
+                [geometry is not None and not geometry.is_empty for geometry in clipped]
+            ]
             lengths = clipped.length
             total_length_m = float(lengths.sum())
             area_km2 = float(basin.geometry.area / 1_000_000)

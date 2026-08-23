@@ -22,6 +22,7 @@ class StudyAreaConfig(BaseModel):
     admin_expected_count: int = 75
     admin_expected_communes: int = 67
     admin_expected_wards: int = 8
+    historical_event_expected_count: int = Field(default=30, ge=0)
     admin_gap_overlap_max_pct: float = 0.1
     legal_area_diff_max_pct: float = 2.0
     commune_basin_coverage_min_pct: float = 99.5

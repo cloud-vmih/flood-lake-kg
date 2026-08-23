@@ -133,7 +133,12 @@ class StaticPipeline:
             StorageBudget.from_config(self.paths.dataset, self.study_area),
             environment=self.environment,
         )
-        self._stage_handlers: dict[Stage, StageHandler] = dict(stage_handlers or {})
+        if stage_handlers is None:
+            from flashflood_data.composition import default_stage_handlers
+
+            self._stage_handlers = dict(default_stage_handlers())
+        else:
+            self._stage_handlers = dict(stage_handlers)
         self._latest_hydro_metrics: dict[str, int] = {}
 
     def register_stage_handler(self, stage: Stage, handler: StageHandler) -> None:
@@ -250,7 +255,12 @@ class StaticPipeline:
         l10 = gpd.read_file(default_hydro_inputs(self.paths).l10)
         selected = select_l10_with_upstream(l10, core, hops=self.study_area.upstream_hops)
         areas = build_study_areas(core, selected, vietnam, self.study_area)
-        write_study_areas(areas, self.paths.harmonized / "aoi", self.study_area.storage_crs)
+        write_study_areas(
+            areas,
+            self.paths.harmonized / "aoi",
+            self.study_area.storage_crs,
+            include_core=False,
+        )
         summary.metrics.update({"selected_l10": len(selected)})
         self._run_handler(Stage.AOI, "aoi", context, summary)
 
@@ -435,6 +445,7 @@ class StaticPipeline:
             if item.source_id == source_id
             and item.source_version == self.source_specs[source_id].version
             and item.kind is not AssetKind.RAW
+            and not item.asset_id.startswith(("task15-", "task16-", "task17-"))
             and item.dependency_fingerprint == fingerprint
             and item.status in {AssetStatus.HARMONIZED, AssetStatus.DERIVED}
             and self._checksum_matches(item)
@@ -442,7 +453,9 @@ class StaticPipeline:
         output_candidates = [
             item
             for item in self._assets()
-            if item.source_id == source_id and item.kind is not AssetKind.RAW
+            if item.source_id == source_id
+            and item.kind is not AssetKind.RAW
+            and not item.asset_id.startswith(("task15-", "task16-", "task17-"))
         ]
         if existing and len(existing) == len(output_candidates):
             summary.reused += 1
@@ -559,6 +572,8 @@ class StaticPipeline:
         if handler is None:
             return
         outputs = handler(self, stage, source_id, context)
+        for output in outputs:
+            self.catalog.upsert(output)
         if stage is Stage.DERIVE:
             summary.derived += len(outputs)
 
