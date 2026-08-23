@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import geopandas as gpd
@@ -9,10 +10,14 @@ from shapely.geometry import LineString, box
 from typer.testing import CliRunner
 
 from flashflood_data.aoi import build_study_areas
+from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.cli import app
 from flashflood_data.config import StudyAreaConfig
 from flashflood_data.harmonize.hydro import HydroInputPaths, harmonize_hydro
+from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.paths import ProjectPaths
+from flashflood_data.pipeline import Stage, StaticPipeline
+from flashflood_data.registry import load_source_specs
 
 
 def test_harmonize_hydro_writes_deterministic_scope_and_hydro_products(
@@ -99,3 +104,105 @@ def test_harmonize_cli_uses_standard_hydrobasins_not_lake_sample(project_paths: 
 
     assert result.exit_code == 0, result.stdout
     assert '"selected_l10": 2' in result.stdout
+
+
+def test_three_hydro_source_specs_build_one_checksum_stable_composite(
+    project_paths: ProjectPaths,
+) -> None:
+    """The three real source passes must share one stable composite owner."""
+    fixtures = Path(__file__).parents[1] / "fixtures" / "hydro"
+    raw = project_paths.dataset / "hybas_as_lev01-12_v1c"
+    raw.mkdir(parents=True)
+    hydro_paths: list[Path] = []
+    for level in (8, 9, 10):
+        target = raw / f"hybas_as_lev{level:02d}_v1c.shp"
+        gpd.read_file(fixtures / f"basins_l{level}.geojson").to_file(target)
+        hydro_paths.append(target)
+    atlas_dir = project_paths.dataset / "BasinATLAS_Data_v10_shp" / "BasinATLAS_v10_shp"
+    river_dir = project_paths.dataset / "HydroRIVERS_v10_as_shp" / "HydroRIVERS_v10_as_shp"
+    atlas_dir.mkdir(parents=True)
+    river_dir.mkdir(parents=True)
+    l10 = gpd.read_file(fixtures / "basins_l10.geojson")
+    atlas = atlas_dir / "BasinATLAS_v10_lev10.shp"
+    rivers = river_dir / "HydroRIVERS_v10_as.shp"
+    l10.to_file(atlas)
+    gpd.GeoDataFrame(
+        {"HYRIV_ID": [1]},
+        geometry=[LineString([(102.95, 20.05), (103.25, 20.05)])],
+        crs="EPSG:4326",
+    ).to_file(rivers)
+    (project_paths.harmonized / "aoi").mkdir(parents=True)
+    (project_paths.harmonized / "admin").mkdir(parents=True)
+    gpd.GeoDataFrame(
+        geometry=[box(103.01, 20.01, 103.09, 20.09)], crs="EPSG:4326"
+    ).to_parquet(project_paths.harmonized / "aoi" / "core_aoi.geoparquet", index=False)
+    gpd.GeoDataFrame(
+        geometry=[box(103.0, 20.0, 103.15, 20.15)], crs="EPSG:4326"
+    ).to_parquet(
+        project_paths.harmonized / "admin" / "vietnam_boundary.geoparquet", index=False
+    )
+    catalog = AssetCatalog(project_paths)
+    raw_families = {
+        "hydrobasins_v1c": ("1c", hydro_paths),
+        "basinatlas_v10": ("10", [atlas]),
+        "hydrorivers_v10": ("10", [rivers]),
+    }
+    for source_id, (version, paths) in raw_families.items():
+        for index, path in enumerate(paths):
+            catalog.upsert(
+                AssetRecord(
+                    asset_id=f"raw-{source_id}-{index}",
+                    source_id=source_id,
+                    source_version=version,
+                    kind=AssetKind.RAW,
+                    source_uri=f"https://fixture.invalid/{source_id}/{index}",
+                    storage_path=str(path),
+                    media_type="application/x-esri-shapefile",
+                    size_bytes=path.stat().st_size,
+                    checksum=sha256_file(path),
+                    retrieved_at=datetime(2026, 8, 21, tzinfo=UTC),
+                    license_id="fixture-license",
+                    pipeline_run_id="hydro-fixture",
+                    status=AssetStatus.VALIDATED,
+                )
+            )
+    configured = load_source_specs(Path(__file__).parents[2] / "config" / "sources")
+    specs = {source_id: configured[source_id] for source_id in raw_families}
+    pipeline = StaticPipeline(project_paths, source_specs=specs, stage_handlers={})
+
+    first = pipeline.run([Stage.HARMONIZE])
+    before = {
+        path.relative_to(project_paths.dataset).as_posix(): sha256_file(path)
+        for path in project_paths.harmonized.rglob("*")
+        if path.is_file()
+    }
+    second = pipeline.run([Stage.HARMONIZE])
+
+    assert first.harmonized == 7
+    assert second.harmonized == 0
+    assert before == {
+        path.relative_to(project_paths.dataset).as_posix(): sha256_file(path)
+        for path in project_paths.harmonized.rglob("*")
+        if path.is_file()
+    }
+
+    gpd.GeoDataFrame(
+        {"HYRIV_ID": [1, 2]},
+        geometry=[
+            LineString([(102.95, 20.05), (103.25, 20.05)]),
+            LineString([(103.00, 20.06), (103.20, 20.06)]),
+        ],
+        crs="EPSG:4326",
+    ).to_file(rivers)
+    river_record = catalog.get("raw-hydrorivers_v10-0")
+    catalog.upsert(
+        river_record.model_copy(
+            update={"checksum": sha256_file(rivers), "size_bytes": rivers.stat().st_size}
+        )
+    )
+
+    changed = pipeline.run([Stage.HARMONIZE])
+    steady = pipeline.run([Stage.HARMONIZE])
+
+    assert changed.harmonized == 7
+    assert steady.harmonized == 0

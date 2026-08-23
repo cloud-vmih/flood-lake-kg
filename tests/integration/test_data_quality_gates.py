@@ -7,7 +7,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.cli import app
+from flashflood_data.paths import ProjectPaths
 from tests.fixtures.static_pipeline.build_fixture_lake import (
     build_fixture_lake,
     isolate_external_boundaries,
@@ -30,3 +32,14 @@ def test_broken_fixture_fails_qa_after_publishing_report(tmp_path: Path, monkeyp
     )
     assert event_gate["severity"] == "fatal"
     assert not event_gate["passed"]
+    qa_assets = [
+        asset
+        for asset in AssetCatalog(ProjectPaths.discover(tmp_path))._read_assets()
+        if asset.asset_id.startswith("task17-qa-")
+    ]
+    assert len(qa_assets) == 15
+    assert all(
+        Path(asset.storage_path).is_file()
+        and asset.checksum == sha256_file(Path(asset.storage_path))
+        for asset in qa_assets
+    )

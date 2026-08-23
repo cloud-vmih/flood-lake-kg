@@ -1201,19 +1201,29 @@ def task17_qa_handler(
             raise ValueError("Task 17 handler can only run at the qa stage")
         if source_id != owner_source_id:
             return []
-        from flashflood_data.qa.map import publish_qa_map
+        from flashflood_data.qa.map import QA_MAP_BUNDLE_RELATIVE_PATHS, publish_qa_map
         from flashflood_data.qa.report import publish_report
 
         report = run_quality_gates(pipeline.paths, context.study_area)
+        publish_qa_map(pipeline.paths, pipeline.paths.qa)
         outputs = [
             *publish_report(report, pipeline.paths.qa),
-            publish_qa_map(pipeline.paths, pipeline.paths.qa),
+            *(pipeline.paths.qa / relative for relative in QA_MAP_BUNDLE_RELATIVE_PATHS),
         ]
         source = pipeline.source_specs[source_id]
 
         def asset_suffix(path: Path) -> str:
             relative = path.relative_to(pipeline.paths.qa)
             return "-".join((*relative.parent.parts, relative.stem, relative.suffix[1:]))
+
+        def media_type(path: Path) -> str:
+            return {
+                ".geojson": "application/geo+json",
+                ".html": "text/html",
+                ".json": "application/json",
+                ".parquet": "application/vnd.apache.parquet",
+                ".png": "image/png",
+            }[path.suffix]
 
         records = [
             AssetRecord(
@@ -1223,11 +1233,7 @@ def task17_qa_handler(
                 kind=AssetKind.QA,
                 source_uri="generated:task17-static-qa",
                 storage_path=str(path),
-                media_type="text/html"
-                if path.suffix == ".html"
-                else "application/vnd.apache.parquet"
-                if path.suffix == ".parquet"
-                else "application/json",
+                media_type=media_type(path),
                 size_bytes=path.stat().st_size,
                 checksum=sha256_file(path),
                 retrieved_at=datetime.now(UTC),
@@ -1237,6 +1243,8 @@ def task17_qa_handler(
             )
             for path in outputs
         ]
+        for record in records:
+            pipeline.catalog.upsert(record)
         if report.fatal_failures:
             raise QualityGateFailure("fatal quality gates failed after publishing QA artifacts")
         return records

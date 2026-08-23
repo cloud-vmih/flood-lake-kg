@@ -44,6 +44,20 @@ _RASTERS = {
     "worldcover": "harmonized/rasters/worldcover_2021.tif",
     "worldpop": "harmonized/rasters/worldpop_2025.tif",
 }
+QA_MAP_BUNDLE_RELATIVE_PATHS = (
+    Path("map/data/bridges.geojson"),
+    Path("map/data/communes.geojson"),
+    Path("map/data/facilities.geojson"),
+    Path("map/data/rivers.geojson"),
+    Path("map/data/roads.geojson"),
+    Path("map/data/settlements.geojson"),
+    Path("map/data/subbasins_l10.geojson"),
+    Path("map/previews/dem.png"),
+    Path("map/previews/worldcover.png"),
+    Path("map/previews/worldpop.png"),
+    Path("map/layer-manifest.json"),
+    Path("map/index.html"),
+)
 _MAPPING_DEFINITIONS = {
     "communes": ("commune", ("current_commune_code",)),
     "subbasins_l10": ("population", ("HYBAS_ID",)),

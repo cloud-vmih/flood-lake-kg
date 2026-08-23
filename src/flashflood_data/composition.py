@@ -16,6 +16,7 @@ from flashflood_data.derive.profile import Task16MapInputs, task16_map_handler
 from flashflood_data.derive.static import StaticPredictorInputs, task15_derive_handler
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.qa.checks import task17_qa_handler
+from flashflood_data.qa.map import QA_MAP_BUNDLE_RELATIVE_PATHS
 
 _PREFERRED_OWNER = "worldpop_vnm_2025"
 _COMPOSITION_VERSION = "task19-v1"
@@ -30,12 +31,20 @@ _TASK16_OUTPUTS = {
     },
     "task16-subbasin-static-feature": "subbasin_static_feature.geoparquet",
 }
-_QA_OUTPUTS = {
-    "task17-qa-report-html": Path("report.html"),
-    "task17-qa-report-json": Path("report.json"),
-    "task17-qa-report-parquet": Path("report.parquet"),
-    "task17-qa-map-index-html": Path("map/index.html"),
-}
+_QA_RELATIVE_OUTPUTS = (
+    Path("report.html"),
+    Path("report.json"),
+    Path("report.parquet"),
+    *QA_MAP_BUNDLE_RELATIVE_PATHS,
+)
+
+
+def _qa_asset_id(relative: Path) -> str:
+    suffix = "-".join((*relative.parent.parts, relative.stem, relative.suffix[1:]))
+    return f"task17-qa-{suffix}"
+
+
+_QA_OUTPUTS = {_qa_asset_id(relative): relative for relative in _QA_RELATIVE_OUTPUTS}
 
 
 def _owner_source_id(pipeline: Any) -> str | None:

@@ -8,7 +8,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.cli import app
+from flashflood_data.paths import ProjectPaths
 from tests.fixtures.static_pipeline.build_fixture_lake import (
     build_fixture_lake,
     isolate_external_boundaries,
@@ -44,3 +46,26 @@ def test_static_pipeline_second_run_is_noop(tmp_path: Path, monkeypatch) -> None
     assert summary["harmonized"] == 0
     assert summary["derived"] == 0
     assert before == _output_checksums(tmp_path)
+
+
+def test_tampered_qa_bundle_member_forces_complete_qa_rebuild(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Checking only the map index would reuse a bundle with corrupt display data."""
+    isolate_external_boundaries(monkeypatch)
+    paths = build_fixture_lake(tmp_path)
+    runner = CliRunner()
+    first = runner.invoke(app, ["run-static", "--profile", "smoke", "--root", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+    member = paths.qa / "map" / "data" / "communes.geojson"
+    original_checksum = sha256_file(member)
+    member.write_text('{"corrupt":true}\n', encoding="utf-8")
+
+    second = runner.invoke(app, ["run-static", "--profile", "smoke", "--root", str(tmp_path)])
+
+    assert second.exit_code == 0, second.output
+    assert sha256_file(member) == original_checksum
+    record = AssetCatalog(ProjectPaths.discover(tmp_path)).get(
+        "task17-qa-map-data-communes-geojson"
+    )
+    assert record.checksum == original_checksum

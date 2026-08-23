@@ -59,6 +59,7 @@ STATIC_ORDER = (
 )
 
 _HYDRO_SOURCES = frozenset({"hydrobasins_v1c", "basinatlas_v10", "hydrorivers_v10"})
+_HYDRO_COMPOSITE_OWNER = "hydrobasins_v1c"
 _BOOTSTRAP_SOURCES = ("sonla_admin_2025", "gadm_vnm_4_1")
 _PROCESSOR_VERSION = "0.1.0"
 _CONFIGURATION_ERRORS = (
@@ -438,7 +439,18 @@ class StaticPipeline:
         self, source_id: str, context: SourceContext, summary: RunSummary
     ) -> None:
         self._ensure_validated(source_id, summary)
-        fingerprint = self._source_fingerprint(source_id, Stage.HARMONIZE)
+        if source_id in _HYDRO_SOURCES:
+            if source_id != _HYDRO_COMPOSITE_OWNER:
+                return
+            for dependency_source_id in sorted(_HYDRO_SOURCES - {source_id}):
+                if dependency_source_id not in self.source_specs:
+                    raise ValueError(
+                        f"hydro composite is missing source spec: {dependency_source_id}"
+                    )
+                self._ensure_validated(dependency_source_id, summary)
+            fingerprint = self._hydro_fingerprint()
+        else:
+            fingerprint = self._source_fingerprint(source_id, Stage.HARMONIZE)
         existing = [
             item
             for item in self._assets()
@@ -463,7 +475,7 @@ class StaticPipeline:
         for output in output_candidates:
             if output not in existing:
                 self._mark_stale(output)
-        if source_id in _HYDRO_SOURCES:
+        if source_id == _HYDRO_COMPOSITE_OWNER:
             outputs = self._harmonize_hydro(context)
         else:
             adapter = self.adapter_factory(self.source_specs[source_id])
@@ -591,6 +603,42 @@ class StaticPipeline:
             "source_settings": source.settings,
         }
         return dependency_fingerprint(checksums, config, _PROCESSOR_VERSION)
+
+    def _hydro_fingerprint(self) -> str:
+        """Fingerprint the one composite from every validated hydro raw family."""
+        raw_assets = sorted(
+            (
+                asset
+                for asset in self._assets()
+                if asset.source_id in _HYDRO_SOURCES
+                and asset.kind is AssetKind.RAW
+                and asset.status is AssetStatus.VALIDATED
+            ),
+            key=lambda asset: (asset.source_id, asset.asset_id),
+        )
+        present = {asset.source_id for asset in raw_assets}
+        if present != _HYDRO_SOURCES:
+            missing = sorted(_HYDRO_SOURCES - present)
+            raise ValueError(f"hydro composite is missing validated raw families: {missing}")
+        config = {
+            "stage": Stage.HARMONIZE.value,
+            "study_area": self.study_area.model_dump(mode="json"),
+            "sources": {
+                source_id: self.source_specs[source_id].model_dump(mode="json")
+                for source_id in sorted(_HYDRO_SOURCES)
+            },
+            "raw_assets": [
+                {
+                    "asset_id": asset.asset_id,
+                    "checksum": asset.checksum,
+                    "source_id": asset.source_id,
+                }
+                for asset in raw_assets
+            ],
+        }
+        return dependency_fingerprint(
+            (asset.checksum for asset in raw_assets), config, _PROCESSOR_VERSION
+        )
 
     def _mark_stale(self, record: AssetRecord) -> None:
         if record.status in {

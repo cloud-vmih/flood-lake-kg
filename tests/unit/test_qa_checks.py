@@ -257,6 +257,7 @@ def test_qa_handler_publishes_before_raising_for_fatal_gates(qa_paths: ProjectPa
     class Pipeline:
         def __init__(self) -> None:
             self.paths = qa_paths
+            self.catalog = AssetCatalog(qa_paths)
             self.source_specs = {
                 "owner": SourceSpec(
                     source_id="owner",
@@ -276,6 +277,13 @@ def test_qa_handler_publishes_before_raising_for_fatal_gates(qa_paths: ProjectPa
     assert (qa_paths.qa / "report.json").is_file()
     assert (qa_paths.qa / "report.parquet").is_file()
     assert (qa_paths.qa / "report.html").is_file()
+    assert len(
+        [
+            asset
+            for asset in AssetCatalog(qa_paths)._read_assets()
+            if asset.asset_id.startswith("task17-qa-")
+        ]
+    ) == 15
 
 
 def test_soilgrids_gate_enumerates_all_96_configured_products(qa_paths: ProjectPaths) -> None:
