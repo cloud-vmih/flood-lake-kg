@@ -1,0 +1,12 @@
+sources:
+  - source_id: soilgrids_2_0
+    adapter: soilgrids
+    version: "2.0"
+    license_id: CC-BY-4.0
+    settings:
+      endpoint_template: https://maps.isric.org/mapserv?map=/map/{property}.map
+      properties: [clay, sand, silt, bdod, cfvo, wv0010, wv0033, wv1500]
+      depths: [0-5cm, 5-15cm, 15-30cm, 30-60cm, 60-100cm, 100-200cm]
+      statistics: [mean, uncertainty]
+      format: GEOTIFF_INT16
+      output_crs: EPSG:4326

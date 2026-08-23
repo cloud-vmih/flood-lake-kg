@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wcs:Capabilities xmlns:wcs="http://www.opengis.net/wcs/2.0" xmlns:ows="http://www.opengis.net/ows/2.0" version="2.0.1">
+  <wcs:Contents>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_0-5cm_mean</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_0-5cm_uncertainty</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_5-15cm_mean</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_5-15cm_uncertainty</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_15-30cm_mean</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_15-30cm_uncertainty</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_30-60cm_mean</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_30-60cm_uncertainty</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_60-100cm_mean</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_60-100cm_uncertainty</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_100-200cm_mean</wcs:CoverageId></wcs:CoverageSummary>
+    <wcs:CoverageSummary><wcs:CoverageId>wv0033_100-200cm_uncertainty</wcs:CoverageId></wcs:CoverageSummary>
+  </wcs:Contents>
+</wcs:Capabilities>

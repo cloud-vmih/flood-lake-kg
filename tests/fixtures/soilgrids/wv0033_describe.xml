@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wcs:CoverageDescriptions xmlns:wcs="http://www.opengis.net/wcs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" version="2.0.1">
+  <wcs:CoverageDescription>
+    <gml:boundedBy>
+      <gml:Envelope srsName="EPSG:4326" axisLabels="Long Lat">
+        <gml:lowerCorner>-180 -90</gml:lowerCorner>
+        <gml:upperCorner>180 90</gml:upperCorner>
+      </gml:Envelope>
+    </gml:boundedBy>
+    <wcs:ServiceParameters>
+      <wcs:CoverageSubtype>RectifiedGridCoverage</wcs:CoverageSubtype>
+    </wcs:ServiceParameters>
+  </wcs:CoverageDescription>
+</wcs:CoverageDescriptions>
