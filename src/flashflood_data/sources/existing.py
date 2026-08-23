@@ -5,10 +5,21 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Final
 
+import geopandas as gpd
+import pandas as pd
+import rasterio
+
+from flashflood_data.catalog import sha256_bundle, sha256_file
+from flashflood_data.harmonize.exposure import (
+    harmonize_worldpop,
+    read_historical_events,
+    resolve_event_administration,
+)
 from flashflood_data.inventory import (
     InventoryConflict,
     InventoryRule,
@@ -21,6 +32,7 @@ from flashflood_data.inventory import (
     validate_known_format,
     write_json_atomic,
 )
+from flashflood_data.io_atomic import atomic_target
 from flashflood_data.models import (
     AssetKind,
     AssetRecord,
@@ -358,4 +370,114 @@ class ExistingAdapter(SourceAdapter):
         return validate_known_format(path, media_type, (path,))
 
     def harmonize(self, context: SourceContext, assets: list[AssetRecord]) -> list[AssetRecord]:
-        return list(assets)
+        """Harmonize the two registered exposure sources and leave unrelated inventory untouched."""
+        outputs: list[AssetRecord] = []
+        if any(asset.source_id == "worldpop_vnm_2025" for asset in assets):
+            outputs.append(self._harmonize_worldpop(context, assets))
+        if any(asset.source_id == "historical_flood_evidence_2020_2026" for asset in assets):
+            outputs.append(self._harmonize_historical_events(context, assets))
+        return outputs or list(assets)
+
+    @staticmethod
+    def _canonical_raw(assets: list[AssetRecord], source_id: str, suffix: str) -> AssetRecord:
+        candidates = sorted(
+            (
+                asset
+                for asset in assets
+                if asset.source_id == source_id
+                and asset.kind is AssetKind.RAW
+                and asset.status is AssetStatus.VALIDATED
+                and asset.duplicate_of_asset_id is None
+                and Path(asset.storage_path).suffix.lower() == suffix
+            ),
+            key=lambda asset: (asset.storage_path, asset.asset_id),
+        )
+        if len(candidates) != 1:
+            raise ValueError(f"expected exactly one canonical validated {source_id} raw asset")
+        return candidates[0]
+
+    def _harmonize_worldpop(self, context: SourceContext, assets: list[AssetRecord]) -> AssetRecord:
+        raw = self._canonical_raw(assets, "worldpop_vnm_2025", ".tif")
+        raw_path = Path(raw.storage_path)
+        validation = self.validate_raw(raw_path)
+        if not validation.passed:
+            raise ValueError(f"WorldPop raw validation failed for {raw.asset_id}: {validation.messages}")
+        core_path = context.paths.harmonized / "aoi" / "core_aoi.geoparquet"
+        if not core_path.is_file():
+            raise ValueError("WorldPop harmonization requires the Core AOI GeoParquet")
+        core_layer = gpd.read_parquet(core_path)
+        if core_layer.empty or core_layer.crs is None:
+            raise ValueError("Core AOI GeoParquet is empty or has no CRS")
+        core = core_layer.geometry.union_all()
+        output_path = context.paths.harmonized / "rasters" / "worldpop_2025.tif"
+        harmonize_worldpop(raw_path, core, output_path)
+        with rasterio.open(raw_path) as source, rasterio.open(output_path) as output:
+            if source.crs != output.crs:
+                raise ValueError("WorldPop harmonization changed the source CRS")
+            metadata = {
+                "grid_policy": "native WorldPop grid; no reprojection or value redistribution",
+                "pixel_inclusion_policy": "pixel-center inclusion in Core AOI",
+                "source_resolution": [abs(source.transform.a), abs(source.transform.e)],
+                "source_transform": list(source.transform)[:6],
+                "source_nodata": source.nodata,
+                "output_resolution": [abs(output.transform.a), abs(output.transform.e)],
+            }
+        record = AssetRecord(
+            asset_id="worldpop-vnm-2025-harmonized",
+            source_id=raw.source_id,
+            source_version=raw.source_version,
+            kind=AssetKind.HARMONIZED,
+            source_uri="generated:worldpop-core-aoi-native-grid-clip",
+            storage_path=str(output_path),
+            media_type="image/tiff",
+            size_bytes=output_path.stat().st_size,
+            checksum=sha256_file(output_path),
+            retrieved_at=datetime.now(UTC),
+            source_valid_time=raw.source_valid_time,
+            license_id=raw.license_id,
+            pipeline_run_id=context.run_id,
+            status=AssetStatus.HARMONIZED,
+            dependency_fingerprint=sha256_bundle((raw_path, core_path)),
+            metadata_json=json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+        )
+        return context.catalog.upsert(record)
+
+    def _harmonize_historical_events(self, context: SourceContext, assets: list[AssetRecord]) -> AssetRecord:
+        raw = self._canonical_raw(assets, "historical_flood_evidence_2020_2026", ".xlsx")
+        raw_path = Path(raw.storage_path)
+        validation = self.validate_raw(raw_path)
+        if not validation.passed:
+            raise ValueError(f"historical flood evidence validation failed for {raw.asset_id}")
+        current_path = context.paths.harmonized / "admin" / "admin_commune_2025.geoparquet"
+        crosswalk_path = context.paths.derived / "mappings" / "admin_commune_crosswalk.parquet"
+        if not current_path.is_file() or not crosswalk_path.is_file():
+            raise ValueError("historical event replay requires current administration and crosswalk outputs")
+        events = resolve_event_administration(
+            read_historical_events(raw_path), gpd.read_parquet(current_path), pd.read_parquet(crosswalk_path)
+        )
+        output_path = context.paths.harmonized / "events" / "historical_flood_event_2020_2026.parquet"
+        with atomic_target(output_path) as partial:
+            events.to_parquet(partial, index=False)
+        record = AssetRecord(
+            asset_id="historical-flood-evidence-2020-2026-harmonized",
+            source_id=raw.source_id,
+            source_version=raw.source_version,
+            kind=AssetKind.HARMONIZED,
+            source_uri="generated:historical-flood-evidence-valid-time-replay",
+            storage_path=str(output_path),
+            media_type="application/vnd.apache.parquet",
+            size_bytes=output_path.stat().st_size,
+            checksum=sha256_file(output_path),
+            retrieved_at=datetime.now(UTC),
+            source_valid_time=raw.source_valid_time,
+            license_id=raw.license_id,
+            pipeline_run_id=context.run_id,
+            status=AssetStatus.HARMONIZED,
+            dependency_fingerprint=sha256_bundle((raw_path, current_path, crosswalk_path)),
+            metadata_json=json.dumps(
+                {"evidence_row_count": len(events), "event_labels_used_as_static_features": False},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        return context.catalog.upsert(record)
