@@ -67,6 +67,39 @@ def test_profile_rejects_a_missing_required_task15_basin_key() -> None:
         assemble_static_profile(_basins(), features, "run-1")
 
 
+def test_profile_rejects_event_evidence_group_to_prevent_static_label_leakage() -> None:
+    """Joining historical event labels would turn a static predictor into target leakage."""
+    features = _required_features()
+    features["events"] = pd.DataFrame({"HYBAS_ID": [1, 2], "event_type": ["flood", "flood"]})
+
+    with pytest.raises(ValueError, match="not an allowed static profile group"):
+        assemble_static_profile(_basins(), features, "run-1")
+
+
+def test_profile_fingerprint_tracks_content_and_geometry_but_not_row_order() -> None:
+    """A schema-only fingerprint would incorrectly reuse a profile after data changed."""
+    features = _required_features()
+    baseline = assemble_static_profile(_basins(), features, "run-1").dependency_fingerprint.iloc[0]
+
+    reordered = assemble_static_profile(
+        _basins().iloc[::-1], {name: table.iloc[::-1] for name, table in features.items()}, "run-1"
+    ).dependency_fingerprint.iloc[0]
+    changed_values = _required_features()
+    changed_values["terrain"].loc[0, "terrain_value"] = 99.0
+    changed_value_fingerprint = assemble_static_profile(
+        _basins(), changed_values, "run-1"
+    ).dependency_fingerprint.iloc[0]
+    changed_geometry = _basins()
+    changed_geometry.loc[changed_geometry.HYBAS_ID == 1, "geometry"] = box(104, 20, 105.5, 21)
+    changed_geometry_fingerprint = assemble_static_profile(
+        changed_geometry, _required_features(), "run-1"
+    ).dependency_fingerprint.iloc[0]
+
+    assert reordered == baseline
+    assert changed_value_fingerprint != baseline
+    assert changed_geometry_fingerprint != baseline
+
+
 def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_path) -> None:
     """Moving these products to a separate PROFILE stage would break the static stage order."""
     worldpop = tmp_path / "worldpop.tif"
@@ -87,6 +120,13 @@ def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_pa
         core=box(104, 20, 106, 21),
         worldpop=worldpop,
         feature_tables=_required_features(),
+        source_asset_ids={
+            "terrain": ("dem-harmonized",),
+            "soil": ("soilgrids-harmonized",),
+            "landcover": ("worldcover-harmonized",),
+            "hydrology": ("hydrorivers-harmonized", "basinatlas-harmonized"),
+            "population": ("worldpop-harmonized",),
+        },
     )
     handler = task16_map_handler(inputs, tmp_path / "derived", owner_source_id="worldpop")
     pipeline = type(
@@ -109,3 +149,11 @@ def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_pa
         "task16-subbasin-static-feature",
     }
     assert (tmp_path / "derived" / "subbasin_static_feature.geoparquet").is_file()
+    profile = gpd.read_parquet(tmp_path / "derived" / "subbasin_static_feature.geoparquet")
+    assert __import__("json").loads(profile.feature_group_source_asset_ids_json.iloc[0]) == {
+        "hydrology": ["hydrorivers-harmonized", "basinatlas-harmonized"],
+        "landcover": ["worldcover-harmonized"],
+        "population": ["worldpop-harmonized"],
+        "soil": ["soilgrids-harmonized"],
+        "terrain": ["dem-harmonized"],
+    }

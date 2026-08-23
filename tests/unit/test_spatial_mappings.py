@@ -66,6 +66,19 @@ def test_bridge_mapping_can_preserve_the_unsimplified_relationship_geometry() ->
     assert result.loc[0, "relationship_geometry_wkt"] == "LINESTRING (0 50, 100 50)"
 
 
+def test_line_mapping_rejects_source_columns_that_would_overwrite_evidence() -> None:
+    """Allowing source HYBAS_ID or flags to overwrite overlay evidence corrupts the relationship."""
+    basins = gpd.GeoDataFrame({"HYBAS_ID": [11]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:32648")
+    rivers = gpd.GeoDataFrame(
+        {"HYRIV_ID": [70], "HYBAS_ID": [999], "quality_flags_json": ["{\"fake\":true}"]},
+        geometry=[LineString([(-20, 50), (120, 50)])],
+        crs="EPSG:32648",
+    )
+
+    with pytest.raises(ValueError, match="reserved output names"):
+        map_subbasin_lines(basins, rivers, "HYRIV_ID")
+
+
 def test_boundary_point_emits_every_tied_basin_not_an_arbitrary_winner() -> None:
     """Replacing tied relations with one basin assignment would hide boundary ambiguity."""
     basins = gpd.GeoDataFrame(

@@ -186,6 +186,17 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
 
 
 PROCESSING_CRS = "EPSG:32648"
+_LINE_RESERVED_OUTPUT_COLUMNS = frozenset(
+    {
+        "HYBAS_ID",
+        "intersected_length_km",
+        "boundary_case",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
+        "relationship_geometry_wkt",
+    }
+)
 
 
 def _metric_layers(
@@ -253,6 +264,11 @@ def map_subbasin_lines(
     """Return metric line intersections, retaining source identifiers and boundary evidence."""
     metric_basins, metric_lines = _metric_layers(basins, lines, entity_id)
     extra_columns = [column for column in lines.columns if column != "geometry" and column != entity_id]
+    collisions = sorted(set(extra_columns) & _LINE_RESERVED_OUTPUT_COLUMNS)
+    if collisions:
+        raise ValueError(
+            "source line columns collide with reserved output names: " + ", ".join(collisions)
+        )
     rows: list[dict[str, object]] = []
     for basin in metric_basins.itertuples(index=False):
         for _, line in metric_lines.iterrows():

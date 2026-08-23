@@ -76,7 +76,10 @@ def aggregate_population_by_basin(
                     record["valid"] += 1
                 else:
                     record["nodata"] += 1
-        resolution = float(abs(dataset.transform.a * dataset.transform.e - dataset.transform.b * dataset.transform.d) ** 0.5)
+        resolution_x = float(np.hypot(dataset.transform.a, dataset.transform.d))
+        resolution_y = float(np.hypot(dataset.transform.b, dataset.transform.e))
+        resolution_unit = "degree" if dataset.crs.is_geographic else str(dataset.crs.linear_units)
+        source_crs = dataset.crs.to_string()
     rows: list[dict[str, object]] = []
     for identifier in selected.HYBAS_ID:
         record = totals[int(identifier)]
@@ -91,7 +94,10 @@ def aggregate_population_by_basin(
                 "nodata_pixel_count": int(record["nodata"]),
                 "aoi_pixel_count": aoi,
                 "coverage_ratio": valid / aoi if aoi else float("nan"),
-                "source_resolution_m": resolution,
+                "source_resolution_x": resolution_x,
+                "source_resolution_y": resolution_y,
+                "source_resolution_unit": resolution_unit,
+                "source_crs": source_crs,
                 "population_scope": "core_aoi_only",
                 "boundary_center_tie_pixel_count": int(record["ties"]),
                 "quality_flags_json": json.dumps(

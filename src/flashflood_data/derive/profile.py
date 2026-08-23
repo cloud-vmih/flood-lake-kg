@@ -25,6 +25,8 @@ from flashflood_data.io_atomic import atomic_target
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 
 _REQUIRED_TASK15_GROUPS = frozenset({"terrain", "soil", "landcover", "hydrology"})
+_ALLOWED_PROFILE_GROUPS = _REQUIRED_TASK15_GROUPS | {"population"}
+_FORBIDDEN_STATIC_FIELD_TOKENS = frozenset({"event", "label", "outcome", "status"})
 
 
 def _checked_feature_table(name: str, table: pd.DataFrame, basin_ids: set[int]) -> pd.DataFrame:
@@ -45,15 +47,42 @@ def _checked_feature_table(name: str, table: pd.DataFrame, basin_ids: set[int]) 
     return result.sort_values("HYBAS_ID", kind="stable").reset_index(drop=True)
 
 
-def _fingerprint(tables: Mapping[str, pd.DataFrame]) -> str:
-    payload = {
-        name: {
-            "columns": list(table.columns),
-            "source_asset_ids": table.attrs.get("source_asset_ids", []),
-        }
-        for name, table in sorted(tables.items())
+def _field_tokens(field: object) -> set[str]:
+    return set(str(field).casefold().replace("-", "_").split("_"))
+
+
+def _canonical_table(table: pd.DataFrame) -> dict[str, object]:
+    ordered = table.sort_values("HYBAS_ID", kind="stable").reset_index(drop=True)
+    return {
+        "columns": list(ordered.columns),
+        "records_json": ordered.to_json(orient="records", date_format="iso", force_ascii=False),
+        "provenance": dict(sorted(ordered.attrs.items())),
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _canonical_basins(selected: gpd.GeoDataFrame) -> dict[str, object]:
+    values = pd.DataFrame(selected.drop(columns="geometry")).copy()
+    values["geometry_wkb_hex"] = selected.geometry.map(lambda geometry: geometry.wkb_hex)
+    values = values.sort_values("HYBAS_ID", kind="stable").reset_index(drop=True)
+    return {
+        "crs": selected.crs.to_string(),
+        "columns": list(values.columns),
+        "records_json": values.to_json(orient="records", date_format="iso", force_ascii=False),
+    }
+
+
+def _fingerprint(selected: gpd.GeoDataFrame, tables: Mapping[str, pd.DataFrame]) -> str:
+    payload = {
+        "basins": _canonical_basins(selected),
+        "feature_tables": {name: _canonical_table(table) for name, table in sorted(tables.items())},
+        "profile_config": {
+            "allowed_groups": sorted(_ALLOWED_PROFILE_GROUPS),
+            "output_crs": "EPSG:4326",
+            "required_task15_groups": sorted(_REQUIRED_TASK15_GROUPS),
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def assemble_static_profile(
@@ -61,6 +90,11 @@ def assemble_static_profile(
 ) -> gpd.GeoDataFrame:
     """Left-join validated static evidence without ever changing selected L10 cardinality."""
     selected = checked_basins(basins)
+    unknown_groups = sorted(set(feature_tables) - _ALLOWED_PROFILE_GROUPS)
+    if unknown_groups:
+        raise ValueError(
+            "feature table group is not an allowed static profile group: " + ", ".join(unknown_groups)
+        )
     missing_groups = sorted(_REQUIRED_TASK15_GROUPS - set(feature_tables))
     if missing_groups:
         raise ValueError(f"missing required Task 15 feature tables: {', '.join(missing_groups)}")
@@ -68,6 +102,20 @@ def assemble_static_profile(
     checked = {
         name: _checked_feature_table(name, table, basin_ids) for name, table in feature_tables.items()
     }
+    forbidden_fields = sorted(
+        {
+            str(column)
+            for table in checked.values()
+            for column in table.columns
+            if _field_tokens(column) & _FORBIDDEN_STATIC_FIELD_TOKENS
+        }
+        - {"HYBAS_ID"}
+    )
+    if forbidden_fields:
+        raise ValueError(
+            "feature tables contain forbidden event/label/outcome fields: "
+            + ", ".join(forbidden_fields)
+        )
     profile = selected.copy()
     quality: dict[int, dict[str, bool]] = {int(identifier): {} for identifier in profile.HYBAS_ID}
     for name, table in checked.items():
@@ -83,7 +131,7 @@ def assemble_static_profile(
         name: list(table.attrs.get("source_asset_ids", [])) for name, table in sorted(checked.items())
     }
     profile["pipeline_run_id"] = run_id
-    profile["dependency_fingerprint"] = _fingerprint(checked)
+    profile["dependency_fingerprint"] = _fingerprint(selected, checked)
     profile["feature_group_source_asset_ids_json"] = json.dumps(asset_ids, sort_keys=True, default=str)
     profile["quality_flags_json"] = profile.HYBAS_ID.map(
         lambda identifier: json.dumps(quality[int(identifier)], sort_keys=True)
@@ -199,7 +247,10 @@ def task16_map_handler(inputs: Task16MapInputs, output_dir: Path, *, owner_sourc
         if source_id != owner_source_id:
             return []
         mappings = _task16_tables(inputs)
-        profile_inputs = dict(inputs.feature_tables)
+        profile_inputs = {
+            name: _set_provenance(table, tuple(inputs.source_asset_ids.get(name, ())))
+            for name, table in inputs.feature_tables.items()
+        }
         profile_inputs["population"] = mappings["population"]
         profile = assemble_static_profile(inputs.basins, profile_inputs, context.run_id)
         outputs = {

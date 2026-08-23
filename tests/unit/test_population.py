@@ -14,7 +14,7 @@ from shapely.geometry import box
 from flashflood_data.derive.population import aggregate_population_by_basin
 
 
-def _worldpop(path: Path, values: list[list[float]], transform) -> Path:
+def _worldpop(path: Path, values: list[list[float]], transform, *, crs: str = "EPSG:32648") -> Path:
     with rasterio.open(
         path,
         "w",
@@ -23,7 +23,7 @@ def _worldpop(path: Path, values: list[list[float]], transform) -> Path:
         height=len(values),
         count=1,
         dtype="float32",
-        crs="EPSG:32648",
+        crs=crs,
         transform=transform,
         nodata=-9999.0,
     ) as destination:
@@ -44,7 +44,9 @@ def test_population_is_clipped_to_core_not_whole_upstream_basin(tmp_path: Path) 
     assert result.loc[0, "contributing_pixel_count"] == 2
     assert result.loc[0, "aoi_pixel_count"] == 2
     assert result.loc[0, "coverage_ratio"] == pytest.approx(1.0)
-    assert result.loc[0, "source_resolution_m"] == pytest.approx(10.0)
+    assert result.loc[0, "source_resolution_x"] == pytest.approx(10.0)
+    assert result.loc[0, "source_resolution_y"] == pytest.approx(10.0)
+    assert result.loc[0, "source_resolution_unit"] == "metre"
 
 
 def test_boundary_center_pixel_is_counted_once_by_lower_hybas_id(tmp_path: Path) -> None:
@@ -62,3 +64,22 @@ def test_boundary_center_pixel_is_counted_once_by_lower_hybas_id(tmp_path: Path)
     assert by_id.loc[10, "boundary_center_tie_pixel_count"] == 1
     assert by_id.loc[20, "boundary_center_tie_pixel_count"] == 0
     assert result.population_sum.sum() == pytest.approx(30.0)
+
+
+def test_population_reports_native_geographic_x_y_resolution_without_false_metres(tmp_path: Path) -> None:
+    """Collapsing non-square degrees into a scalar metre value misstates the source grid."""
+    worldpop = _worldpop(
+        tmp_path / "worldpop-geographic.tif",
+        [[10, 20]],
+        from_origin(104, 21, 0.25, 0.5),
+        crs="EPSG:4326",
+    )
+    basins = gpd.GeoDataFrame({"HYBAS_ID": [7]}, geometry=[box(104, 20, 104.5, 21)], crs="EPSG:4326")
+
+    result = aggregate_population_by_basin(worldpop, basins, box(104, 20, 104.5, 21))
+
+    assert result.loc[0, "source_resolution_x"] == pytest.approx(0.25)
+    assert result.loc[0, "source_resolution_y"] == pytest.approx(0.5)
+    assert result.loc[0, "source_resolution_unit"] == "degree"
+    assert result.loc[0, "source_crs"] == "EPSG:4326"
+    assert "source_resolution_m" not in result
