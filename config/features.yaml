@@ -1,0 +1,48 @@
+# Static basin-predictor semantics.  Labels are deliberately part of the
+# configuration so all 8 x 6 x 2 SoilGrids assets stay traceable.
+processing_crs: EPSG:32648
+terrain:
+  target_resolution_m: 30
+  continuous_resampling: bilinear
+soilgrids:
+  properties: [clay, sand, silt, bdod, cfvo, wv0010, wv0033, wv1500]
+  depths: [0-5cm, 5-15cm, 15-30cm, 30-60cm, 60-100cm, 100-200cm]
+  statistics: [mean, uncertainty]
+  raw_value_divisors:
+    clay: 10
+    sand: 10
+    silt: 10
+    bdod: 100
+    cfvo: 10
+    wv0010: 10
+    wv0033: 10
+    wv1500: 10
+  depth_bands_cm: [[0, 30], [30, 100]]
+worldcover_classes:
+  10: tree_cover
+  20: shrubland
+  30: grassland
+  40: cropland
+  50: built_up
+  60: bare_sparse
+  70: snow_ice
+  80: permanent_water
+  90: herbaceous_wetland
+  95: mangroves
+  100: moss_lichen
+basinatlas_fields:
+  - dis_m3_pyr
+  - run_mm_syr
+  - inu_pc_smn
+  - inu_pc_smx
+  - lka_pc_sse
+  - dor_pc_pva
+  - ria_ha_ssu
+  - riv_tc_ssu
+  - gwt_cm_sav
+  - ele_mt_sav
+  - ele_mt_smn
+  - ele_mt_smx
+  - slp_dg_sav
+  - sgr_dk_sav
+  - pre_mm_syr
