@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from flashflood_data.catalog import sha256_file
+from flashflood_data.derive.features import load_feature_config
 from flashflood_data.derive.hydrology import derive_hydrology_features
 from flashflood_data.derive.landcover import derive_landcover_fractions
 from flashflood_data.derive.soil import depth_weighted_soil
@@ -63,10 +64,11 @@ def derive_static_predictor_tables(
     This is intentionally parameterized rather than default-registered with the
     pipeline: resolving the coordinated source assets is Task 19 composition.
     """
+    config = load_feature_config()
     tables = {
         "terrain": derive_terrain_features(inputs.dem_path, inputs.basins, inputs.processing_crs),
         "soil": depth_weighted_soil(
-            inputs.soil_raster_paths, inputs.basins, bands_cm=((0, 30), (30, 100))
+            inputs.soil_raster_paths, inputs.basins, bands_cm=config.soil_depth_bands_cm
         ),
         "landcover": derive_landcover_fractions(inputs.worldcover_path, inputs.basins),
         "hydrology": derive_hydrology_features(

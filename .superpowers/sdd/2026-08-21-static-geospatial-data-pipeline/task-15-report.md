@@ -93,3 +93,34 @@ No broken requirements found.
   the per-basin peak.
 - This task deliberately neither discovers default input paths nor registers a
   default handler; Task 19 must compose and fingerprint the cross-source inputs.
+
+## Fix round 1 — regression evidence
+
+New RED regressions covered: excluded 100–200 cm SoilGrids coverage evidence,
+the incomplete 96-asset matrix, mandatory paired depth bands, non-metric terrain
+CRS, nonfinite BasinATLAS values, non-square raster-window residuals, and the
+authoritative repository-relative feature configuration. Before implementation,
+the depth-band guard regression reached a missing-raster open instead of the
+required validation, and the config-loader test failed at collection because the
+loader module did not exist.
+
+GREEN changes load all divisors, WorldCover class names, BasinATLAS field names,
+and terrain semantics from `config/features.yaml` without cwd-dependent imports.
+Soil derivation now requires the entire property × depth × statistic matrix and
+both requested bands; coverage counts include only layers overlapping a band.
+Hydrology rejects nonfinite selected baseline values at derivation time. The
+fixed `raster_windows` final windows now cover a 5 × 3 raster exactly once.
+
+```text
+.venv/bin/pytest tests/unit/test_terrain_features.py tests/unit/test_soil_features.py tests/unit/test_landcover_features.py tests/unit/test_hydrology_features.py tests/unit/test_static_predictor_tables.py tests/unit/test_feature_config.py tests/unit/test_spatial_windows.py -q
+17 passed in 1.10s
+
+.venv/bin/pytest -q
+278 passed in 8.32s
+
+.venv/bin/ruff check .
+All checks passed!
+
+.venv/bin/pip check
+No broken requirements found.
+```

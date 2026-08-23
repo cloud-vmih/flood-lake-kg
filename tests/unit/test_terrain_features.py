@@ -68,6 +68,12 @@ def test_terrain_rejects_duplicate_or_nonfinite_basin_ids(
         derive_terrain_features(synthetic_dem, duplicate, processing_crs="EPSG:32648")
 
 
+def test_terrain_rejects_nonmetric_processing_crs(synthetic_dem: Path, basin: gpd.GeoDataFrame) -> None:
+    """Geographic degrees would make slope and relief metric labels false."""
+    with pytest.raises(ValueError, match="EPSG:32648"):
+        derive_terrain_features(synthetic_dem, basin, processing_crs="EPSG:4326")
+
+
 def test_metric_dem_working_raster_is_retained_under_dataset_derived(
     synthetic_dem: Path, basin: gpd.GeoDataFrame, tmp_path: Path
 ) -> None:

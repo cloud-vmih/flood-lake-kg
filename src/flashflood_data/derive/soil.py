@@ -12,17 +12,7 @@ import pandas as pd
 import rasterio
 
 from flashflood_data.derive._spatial import checked_basins, clipped_raster_values
-
-SOILGRID_DIVISORS = {
-    "clay": 10.0,
-    "sand": 10.0,
-    "silt": 10.0,
-    "bdod": 100.0,
-    "cfvo": 10.0,
-    "wv0010": 10.0,
-    "wv0033": 10.0,
-    "wv1500": 10.0,
-}
+from flashflood_data.derive.features import load_feature_config
 
 
 def _depth_limits(label: str) -> tuple[int, int]:
@@ -58,13 +48,25 @@ def depth_weighted_soil(
     bands_cm: Sequence[tuple[int, int]],
 ) -> pd.DataFrame:
     """Scale integer SoilGrids values then aggregate fully covered requested horizons."""
+    config = load_feature_config()
+    if tuple(bands_cm) != config.soil_depth_bands_cm:
+        raise ValueError("SoilGrids derivation requires both configured depth bands")
+    expected = {
+        (property_name, depth, statistic)
+        for property_name in config.soil_properties
+        for depth in config.soil_depths
+        for statistic in config.soil_statistics
+    }
+    provided = set(raster_paths)
+    if provided != expected:
+        raise ValueError("SoilGrids derivation requires a complete 96-asset property/depth/statistic matrix")
     selected = checked_basins(basins)
     grouped: dict[tuple[str, str], dict[str, Path]] = defaultdict(dict)
     for (property_name, depth, statistic), path in raster_paths.items():
-        if property_name not in SOILGRID_DIVISORS:
+        if property_name not in config.soil_divisors:
             raise ValueError(f"unsupported SoilGrids property: {property_name}")
         _depth_limits(depth)
-        if statistic not in {"mean", "uncertainty"}:
+        if statistic not in config.soil_statistics:
             raise ValueError(f"unsupported SoilGrids statistic: {statistic}")
         grouped[(property_name, statistic)][depth] = path
 
@@ -76,14 +78,18 @@ def depth_weighted_soil(
             with rasterio.open(path) as dataset:
                 for basin in selected.itertuples(index=False):
                     values, covered, valid = clipped_raster_values(dataset, basin.geometry, selected.crs)
-                    mean = float(np.mean(values) / SOILGRID_DIVISORS[property_name]) if valid else float("nan")
+                    mean = float(np.mean(values) / config.soil_divisors[property_name]) if valid else float("nan")
                     values_for_basins.append((mean, covered, valid))
             per_depth[depth] = values_for_basins
         for start_cm, end_cm in bands_cm:
             name = f"{property_name}_{statistic}_{start_cm}_{end_cm}cm"
             for index, row in enumerate(rows):
                 values = {depth: metrics[index][0] for depth, metrics in per_depth.items()}
-                coverage = [(metrics[index][1], metrics[index][2]) for metrics in per_depth.values()]
+                coverage = [
+                    (metrics[index][1], metrics[index][2])
+                    for depth, metrics in per_depth.items()
+                    if max(start_cm, _depth_limits(depth)[0]) < min(end_cm, _depth_limits(depth)[1])
+                ]
                 row[name] = weighted_depth_value(values, start_cm, end_cm)
                 row[f"{name}_covered_pixel_count"] = sum(item[0] for item in coverage)
                 row[f"{name}_valid_pixel_count"] = sum(item[1] for item in coverage)

@@ -47,3 +47,18 @@ def test_hydrology_requires_configured_basinatlas_fields(
 
     with pytest.raises(ValueError, match="BasinATLAS is missing required fields"):
         derive_hydrology_features(rivers, basin, dem_path=None, basinatlas=incomplete)
+
+
+def test_hydrology_rejects_nonfinite_basinatlas_values(
+    rivers: gpd.GeoDataFrame, basin: gpd.GeoDataFrame
+) -> None:
+    """Infinite baseline fields must be rejected before any Parquet writer runs."""
+    from flashflood_data.derive.features import load_feature_config
+
+    atlas = basin.copy()
+    for field in load_feature_config().basinatlas_fields:
+        atlas[field] = 1.0
+    atlas.loc[0, "pre_mm_syr"] = float("inf")
+
+    with pytest.raises(ValueError, match="nonfinite BasinATLAS"):
+        derive_hydrology_features(rivers, basin, dem_path=None, basinatlas=atlas)

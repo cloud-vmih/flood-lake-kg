@@ -15,6 +15,7 @@ from rasterio.warp import calculate_default_transform
 from shapely.geometry import mapping
 
 from flashflood_data.derive._spatial import checked_basins, geometry_in_dataset_crs
+from flashflood_data.derive.features import load_feature_config
 from flashflood_data.io_atomic import atomic_target
 
 
@@ -30,6 +31,9 @@ def _finite_summary(values: np.ndarray) -> tuple[float, float, float, float]:
 
 
 def _metric_vrt(source: rasterio.io.DatasetReader, processing_crs: str) -> WarpedVRT:
+    config = load_feature_config()
+    if processing_crs != config.processing_crs:
+        raise ValueError(f"Task 15 terrain processing CRS must be {config.processing_crs}")
     if source.crs is None:
         raise ValueError("DEM must have a CRS")
     transform, width, height = calculate_default_transform(
@@ -38,7 +42,7 @@ def _metric_vrt(source: rasterio.io.DatasetReader, processing_crs: str) -> Warpe
         source.width,
         source.height,
         *source.bounds,
-        resolution=30,
+        resolution=config.terrain_resolution_m,
     )
     return WarpedVRT(
         source,

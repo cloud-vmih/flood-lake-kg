@@ -13,24 +13,12 @@ from rasterio.windows import Window
 from shapely.geometry import mapping
 
 from flashflood_data.derive._spatial import checked_basins, geometry_in_dataset_crs
-
-WORLDCOVER_CLASSES = {
-    10: "tree_cover",
-    20: "shrubland",
-    30: "grassland",
-    40: "cropland",
-    50: "built_up",
-    60: "bare_sparse",
-    70: "snow_ice",
-    80: "permanent_water",
-    90: "herbaceous_wetland",
-    95: "mangroves",
-    100: "moss_lichen",
-}
+from flashflood_data.derive.features import load_feature_config
 
 
 def derive_landcover_fractions(worldcover_path: Path, basins: gpd.GeoDataFrame) -> pd.DataFrame:
     """Compute categorical fractions on WorldCover's native grid (no resampling)."""
+    classes = load_feature_config().worldcover_classes
     selected = checked_basins(basins)
     rows: list[dict[str, float | int]] = []
     with rasterio.open(worldcover_path) as dataset:
@@ -43,7 +31,7 @@ def derive_landcover_fractions(worldcover_path: Path, basins: gpd.GeoDataFrame) 
                 window = window.intersection(Window(0, 0, dataset.width, dataset.height))
             except WindowError:
                 window = None
-            counts = {name: 0 for name in WORLDCOVER_CLASSES.values()}
+            counts = {name: 0 for name in classes.values()}
             if window is None or window.width <= 0 or window.height <= 0:
                 covered = source_valid = recognized = 0
             else:
@@ -57,7 +45,7 @@ def derive_landcover_fractions(worldcover_path: Path, basins: gpd.GeoDataFrame) 
                 valid_mask = inside & (dataset.read_masks(1, window=window) > 0)
                 covered = int(inside.sum())
                 source_valid = int(valid_mask.sum())
-                for code, name in WORLDCOVER_CLASSES.items():
+                for code, name in classes.items():
                     counts[name] = int((valid_mask & (data == code)).sum())
                 recognized = sum(counts.values())
             row: dict[str, float | int] = {

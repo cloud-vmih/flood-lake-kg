@@ -12,27 +12,9 @@ from rasterio.warp import transform
 from shapely.geometry import Point
 
 from flashflood_data.derive._spatial import checked_basins
+from flashflood_data.derive.features import load_feature_config
 
 PROCESSING_CRS = "EPSG:32648"
-BASINATLAS_FIELDS = (
-    "dis_m3_pyr",
-    "run_mm_syr",
-    "inu_pc_smn",
-    "inu_pc_smx",
-    "lka_pc_sse",
-    "dor_pc_pva",
-    "ria_ha_ssu",
-    "riv_tc_ssu",
-    "gwt_cm_sav",
-    "ele_mt_sav",
-    "ele_mt_smn",
-    "ele_mt_smx",
-    "slp_dg_sav",
-    "sgr_dk_sav",
-    "pre_mm_syr",
-)
-
-
 def _sample_endpoint(dataset: rasterio.io.DatasetReader, point: Point) -> float | None:
     if dataset.crs is None:
         raise ValueError("DEM must have a CRS")
@@ -46,12 +28,17 @@ def _sample_endpoint(dataset: rasterio.io.DatasetReader, point: Point) -> float 
 def _basinatlas_values(basinatlas: gpd.GeoDataFrame | None) -> pd.DataFrame | None:
     if basinatlas is None:
         return None
-    required = {"HYBAS_ID", *BASINATLAS_FIELDS}
+    fields = load_feature_config().basinatlas_fields
+    required = {"HYBAS_ID", *fields}
     missing = sorted(required - set(basinatlas.columns))
     if missing:
         raise ValueError(f"BasinATLAS is missing required fields: {', '.join(missing)}")
     atlas = checked_basins(basinatlas)
-    return pd.DataFrame(atlas[["HYBAS_ID", *BASINATLAS_FIELDS]])
+    values = pd.DataFrame(atlas[["HYBAS_ID", *fields]])
+    numeric = values.loc[:, fields].apply(pd.to_numeric, errors="raise")
+    if not np.isfinite(numeric.to_numpy(dtype="float64")).all():
+        raise ValueError("nonfinite BasinATLAS values are not allowed")
+    return values
 
 
 def derive_hydrology_features(

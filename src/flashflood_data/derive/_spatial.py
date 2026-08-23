@@ -77,6 +77,6 @@ def raster_windows(dataset: rasterio.io.DatasetReader, block_size: int = 512) ->
             yield Window(
                 col_off,
                 row_off,
-                min(block_size, dataset.width - row_off),
                 min(block_size, dataset.width - col_off),
+                min(block_size, dataset.height - row_off),
             )

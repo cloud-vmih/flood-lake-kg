@@ -36,15 +36,22 @@ def _raster(path: Path, value: float, dtype: str) -> Path:
     return path
 
 
+def _full_soil_matrix(paths: dict[str, Path]) -> dict[tuple[str, str, str], Path]:
+    return {
+        (property_name, depth, statistic): paths[depth]
+        for property_name in ("clay", "sand", "silt", "bdod", "cfvo", "wv0010", "wv0033", "wv1500")
+        for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")
+        for statistic in ("mean", "uncertainty")
+    }
+
+
 def test_static_predictor_writer_persists_four_id_keyed_tables(tmp_path: Path) -> None:
     """Replacing any table with duplicate keys must remain impossible at the output boundary."""
     dem = _raster(tmp_path / "dem.tif", 10.0, "float32")
     worldcover = _raster(tmp_path / "worldcover.tif", 10, "int16")
-    soil_paths = {
-        ("clay", "0-5cm", "mean"): _raster(tmp_path / "soil0.tif", 100, "int16"),
-        ("clay", "5-15cm", "mean"): _raster(tmp_path / "soil1.tif", 100, "int16"),
-        ("clay", "15-30cm", "mean"): _raster(tmp_path / "soil2.tif", 100, "int16"),
-    }
+    soil_paths = _full_soil_matrix(
+        {depth: _raster(tmp_path / f"soil-{depth}.tif", 100, "int16") for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")}
+    )
     basins = gpd.GeoDataFrame(
         {"HYBAS_ID": [99]}, geometry=[box(500_000, 0, 500_060, 60)], crs="EPSG:32648"
     )
@@ -73,11 +80,9 @@ def test_task15_handler_runs_once_for_its_composed_owner_source(tmp_path: Path) 
     """Running a derive stage for unrelated source IDs must not duplicate tables."""
     dem = _raster(tmp_path / "dem.tif", 10.0, "float32")
     worldcover = _raster(tmp_path / "worldcover.tif", 10, "int16")
-    soil_paths = {
-        ("clay", "0-5cm", "mean"): _raster(tmp_path / "soil0.tif", 100, "int16"),
-        ("clay", "5-15cm", "mean"): _raster(tmp_path / "soil1.tif", 100, "int16"),
-        ("clay", "15-30cm", "mean"): _raster(tmp_path / "soil2.tif", 100, "int16"),
-    }
+    soil_paths = _full_soil_matrix(
+        {depth: _raster(tmp_path / f"soil-{depth}.tif", 100, "int16") for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")}
+    )
     basins = gpd.GeoDataFrame(
         {"HYBAS_ID": [99]}, geometry=[box(500_000, 0, 500_060, 60)], crs="EPSG:32648"
     )
