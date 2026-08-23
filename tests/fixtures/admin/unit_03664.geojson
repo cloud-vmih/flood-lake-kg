@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "a02_xa": "03664",
+        "a03_ten": "Phường Chiềng An",
+        "a04_tentinh": "Sơn La",
+        "a05_truocsn": "Phường Chiềng An, Xã Chiềng Xôm, Xã Chiềng Đen",
+        "a06_trungtamhc": "Chiềng An",
+        "a07_dt": 10.5,
+        "a08_ds": 12345
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[103, 21], [103.1, 21], [103.1, 21.1], [103, 21.1], [103, 21]]]
+      }
+    }
+  ]
+}

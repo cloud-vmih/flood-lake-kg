@@ -1,0 +1,11 @@
+sources:
+  - source_id: sonla_admin_2025
+    adapter: admin_current
+    version: "2025-07-01"
+    license_id: public-administrative-reference
+    settings:
+      index_url: https://sapnhap.bando.com.vn/p.co_dvhc
+      index_form: {ma: "0"}
+      geometry_url: https://sapnhap.bando.com.vn/pread_json
+      province_origin_code: "14"
+      resolution_page: https://congbao.chinhphu.vn/van-ban/nghi-quyet-so-1681-nq-ubtvqh15-45137.htm
