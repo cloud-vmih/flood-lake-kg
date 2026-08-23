@@ -4,8 +4,15 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from flashflood_data import registry
 from flashflood_data.models import SourceSpec
 from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
+from flashflood_data.sources.base import SourceAdapter
+
+
+class NotAnAdapter:
+    def __init__(self, spec: SourceSpec) -> None:
+        self.spec = spec
 
 
 def _write_source(path: Path, body: str) -> None:
@@ -15,13 +22,11 @@ def _write_source(path: Path, body: str) -> None:
 def test_registry_rejects_duplicate_source_id_across_files(tmp_path: Path) -> None:
     _write_source(
         tmp_path / "a.yaml",
-        "sources:\n  - source_id: x\n    adapter: existing\n"
-        "    version: '1'\n    license_id: x\n",
+        "sources:\n  - source_id: x\n    adapter: existing\n    version: '1'\n    license_id: x\n",
     )
     _write_source(
         tmp_path / "b.yaml",
-        "sources:\n  - source_id: x\n    adapter: existing\n"
-        "    version: '2'\n    license_id: x\n",
+        "sources:\n  - source_id: x\n    adapter: existing\n    version: '2'\n    license_id: x\n",
     )
 
     with pytest.raises(ValueError, match="duplicate source_id: x"):
@@ -103,9 +108,18 @@ def test_registry_resolves_allowed_adapter_through_fixed_lazy_target(
         license_id="fixture",
     )
 
-    class FixtureAdapter:
+    class FixtureAdapter(SourceAdapter):
         def __init__(self, received: SourceSpec) -> None:
-            self.spec = received
+            super().__init__(received)
+
+        def resolve(self, context, available):
+            return []
+
+        def validate_raw(self, path):
+            raise NotImplementedError
+
+        def harmonize(self, context, assets):
+            return []
 
     requested_modules: list[str] = []
 
@@ -120,3 +134,24 @@ def test_registry_resolves_allowed_adapter_through_fixed_lazy_target(
     assert isinstance(adapter, FixtureAdapter)
     assert adapter.spec is spec
     assert requested_modules == ["flashflood_data.sources.existing"]
+
+
+def test_registry_rejects_imported_class_outside_source_adapter_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = SourceSpec(source_id="fixture", adapter="fixture", version="1", license_id="fixture")
+    monkeypatch.setattr(registry, "NotAnAdapter", NotAnAdapter, raising=False)
+    monkeypatch.setitem(
+        registry._ADAPTER_TARGETS,
+        "fixture",
+        ("flashflood_data.registry", "NotAnAdapter"),
+    )
+
+    with pytest.raises(UnsupportedAdapter, match="SourceAdapter"):
+        build_adapter(spec)
+
+
+def test_all_registered_adapter_classes_implement_source_adapter() -> None:
+    specs = load_source_specs(Path("config/sources"))
+
+    assert all(issubclass(type(build_adapter(spec)), SourceAdapter) for spec in specs.values())

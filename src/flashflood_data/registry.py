@@ -24,9 +24,7 @@ class UnsupportedAdapter(ValueError):
     """Raised when a manifest requests an adapter outside the fixed registry."""
 
 
-def load_source_specs(
-    config_dir: Path, *, include_disabled: bool = False
-) -> dict[str, SourceSpec]:
+def load_source_specs(config_dir: Path, *, include_disabled: bool = False) -> dict[str, SourceSpec]:
     """Load sorted YAML manifests and return source specifications keyed by ID."""
     specifications: dict[str, SourceSpec] = {}
     for path in sorted(config_dir.glob("*.yaml")):
@@ -48,4 +46,8 @@ def build_adapter(spec: SourceSpec) -> SourceAdapter:
         raise UnsupportedAdapter(f"unsupported adapter: {spec.adapter}") from exc
     module = import_module(module_name)
     adapter_class = getattr(module, class_name)
+    if not isinstance(adapter_class, type) or not issubclass(adapter_class, SourceAdapter):
+        raise UnsupportedAdapter(
+            f"registered adapter does not implement SourceAdapter: {spec.adapter}"
+        )
     return adapter_class(spec)  # type: ignore[no-any-return]
