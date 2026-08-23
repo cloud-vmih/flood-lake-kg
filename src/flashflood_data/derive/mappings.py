@@ -7,6 +7,7 @@ import unicodedata
 from dataclasses import dataclass
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from flashflood_data.derive._spatial import checked_basins
@@ -92,10 +93,14 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
         {"current_commune_code", "current_commune_name", "predecessors_text", "geometry"},
         "current admin",
     )
-    _require_columns(historical, {"old_admin_id", "old_admin_name", "valid_to", "geometry"}, "historical admin")
+    _require_columns(
+        historical, {"old_admin_id", "old_admin_name", "valid_to", "geometry"}, "historical admin"
+    )
     if current.crs is None or historical.crs is None:
         raise ValueError("current and historical admin layers must have a CRS")
-    historical_for_match = historical.to_crs(current.crs) if historical.crs != current.crs else historical
+    historical_for_match = (
+        historical.to_crs(current.crs) if historical.crs != current.crs else historical
+    )
     historical_rows = historical_for_match.copy()
     historical_rows["_normalized_name"] = historical_rows["old_admin_name"].map(
         lambda value: normalize_admin_name(str(value))
@@ -114,7 +119,9 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
             metrics: list[dict[str, object]] = []
             viable_ids: list[str] = []
             for _, old_row in candidate_rows:
-                overlap_fraction, overlap_area = _overlap_fraction(old_row.geometry, current_row.geometry)
+                overlap_fraction, overlap_area = _overlap_fraction(
+                    old_row.geometry, current_row.geometry
+                )
                 old_id = str(old_row["old_admin_id"])
                 metrics.append(
                     {
@@ -127,10 +134,17 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
                     viable_ids.append(old_id)
             candidate_ids = [str(old_row["old_admin_id"]) for _, old_row in candidate_rows]
             selected = candidate_rows[0][1] if len(candidate_rows) == 1 else None
-            status = "matched" if len(viable_ids) == 1 else "ambiguous" if viable_ids else "unresolved"
+            status = (
+                "matched" if len(viable_ids) == 1 else "ambiguous" if viable_ids else "unresolved"
+            )
             selected_id = viable_ids[0] if status == "matched" else None
             selected_row = next(
-                (old_row for _, old_row in candidate_rows if str(old_row["old_admin_id"]) == selected_id), None
+                (
+                    old_row
+                    for _, old_row in candidate_rows
+                    if str(old_row["old_admin_id"]) == selected_id
+                ),
+                None,
             )
             display_name = (
                 str(selected_row["old_admin_name"])
@@ -139,9 +153,9 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
             )
             records.append(
                 {
-                    "old_admin_id": selected_id if selected_id is not None else (
-                        str(selected["old_admin_id"]) if selected is not None else None
-                    ),
+                    "old_admin_id": selected_id
+                    if selected_id is not None
+                    else (str(selected["old_admin_id"]) if selected is not None else None),
                     "old_admin_name": display_name,
                     "old_admin_type": parsed.admin_type,
                     "old_admin_normalized_name": parsed.normalized_name,
@@ -149,8 +163,11 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
                     "current_commune_name": current_name if status == "matched" else None,
                     "relationship_type": (
                         "unchanged"
-                        if status == "matched" and normalize_admin_name(current_name) == parsed.normalized_name
-                        else "merged" if status == "matched" else None
+                        if status == "matched"
+                        and normalize_admin_name(current_name) == parsed.normalized_name
+                        else "merged"
+                        if status == "matched"
+                        else None
                     ),
                     "match_status": status,
                     "valid_from": None,
@@ -163,7 +180,9 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
     target_codes_by_old_id: dict[str, set[str]] = {}
     for record in records:
         for old_id in record["_viable_ids"]:
-            target_codes_by_old_id.setdefault(old_id, set()).add(str(record["current_commune_code"]))
+            target_codes_by_old_id.setdefault(old_id, set()).add(
+                str(record["current_commune_code"])
+            )
     for record in records:
         if any(len(target_codes_by_old_id[old_id]) > 1 for old_id in record["_viable_ids"]):
             record["match_status"] = "ambiguous"
@@ -174,9 +193,18 @@ def build_admin_crosswalk(current: gpd.GeoDataFrame, historical: gpd.GeoDataFram
     if result.empty:
         return pd.DataFrame(
             columns=(
-                "old_admin_id", "old_admin_name", "old_admin_type", "old_admin_normalized_name",
-                "current_commune_code", "current_commune_name", "relationship_type", "match_status",
-                "valid_from", "valid_to", "candidate_old_admin_ids", "overlap_metrics_json",
+                "old_admin_id",
+                "old_admin_name",
+                "old_admin_type",
+                "old_admin_normalized_name",
+                "current_commune_code",
+                "current_commune_name",
+                "relationship_type",
+                "match_status",
+                "valid_from",
+                "valid_to",
+                "candidate_old_admin_ids",
+                "overlap_metrics_json",
             )
         )
     result = result.drop(columns="_viable_ids")
@@ -207,7 +235,18 @@ def _metric_layers(
         raise ValueError("entities must have a CRS")
     if entity_id not in entities.columns:
         raise ValueError(f"entities are missing required {entity_id} column")
-    if entities[entity_id].isna().any() or entities[entity_id].duplicated().any():
+    invalid = entities[entity_id].map(
+        lambda value: (
+            value is None
+            or isinstance(value, (bool, np.bool_))
+            or bool(pd.isna(value))
+            or (isinstance(value, (float, np.floating)) and not np.isfinite(value))
+            or (isinstance(value, str) and not value.strip())
+        )
+    )
+    if invalid.any():
+        raise ValueError(f"entities have invalid {entity_id} values")
+    if entities[entity_id].duplicated().any():
         raise ValueError(f"entities have missing or duplicate {entity_id} values")
     return checked_basins(basins).to_crs(PROCESSING_CRS), entities.to_crs(PROCESSING_CRS)
 
@@ -244,14 +283,22 @@ def map_subbasin_commune(basins: gpd.GeoDataFrame, communes: gpd.GeoDataFrame) -
                 }
             )
     columns = [
-        "HYBAS_ID", "current_commune_code", "intersection_area_km2", "basin_fraction",
-        "commune_fraction", "quality_flags_json", "processing_crs", "source_asset_ids_json",
+        "HYBAS_ID",
+        "current_commune_code",
+        "intersection_area_km2",
+        "basin_fraction",
+        "commune_fraction",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
     ]
     if not rows:
         return _empty(columns)
-    return pd.DataFrame(rows, columns=columns).sort_values(
-        ["HYBAS_ID", "current_commune_code"], kind="stable"
-    ).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows, columns=columns)
+        .sort_values(["HYBAS_ID", "current_commune_code"], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def map_subbasin_lines(
@@ -263,7 +310,9 @@ def map_subbasin_lines(
 ) -> pd.DataFrame:
     """Return metric line intersections, retaining source identifiers and boundary evidence."""
     metric_basins, metric_lines = _metric_layers(basins, lines, entity_id)
-    extra_columns = [column for column in lines.columns if column != "geometry" and column != entity_id]
+    extra_columns = [
+        column for column in lines.columns if column != "geometry" and column != entity_id
+    ]
     collisions = sorted(set(extra_columns) & _LINE_RESERVED_OUTPUT_COLUMNS)
     if collisions:
         raise ValueError(
@@ -289,16 +338,24 @@ def map_subbasin_lines(
             row.update({column: line[column] for column in extra_columns})
             rows.append(row)
     columns = [
-        "HYBAS_ID", entity_id, *extra_columns, "intersected_length_km", "boundary_case",
-        "quality_flags_json", "processing_crs", "source_asset_ids_json",
+        "HYBAS_ID",
+        entity_id,
+        *extra_columns,
+        "intersected_length_km",
+        "boundary_case",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
     ]
     if include_relationship_geometry:
         columns.append("relationship_geometry_wkt")
     if not rows:
         return _empty(columns)
-    return pd.DataFrame(rows, columns=columns).sort_values(
-        ["HYBAS_ID", entity_id], kind="stable"
-    ).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows, columns=columns)
+        .sort_values(["HYBAS_ID", entity_id], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def map_subbasin_points(
@@ -310,7 +367,9 @@ def map_subbasin_points(
     tag_columns = [column for column in points.columns if column not in {"geometry", entity_id}]
     for _, point in metric_points.iterrows():
         matches = metric_basins.loc[metric_basins.geometry.covers(point.geometry)]
-        tie = len(matches) > 1 and any(geometry.touches(point.geometry) for geometry in matches.geometry)
+        tie = len(matches) > 1 and any(
+            geometry.touches(point.geometry) for geometry in matches.geometry
+        )
         for basin in matches.itertuples(index=False):
             touches = bool(basin.geometry.touches(point.geometry))
             relationship = "within" if point.geometry.within(basin.geometry) else "touches"
@@ -331,11 +390,19 @@ def map_subbasin_points(
                 }
             )
     columns = [
-        "HYBAS_ID", entity_id, "relationship_type", "tags_json", "boundary_case",
-        "quality_flags_json", "processing_crs", "source_asset_ids_json",
+        "HYBAS_ID",
+        entity_id,
+        "relationship_type",
+        "tags_json",
+        "boundary_case",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
     ]
     if not rows:
         return _empty(columns)
-    return pd.DataFrame(rows, columns=columns).sort_values(
-        ["HYBAS_ID", entity_id], kind="stable"
-    ).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows, columns=columns)
+        .sort_values(["HYBAS_ID", entity_id], kind="stable")
+        .reset_index(drop=True)
+    )

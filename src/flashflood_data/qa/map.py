@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -43,10 +44,77 @@ _RASTERS = {
     "worldcover": "harmonized/rasters/worldcover_2021.tif",
     "worldpop": "harmonized/rasters/worldpop_2025.tif",
 }
+_MAPPING_DEFINITIONS = {
+    "communes": ("commune", ("current_commune_code",)),
+    "subbasins_l10": ("population", ("HYBAS_ID",)),
+    "rivers": ("river", ("HYRIV_ID",)),
+    "roads": ("road", ("segment_id", "osm_id")),
+    "bridges": ("bridge", ("osm_id",)),
+    "facilities": ("facility", ("osm_id",)),
+    "settlements": ("settlement", ("osm_id",)),
+}
+_MAPPING_EVIDENCE_COLUMNS = frozenset(
+    {
+        "HYBAS_ID",
+        "intersection_area_km2",
+        "basin_fraction",
+        "commune_fraction",
+        "intersected_length_km",
+        "relationship_geometry_wkt",
+        "relationship_type",
+        "tags_json",
+        "boundary_case",
+        "boundary_center_tie_pixel_count",
+        "population_sum",
+        "population_mean",
+        "contributing_pixel_count",
+        "nodata_pixel_count",
+        "aoi_pixel_count",
+        "coverage_ratio",
+        "source_resolution_x",
+        "source_resolution_y",
+        "source_resolution_unit",
+        "source_crs",
+        "population_scope",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
+    }
+)
+
+
+def _evidence_truthy(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, Mapping):
+        return any(_evidence_truthy(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_evidence_truthy(item) for item in value)
+    if isinstance(value, (float, np.floating)):
+        return bool(np.isfinite(value) and value != 0)
+    if isinstance(value, (int, np.integer, bool, np.bool_)):
+        return bool(value)
+    text = str(value).strip()
+    return text not in {"", "0", "False", "false", "None", "none", "null"}
+
+
+def _quality_warning(value: object) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    if text in {"", "{}", "[]", "null", "None", "nan"}:
+        return False
+    try:
+        return _evidence_truthy(json.loads(text))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return True
 
 
 def _geojson(
-    path: Path, output: Path, tolerance_m: float, mapping_warning_ids: set[str] | None = None
+    path: Path,
+    output: Path,
+    tolerance_m: float,
+    mapping_warnings: Mapping[str, set[str]] | None = None,
 ) -> dict[str, object]:
     try:
         layer = gpd.read_parquet(path)
@@ -59,21 +127,13 @@ def _geojson(
         features: list[dict[str, object]] = []
         for _, row in display.iterrows():
             values = {column: _json_value(row[column]) for column in properties}
-            flags = str(values.get("quality_flags_json", "{} ")).strip()
             values["qa_warning"] = (
-                flags not in {"", "{}", "null", "None"}
-                or bool(values.get("geometry_repaired", False))
-                or bool(values.get("boundary_case", False))
+                _quality_warning(values.get("quality_flags_json"))
+                or _evidence_truthy(values.get("geometry_repaired", False))
+                or _evidence_truthy(values.get("boundary_case", False))
                 or any(
-                    str(values.get(key, "")) in (mapping_warning_ids or set())
-                    for key in (
-                        "HYRIV_ID",
-                        "segment_id",
-                        "bridge_id",
-                        "facility_id",
-                        "settlement_id",
-                        "osm_id",
-                    )
+                    str(values.get(identifier, "")) in warned_ids
+                    for identifier, warned_ids in (mapping_warnings or {}).items()
                 )
             )
             features.append(
@@ -105,37 +165,64 @@ def _geojson(
     }
 
 
-def _mapping_warning_ids(paths: ProjectPaths, name: str) -> set[str]:
-    identifiers = {
-        "rivers": ("river", "HYRIV_ID"),
-        "roads": ("road", "segment_id"),
-        "bridges": ("bridge", "bridge_id"),
-        "facilities": ("facility", "facility_id"),
-        "settlements": ("settlement", "settlement_id"),
-    }
-    definition = identifiers.get(name)
+def _mapping_warning_lookup(
+    paths: ProjectPaths, name: str, source_path: Path
+) -> dict[str, set[str]]:
+    definition = _MAPPING_DEFINITIONS.get(name)
     if definition is None:
-        return set()
-    mapping_name, identifier = definition
-    path = paths.derived / "mappings" / f"map_subbasin_{mapping_name}.parquet"
-    if not path.is_file():
-        return set()
+        return {}
+    mapping_name, preferred_identifiers = definition
+    path = next(
+        (
+            candidate
+            for candidate in (
+                paths.derived / "mappings" / f"map_subbasin_{mapping_name}.parquet",
+                paths.derived / f"map_subbasin_{mapping_name}.parquet",
+            )
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if path is None or not source_path.is_file():
+        return {}
     try:
         table = pd.read_parquet(path)
-        if identifier not in table:
-            return set()
-        flags = (
-            table.get("quality_flags_json", pd.Series("{}", index=table.index))
-            .fillna("{}")
-            .astype(str)
-            .str.strip()
+        source = gpd.read_parquet(source_path)
+        shared = set(table.columns) & set(source.columns)
+        identifier = next(
+            (candidate for candidate in preferred_identifiers if candidate in shared), None
         )
-        warned = table.get("boundary_case", pd.Series(False, index=table.index)).fillna(
-            False
-        ).astype(bool) | ~flags.isin({"", "{}", "null", "None"})
-        return set(table.loc[warned, identifier].dropna().astype(str))
+        if identifier is None:
+            candidates = [
+                column
+                for column in shared - _MAPPING_EVIDENCE_COLUMNS - {"geometry"}
+                if table[column].notna().all()
+                and source[column].notna().all()
+                and source[column].is_unique
+            ]
+            candidates.sort(
+                key=lambda column: (
+                    not str(column).casefold().endswith(("_id", "_code", "_key")),
+                    str(column),
+                )
+            )
+            identifier = candidates[0] if candidates else None
+        if identifier is None:
+            return {}
+        warned = table.get("quality_flags_json", pd.Series("{}", index=table.index)).map(
+            _quality_warning
+        )
+        warned |= table.get("boundary_case", pd.Series(False, index=table.index)).map(
+            _evidence_truthy
+        )
+        tie_counts = pd.to_numeric(
+            table.get("boundary_center_tie_pixel_count", pd.Series(0, index=table.index)),
+            errors="coerce",
+        )
+        warned |= tie_counts.fillna(0).gt(0)
+        return {identifier: set(table.loc[warned, identifier].dropna().astype(str))}
     except Exception:  # noqa: BLE001 - map remains inspectable if an optional mapping is malformed.
-        return set()
+        return {}
 
 
 def _json_value(value: Any) -> object:
@@ -213,7 +300,10 @@ def publish_qa_map(paths: ProjectPaths, qa_dir: Path) -> Path:
             paths.dataset / candidates[0],
         )
         manifest["layers"][name] = _geojson(
-            source, data_dir / f"{name}.geojson", tolerance, _mapping_warning_ids(paths, name)
+            source,
+            data_dir / f"{name}.geojson",
+            tolerance,
+            _mapping_warning_lookup(paths, name, source),
         )  # type: ignore[index]
     for name, relative in sorted(_RASTERS.items()):
         source = paths.dataset / relative

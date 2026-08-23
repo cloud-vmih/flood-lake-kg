@@ -415,19 +415,60 @@ def _hydro_checks(paths: ProjectPaths) -> list[CheckResult]:
     return [hierarchy_check, topology, exit_warning]
 
 
+def _strict_integral_ids(values: pd.Series) -> set[int] | None:
+    """Return IDs only when every value is finite and exactly integral."""
+    numeric = pd.to_numeric(values, errors="coerce")
+    array = numeric.to_numpy(dtype="float64", na_value=np.nan)
+    valid = np.isfinite(array) & np.equal(array, np.floor(array))
+    if not valid.all():
+        return None
+    try:
+        return set(numeric.astype("int64"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _valid_entity_ids(values: pd.Series) -> set[str] | None:
+    """Normalize finite, nonblank relationship keys without accepting null sentinels."""
+
+    def normalized(value: object) -> str | None:
+        if value is None or isinstance(value, (bool, np.bool_)):
+            return None
+        try:
+            if bool(pd.isna(value)):
+                return None
+        except (TypeError, ValueError):
+            return None
+        if isinstance(value, (float, np.floating)):
+            if not np.isfinite(value):
+                return None
+            return format(float(value), ".17g")
+        if isinstance(value, (int, np.integer)):
+            return str(int(value))
+        text = str(value).strip()
+        if not text or text.casefold() in {"<na>", "nan", "none", "null"}:
+            return None
+        return text
+
+    result = [normalized(value) for value in values]
+    if any(value is None for value in result):
+        return None
+    return {value for value in result if value is not None}
+
+
 def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
     basin_path = paths.harmonized / "hydro" / "subbasin_l10.geoparquet"
     admin_path = paths.harmonized / "admin" / "admin_commune_2025.geoparquet"
     try:
-        basin_ids = set(
-            pd.to_numeric(gpd.read_parquet(basin_path)["HYBAS_ID"], errors="raise").astype("int64")
-        )
-        commune_ids = set(gpd.read_parquet(admin_path)["current_commune_code"].astype(str))
+        basin_ids = _strict_integral_ids(gpd.read_parquet(basin_path)["HYBAS_ID"])
+        commune_ids = _valid_entity_ids(gpd.read_parquet(admin_path)["current_commune_code"])
+        if basin_ids is None or commune_ids is None:
+            raise ValueError("invalid source identifiers")
     except Exception:  # noqa: BLE001
         basin_ids, commune_ids = set(), set()
     products = {
         "commune": (
-            "current_commune_code",
+            ("current_commune_code",),
             (admin_path,),
             {
                 "intersection_area_km2",
@@ -439,7 +480,7 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             },
         ),
         "river": (
-            "HYRIV_ID",
+            ("HYRIV_ID",),
             (paths.harmonized / "hydro" / "river_reach.geoparquet",),
             {
                 "intersected_length_km",
@@ -450,20 +491,21 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             },
         ),
         "road": (
-            "segment_id",
+            ("segment_id", "osm_id"),
             (
                 paths.derived / "exposure" / "road_segment.geoparquet",
                 paths.harmonized / "exposure" / "road_segment.geoparquet",
             ),
             {
                 "intersected_length_km",
+                "boundary_case",
                 "quality_flags_json",
                 "processing_crs",
                 "source_asset_ids_json",
             },
         ),
         "bridge": (
-            "bridge_id",
+            ("osm_id",),
             (
                 paths.derived / "exposure" / "bridge.geoparquet",
                 paths.harmonized / "exposure" / "bridge.geoparquet",
@@ -478,7 +520,7 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             },
         ),
         "facility": (
-            "facility_id",
+            ("osm_id",),
             (
                 paths.derived / "exposure" / "facility.geoparquet",
                 paths.harmonized / "exposure" / "facility.geoparquet",
@@ -493,7 +535,7 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             },
         ),
         "settlement": (
-            "settlement_id",
+            ("osm_id",),
             (
                 paths.derived / "exposure" / "settlement.geoparquet",
                 paths.harmonized / "exposure" / "settlement.geoparquet",
@@ -508,7 +550,7 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             },
         ),
         "population": (
-            None,
+            (),
             (),
             {
                 "population_scope",
@@ -529,7 +571,7 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
         ),
     }
     foreign_ok, bad, coverage, boundary_cases = True, 0, pd.Series(dtype="float64"), 0
-    for name, (entity_key, entity_paths, extras) in products.items():
+    for name, (entity_keys, entity_paths, extras) in products.items():
         path = _first(
             [
                 paths.derived / "mappings" / f"map_subbasin_{name}.parquet",
@@ -541,44 +583,33 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             continue
         try:
             table = pd.read_parquet(path)
-            required = {"HYBAS_ID", *extras} | ({entity_key} if entity_key else set())
+            required = {"HYBAS_ID", *extras, *entity_keys}
             if not required.issubset(table.columns):
                 foreign_ok, bad = False, bad + 1
                 continue
-            basin_values = pd.to_numeric(table["HYBAS_ID"], errors="coerce")
-            invalid = set(basin_values.dropna().astype("int64")) - basin_ids
-            nonintegral = (
-                ~np.isclose(basin_values.dropna(), np.floor(basin_values.dropna()))
-            ).any()
-            if basin_values.isna().any() or nonintegral or invalid:
-                foreign_ok, bad = False, bad + len(invalid)
-            if entity_key:
+            mapped_basin_ids = _strict_integral_ids(table["HYBAS_ID"])
+            invalid_basins = set() if mapped_basin_ids is None else mapped_basin_ids - basin_ids
+            if mapped_basin_ids is None or invalid_basins:
+                foreign_ok, bad = False, bad + max(1, len(invalid_basins))
+            if entity_keys:
                 entity_path = _first(entity_paths)
                 if entity_path is None:
                     foreign_ok, bad = False, bad + 1
                     continue
                 entity = gpd.read_parquet(entity_path)
-                source_key = (
-                    entity_key
-                    if entity_key in entity.columns
-                    else "osm_id"
-                    if "osm_id" in entity.columns
-                    else entity_key
-                )
-                if source_key not in entity:
-                    foreign_ok, bad = False, bad + 1
-                    continue
-                if (
-                    table[entity_key].isna().any()
-                    or table[entity_key].astype(str).str.strip().eq("").any()
-                ):
-                    foreign_ok, bad = False, bad + 1
-                    continue
-                invalid = set(table[entity_key].dropna().astype(str)) - set(
-                    entity[source_key].dropna().astype(str)
-                )
-                if invalid:
-                    foreign_ok, bad = False, bad + len(invalid)
+                for entity_key in entity_keys:
+                    if entity_key not in entity:
+                        foreign_ok, bad = False, bad + 1
+                        continue
+                    mapping_ids = _valid_entity_ids(table[entity_key])
+                    source_ids = _valid_entity_ids(entity[entity_key])
+                    invalid_entities = (
+                        set()
+                        if mapping_ids is None or source_ids is None
+                        else mapping_ids - source_ids
+                    )
+                    if mapping_ids is None or source_ids is None or invalid_entities:
+                        foreign_ok, bad = False, bad + max(1, len(invalid_entities))
             if name == "commune":
                 coverage = pd.to_numeric(
                     table.groupby("current_commune_code")["commune_fraction"].sum(), errors="coerce"
@@ -593,7 +624,7 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
         "fatal",
         "every mapping foreign key exists",
         f"{bad} invalid/missing mapping products or keys",
-        "all seven approved mappings have exact schemas and two-sided foreign keys",
+        "all seven approved mappings have required schemas and two-sided foreign keys",
     )
     if coverage.empty:
         coverage_check = _check(
@@ -1078,19 +1109,19 @@ def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[Che
     for root in sorted(roots, key=lambda asset: asset.asset_id):
         visit(root.asset_id, set())
     raw_root = paths.raw.resolve()
-    raw = [
+    pipeline_raw = [
         asset
         for asset in assets
         if asset.kind is AssetKind.RAW
         and Path(asset.storage_path).resolve().is_relative_to(raw_root)
         and asset.duplicate_of_asset_id is None
     ]
-    used = [asset for asset in raw if asset.asset_id in used_ids]
+    used = [asset for asset in assets if asset.kind is AssetKind.RAW and asset.asset_id in used_ids]
     required = ("source_uri", "source_version", "license_id", "checksum", "retrieved_at")
     incomplete = [
         asset.asset_id for asset in used if any(not getattr(asset, field) for field in required)
     ]
-    raw_bytes = sum(asset.size_bytes for asset in raw)
+    raw_bytes = sum(asset.size_bytes for asset in pipeline_raw)
     disk_free = shutil.disk_usage(paths.dataset if paths.dataset.exists() else paths.root).free
     return [
         _check(

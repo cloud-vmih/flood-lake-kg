@@ -26,6 +26,8 @@ def checked_basins(basins: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     numeric = ids.to_numpy(dtype="float64")
     if not np.isfinite(numeric).all():
         raise ValueError("HYBAS_ID values must be finite")
+    if not np.equal(numeric, np.floor(numeric)).all():
+        raise ValueError("HYBAS_ID values must be exact integers")
     if ids.duplicated().any():
         raise ValueError("duplicate HYBAS_ID values are not allowed")
     result = basins.copy()
@@ -33,7 +35,9 @@ def checked_basins(basins: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return result.sort_values("HYBAS_ID").reset_index(drop=True)
 
 
-def geometry_in_dataset_crs(geometry: BaseGeometry, source_crs: object, dataset_crs: object) -> BaseGeometry:
+def geometry_in_dataset_crs(
+    geometry: BaseGeometry, source_crs: object, dataset_crs: object
+) -> BaseGeometry:
     """Reproject one basin geometry without changing its source GeoDataFrame."""
     if str(source_crs) == str(dataset_crs):
         return geometry

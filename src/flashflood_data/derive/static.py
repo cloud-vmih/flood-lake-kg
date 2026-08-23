@@ -43,6 +43,8 @@ def _validate_output(table: pd.DataFrame) -> None:
     ids = pd.to_numeric(table["HYBAS_ID"], errors="raise").to_numpy(dtype="float64")
     if not np.isfinite(ids).all():
         raise ValueError("static predictor output has nonfinite HYBAS_ID")
+    if not np.equal(ids, np.floor(ids)).all():
+        raise ValueError("static predictor output HYBAS_ID values must be exact integers")
     if pd.Series(ids).duplicated().any():
         raise ValueError("static predictor output has duplicate HYBAS_ID")
     numeric = table.select_dtypes(include=[np.number])
@@ -100,15 +102,6 @@ def task15_derive_handler(inputs: StaticPredictorInputs, output_dir: Path, *, ow
             return []
         outputs = derive_static_predictor_tables(inputs, output_dir)
         source = pipeline.source_specs[source_id]
-        dependency_asset_ids = tuple(
-            sorted(
-                {
-                    asset_id
-                    for asset_ids in inputs.source_asset_ids.values()
-                    for asset_id in asset_ids
-                }
-            )
-        )
         return [
             AssetRecord(
                 asset_id=f"task15-{name}-features",
@@ -125,7 +118,8 @@ def task15_derive_handler(inputs: StaticPredictorInputs, output_dir: Path, *, ow
                 pipeline_run_id=context.run_id,
                 status=AssetStatus.DERIVED,
                 metadata_json=json.dumps(
-                    {"dependency_asset_ids": dependency_asset_ids}, sort_keys=True
+                    {"dependency_asset_ids": sorted(set(inputs.source_asset_ids.get(name, ())))},
+                    sort_keys=True,
                 ),
             )
             for name, path in outputs.items()

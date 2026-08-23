@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
 import rasterio
 from rasterio.transform import from_origin
-from shapely.geometry import box
+from shapely.geometry import LineString, Point, box
 
+from flashflood_data.catalog import AssetCatalog
+from flashflood_data.config import StudyAreaConfig
 from flashflood_data.derive.profile import (
     Task16MapInputs,
     assemble_static_profile,
     task16_map_handler,
 )
-from flashflood_data.models import SourceSpec
+from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
+from flashflood_data.paths import ProjectPaths
+from flashflood_data.qa.checks import run_quality_gates
 
 
 def _basins() -> gpd.GeoDataFrame:
@@ -59,6 +65,15 @@ def test_profile_rejects_duplicate_feature_keys_before_join() -> None:
     features["terrain"] = pd.DataFrame({"HYBAS_ID": [1, 1], "terrain_value": [1.0, 2.0]})
 
     with pytest.raises(ValueError, match="duplicate HYBAS_ID"):
+        assemble_static_profile(_basins(), features, "run-1")
+
+
+def test_profile_rejects_near_integral_feature_key_before_cast() -> None:
+    """A fractional predictor key must not be coerced onto an existing selected basin."""
+    features = _required_features()
+    features["terrain"]["HYBAS_ID"] = [1.000000001, 2.0]
+
+    with pytest.raises(ValueError, match="exact integers"):
         assemble_static_profile(_basins(), features, "run-1")
 
 
@@ -124,12 +139,44 @@ def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_pa
         core=box(104, 20, 106, 21),
         worldpop=worldpop,
         feature_tables=_required_features(),
+        communes=gpd.GeoDataFrame(
+            {"current_commune_code": ["14001"]},
+            geometry=[box(104, 20, 106, 21)],
+            crs="EPSG:4326",
+        ),
+        rivers=gpd.GeoDataFrame(
+            {"HYRIV_ID": [7001]},
+            geometry=[LineString([(104, 20.5), (106, 20.5)])],
+            crs="EPSG:4326",
+        ),
+        roads=gpd.GeoDataFrame(
+            {"segment_id": ["way/1:000"], "osm_id": ["way/1"]},
+            geometry=[LineString([(104, 20.25), (106, 20.25)])],
+            crs="EPSG:4326",
+        ),
+        bridges=gpd.GeoDataFrame(
+            {"osm_id": ["way/2"]},
+            geometry=[LineString([(104, 20.75), (106, 20.75)])],
+            crs="EPSG:4326",
+        ),
+        facilities=gpd.GeoDataFrame(
+            {"osm_id": ["node/1"]}, geometry=[Point(104.5, 20.5)], crs="EPSG:4326"
+        ),
+        settlements=gpd.GeoDataFrame(
+            {"osm_id": ["node/2"]}, geometry=[Point(105.5, 20.5)], crs="EPSG:4326"
+        ),
         source_asset_ids={
-            "terrain": ("dem-harmonized",),
-            "soil": ("soilgrids-harmonized",),
-            "landcover": ("worldcover-harmonized",),
-            "hydrology": ("hydrorivers-harmonized", "basinatlas-harmonized"),
-            "population": ("worldpop-harmonized",),
+            "terrain": ("raw-basins", "raw-dem"),
+            "soil": ("raw-basins", "raw-soilgrids"),
+            "landcover": ("raw-basins", "raw-worldcover"),
+            "hydrology": ("raw-basinatlas", "raw-basins", "raw-dem", "raw-rivers"),
+            "commune": ("raw-admin", "raw-basins"),
+            "river": ("raw-basins", "raw-rivers"),
+            "road": ("raw-basins", "raw-osm"),
+            "bridge": ("raw-basins", "raw-osm"),
+            "facility": ("raw-basins", "raw-osm"),
+            "settlement": ("raw-basins", "raw-osm"),
+            "population": ("raw-basins", "raw-worldpop"),
         },
     )
     handler = task16_map_handler(inputs, tmp_path / "derived", owner_source_id="worldpop")
@@ -163,22 +210,135 @@ def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_pa
     metadata = {
         record.asset_id: __import__("json").loads(record.metadata_json) for record in records
     }
-    assert metadata["task16-map-subbasin-population"]["dependency_asset_ids"] == [
-        "worldpop-harmonized"
-    ]
+    expected_mapping_dependencies = {
+        "task16-map-subbasin-commune": ["raw-admin", "raw-basins"],
+        "task16-map-subbasin-river": ["raw-basins", "raw-rivers"],
+        "task16-map-subbasin-road": ["raw-basins", "raw-osm"],
+        "task16-map-subbasin-bridge": ["raw-basins", "raw-osm"],
+        "task16-map-subbasin-facility": ["raw-basins", "raw-osm"],
+        "task16-map-subbasin-settlement": ["raw-basins", "raw-osm"],
+        "task16-map-subbasin-population": ["raw-basins", "raw-worldpop"],
+    }
+    assert {
+        asset_id: metadata[asset_id]["dependency_asset_ids"]
+        for asset_id in expected_mapping_dependencies
+    } == expected_mapping_dependencies
     assert metadata["task16-subbasin-static-feature"]["dependency_asset_ids"] == [
-        "basinatlas-harmonized",
-        "dem-harmonized",
-        "hydrorivers-harmonized",
-        "soilgrids-harmonized",
-        "worldcover-harmonized",
-        "worldpop-harmonized",
+        "raw-admin",
+        "raw-basinatlas",
+        "raw-basins",
+        "raw-dem",
+        "raw-osm",
+        "raw-rivers",
+        "raw-soilgrids",
+        "raw-worldcover",
+        "raw-worldpop",
     ]
     profile = gpd.read_parquet(tmp_path / "derived" / "subbasin_static_feature.geoparquet")
     assert __import__("json").loads(profile.feature_group_source_asset_ids_json.iloc[0]) == {
-        "hydrology": ["hydrorivers-harmonized", "basinatlas-harmonized"],
-        "landcover": ["worldcover-harmonized"],
-        "population": ["worldpop-harmonized"],
-        "soil": ["soilgrids-harmonized"],
-        "terrain": ["dem-harmonized"],
+        "hydrology": ["raw-basinatlas", "raw-basins", "raw-dem", "raw-rivers"],
+        "landcover": ["raw-basins", "raw-worldcover"],
+        "population": ["raw-basins", "raw-worldpop"],
+        "soil": ["raw-basins", "raw-soilgrids"],
+        "terrain": ["raw-basins", "raw-dem"],
     }
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    raw_ids = {asset_id for asset_ids in inputs.source_asset_ids.values() for asset_id in asset_ids}
+    for asset_id in raw_ids:
+        catalog.upsert(
+            AssetRecord(
+                asset_id=asset_id,
+                source_id="fixture",
+                source_version="2026",
+                kind=AssetKind.RAW,
+                source_uri=f"https://example.test/{asset_id}",
+                storage_path=str(paths.root / "legacy" / asset_id),
+                media_type="application/octet-stream",
+                size_bytes=1,
+                checksum="3" * 64,
+                retrieved_at=datetime.now(UTC),
+                license_id="CC-BY-4.0",
+                pipeline_run_id="map-test",
+                status=AssetStatus.VALIDATED,
+                metadata_json='{"dependency_asset_ids":["ignored-because-raw"]}',
+            )
+        )
+    for record in records:
+        catalog.upsert(record)
+
+    lineage_report = run_quality_gates(paths, StudyAreaConfig())
+
+    assert lineage_report.by_id("raw.provenance").passed
+    assert (
+        lineage_report.by_id("raw.provenance").actual
+        == "9/9 used raw assets complete; 0 unresolved dependencies"
+    )
+
+
+def test_task16_empty_optional_relationships_keep_required_producer_schemas(
+    tmp_path,
+) -> None:
+    """An empty relationship table remains readable with every mandatory Task 16 field."""
+    worldpop = tmp_path / "worldpop-empty-contract.tif"
+    with rasterio.open(
+        worldpop,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=1,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(104, 21, 1, 1),
+    ) as destination:
+        destination.write(np.asarray([[10, 20]], dtype="float32"), 1)
+    handler = task16_map_handler(
+        Task16MapInputs(
+            basins=_basins(),
+            core=box(104, 20, 106, 21),
+            worldpop=worldpop,
+            feature_tables=_required_features(),
+        ),
+        tmp_path / "empty-derived",
+        owner_source_id="worldpop",
+    )
+    pipeline = type(
+        "Pipeline",
+        (),
+        {
+            "source_specs": {
+                "worldpop": SourceSpec(
+                    source_id="worldpop", adapter="existing", version="1", license_id="x"
+                )
+            }
+        },
+    )()
+
+    handler(pipeline, "map", "worldpop", type("Context", (), {"run_id": "empty"})())
+
+    road = pd.read_parquet(tmp_path / "empty-derived" / "map_subbasin_road.parquet")
+    bridge = pd.read_parquet(tmp_path / "empty-derived" / "map_subbasin_bridge.parquet")
+    assert {
+        "HYBAS_ID",
+        "segment_id",
+        "osm_id",
+        "intersected_length_km",
+        "boundary_case",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
+    } <= set(road)
+    assert {
+        "HYBAS_ID",
+        "osm_id",
+        "intersected_length_km",
+        "relationship_geometry_wkt",
+        "boundary_case",
+        "quality_flags_json",
+        "processing_crs",
+        "source_asset_ids_json",
+    } <= set(bridge)
+    assert road.columns.is_unique
+    assert bridge.columns.is_unique

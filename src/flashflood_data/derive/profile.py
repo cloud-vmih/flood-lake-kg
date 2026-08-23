@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from flashflood_data.catalog import sha256_file
@@ -34,7 +35,12 @@ def _checked_feature_table(name: str, table: pd.DataFrame, basin_ids: set[int]) 
         raise ValueError(f"feature table {name} is missing required HYBAS_ID column")
     result = table.copy()
     ids = pd.to_numeric(result["HYBAS_ID"], errors="raise")
-    if ids.isna().any() or ids.duplicated().any():
+    numeric = ids.to_numpy(dtype="float64")
+    if not np.isfinite(numeric).all():
+        raise ValueError(f"feature table {name} has nonfinite HYBAS_ID values")
+    if not np.equal(numeric, np.floor(numeric)).all():
+        raise ValueError(f"feature table {name} HYBAS_ID values must be exact integers")
+    if ids.duplicated().any():
         raise ValueError(f"feature table {name} has duplicate HYBAS_ID values")
     result["HYBAS_ID"] = ids.astype("int64")
     unexpected = set(result.HYBAS_ID) - basin_ids
@@ -171,14 +177,14 @@ class Task16MapInputs:
     bridges: gpd.GeoDataFrame | None = None
     facilities: gpd.GeoDataFrame | None = None
     settlements: gpd.GeoDataFrame | None = None
-    bridge_id: str = "bridge_id"
-    facility_id: str = "facility_id"
-    settlement_id: str = "settlement_id"
+    bridge_id: str = "osm_id"
+    facility_id: str = "osm_id"
+    settlement_id: str = "osm_id"
     source_asset_ids: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _empty_map(columns: list[str]) -> pd.DataFrame:
-    return pd.DataFrame(columns=columns)
+    return pd.DataFrame(columns=list(dict.fromkeys(columns)))
 
 
 def _set_provenance(table: pd.DataFrame, source_asset_ids: tuple[str, ...]) -> pd.DataFrame:
@@ -239,6 +245,7 @@ def _task16_tables(inputs: Task16MapInputs) -> dict[str, pd.DataFrame]:
                     "segment_id",
                     "osm_id",
                     "intersected_length_km",
+                    "boundary_case",
                     "quality_flags_json",
                     "processing_crs",
                     "source_asset_ids_json",

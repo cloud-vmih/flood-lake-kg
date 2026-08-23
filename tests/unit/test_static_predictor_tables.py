@@ -100,7 +100,12 @@ def test_task15_handler_runs_once_for_its_composed_owner_source(tmp_path: Path) 
             geometry=[LineString([(500_000, 30), (500_060, 30)])], crs="EPSG:32648"
         ),
         basins=basins,
-        source_asset_ids={"terrain": ("dem-harmonized",)},
+        source_asset_ids={
+            "terrain": ("raw-basins", "raw-dem"),
+            "soil": ("raw-basins", "raw-soilgrids"),
+            "landcover": ("raw-basins", "raw-worldcover"),
+            "hydrology": ("raw-basins", "raw-basinatlas", "raw-dem", "raw-rivers"),
+        },
     )
     handler = task15_derive_handler(inputs, tmp_path / "derived", owner_source_id="terrain")
     pipeline = SimpleNamespace(
@@ -122,7 +127,18 @@ def test_task15_handler_runs_once_for_its_composed_owner_source(tmp_path: Path) 
         "landcover_features.parquet",
         "hydrology_features.parquet",
     }
-    assert all(
-        __import__("json").loads(record.metadata_json)["dependency_asset_ids"] == ["dem-harmonized"]
+    expected_dependencies = {
+        "task15-terrain-features": ["raw-basins", "raw-dem"],
+        "task15-soil-features": ["raw-basins", "raw-soilgrids"],
+        "task15-landcover-features": ["raw-basins", "raw-worldcover"],
+        "task15-hydrology-features": [
+            "raw-basinatlas",
+            "raw-basins",
+            "raw-dem",
+            "raw-rivers",
+        ],
+    }
+    assert {
+        record.asset_id: __import__("json").loads(record.metadata_json)["dependency_asset_ids"]
         for record in records
-    )
+    } == expected_dependencies

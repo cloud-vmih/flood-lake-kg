@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 import geopandas as gpd
-from shapely.geometry import LineString, box
+import pandas as pd
+from shapely.geometry import LineString, Point, box
 
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.qa.map import publish_qa_map
@@ -102,3 +103,77 @@ def test_map_joins_task16_boundary_warning_to_river_feature(tmp_path: Path) -> N
 
     feature = json.loads((index.parent / "data" / "rivers.geojson").read_text())["features"][0]
     assert feature["properties"]["qa_warning"] is True
+
+
+def test_map_propagates_mapping_warnings_to_every_display_entity_contract(
+    tmp_path: Path,
+) -> None:
+    """Dropping commune, population, or configurable-ID joins hides real QA evidence."""
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    vector_layers = {
+        "communes": (
+            paths.harmonized / "admin" / "admin_commune_2025.geoparquet",
+            {"current_commune_code": ["C1", "C2"]},
+            [box(104, 20, 104.5, 20.5), box(104.5, 20, 105, 20.5)],
+        ),
+        "subbasins_l10": (
+            paths.harmonized / "hydro" / "subbasin_l10.geoparquet",
+            {"HYBAS_ID": [1, 2]},
+            [box(104, 20, 104.5, 20.5), box(104.5, 20, 105, 20.5)],
+        ),
+        "rivers": (
+            paths.harmonized / "hydro" / "river_reach.geoparquet",
+            {"HYRIV_ID": ["R1", "R2"]},
+            [LineString([(104, 20.1), (104.4, 20.1)]), LineString([(104.6, 20.1), (105, 20.1)])],
+        ),
+        "facilities": (
+            paths.derived / "exposure" / "facility.geoparquet",
+            {"clinic_code": ["F1", "F2"], "osm_id": ["node/1", "node/2"]},
+            [Point(104.25, 20.25), Point(104.75, 20.25)],
+        ),
+    }
+    for path, columns, geometry in vector_layers.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        gpd.GeoDataFrame(columns, geometry=geometry, crs="EPSG:4326").to_parquet(path, index=False)
+    mapping_dir = paths.derived / "mappings"
+    mapping_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "HYBAS_ID": [1],
+            "current_commune_code": ["C1"],
+            "quality_flags_json": ['{"coverage_sliver":true}'],
+        }
+    ).to_parquet(mapping_dir / "map_subbasin_commune.parquet", index=False)
+    pd.DataFrame(
+        {
+            "HYBAS_ID": [1],
+            "boundary_center_tie_pixel_count": [1],
+            "quality_flags_json": ['{"boundary_center_tie_pixel_count":1}'],
+        }
+    ).to_parquet(mapping_dir / "map_subbasin_population.parquet", index=False)
+    pd.DataFrame({"HYBAS_ID": [1], "HYRIV_ID": ["R1"], "boundary_case": [True]}).to_parquet(
+        mapping_dir / "map_subbasin_river.parquet", index=False
+    )
+    pd.DataFrame(
+        {
+            "HYBAS_ID": [1],
+            "clinic_code": ["F1"],
+            "boundary_case": [True],
+            "quality_flags_json": ["{}"],
+        }
+    ).to_parquet(mapping_dir / "map_subbasin_facility.parquet", index=False)
+
+    index = publish_qa_map(paths, paths.qa)
+
+    def warnings(layer: str, identifier: str) -> dict[str, bool]:
+        features = json.loads((index.parent / "data" / f"{layer}.geojson").read_text())["features"]
+        return {
+            str(feature["properties"][identifier]): feature["properties"]["qa_warning"]
+            for feature in features
+        }
+
+    assert warnings("communes", "current_commune_code") == {"C1": True, "C2": False}
+    assert warnings("subbasins_l10", "HYBAS_ID") == {"1": True, "2": False}
+    assert warnings("rivers", "HYRIV_ID") == {"R1": True, "R2": False}
+    assert warnings("facilities", "clinic_code") == {"F1": True, "F2": False}

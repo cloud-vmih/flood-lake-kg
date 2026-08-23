@@ -36,6 +36,19 @@ def test_commune_mapping_carries_both_hand_derived_area_fractions() -> None:
     assert set(result) >= {"source_asset_ids_json", "processing_crs"}
 
 
+def test_mapping_rejects_near_integral_basin_id_before_cast() -> None:
+    """Casting 11.000000001 to basin 11 would silently rewrite the relationship key."""
+    basins = gpd.GeoDataFrame(
+        {"HYBAS_ID": [11.000000001]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:32648"
+    )
+    communes = gpd.GeoDataFrame(
+        {"current_commune_code": ["A"]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:32648"
+    )
+
+    with pytest.raises(ValueError, match="exact integers"):
+        map_subbasin_commune(basins, communes)
+
+
 def test_line_mapping_reports_metric_intersection_length() -> None:
     """Measuring in geographic degrees instead of EPSG:32648 would return the wrong length."""
     basins = gpd.GeoDataFrame({"HYBAS_ID": [11]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:32648")
@@ -49,6 +62,20 @@ def test_line_mapping_reports_metric_intersection_length() -> None:
     assert result.loc[0, "HYRIV_ID"] == 70
     assert result.loc[0, "intersected_length_km"] == pytest.approx(0.1)
     assert result.loc[0, "boundary_case"] == False
+
+
+@pytest.mark.parametrize("invalid_id", [float("inf"), " "])
+def test_line_mapping_rejects_invalid_entity_identity(invalid_id: object) -> None:
+    """Null-like or nonfinite source identities cannot become relationship foreign keys."""
+    basins = gpd.GeoDataFrame({"HYBAS_ID": [11]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:32648")
+    rivers = gpd.GeoDataFrame(
+        {"HYRIV_ID": [invalid_id]},
+        geometry=[LineString([(-20, 50), (120, 50)])],
+        crs="EPSG:32648",
+    )
+
+    with pytest.raises(ValueError, match="invalid HYRIV_ID"):
+        map_subbasin_lines(basins, rivers, "HYRIV_ID")
 
 
 def test_bridge_mapping_can_preserve_the_unsimplified_relationship_geometry() -> None:
@@ -70,7 +97,7 @@ def test_line_mapping_rejects_source_columns_that_would_overwrite_evidence() -> 
     """Allowing source HYBAS_ID or flags to overwrite overlay evidence corrupts the relationship."""
     basins = gpd.GeoDataFrame({"HYBAS_ID": [11]}, geometry=[box(0, 0, 100, 100)], crs="EPSG:32648")
     rivers = gpd.GeoDataFrame(
-        {"HYRIV_ID": [70], "HYBAS_ID": [999], "quality_flags_json": ["{\"fake\":true}"]},
+        {"HYRIV_ID": [70], "HYBAS_ID": [999], "quality_flags_json": ['{"fake":true}']},
         geometry=[LineString([(-20, 50), (120, 50)])],
         crs="EPSG:32648",
     )
