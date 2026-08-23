@@ -7,6 +7,27 @@ from pathlib import Path
 
 import yaml
 
+_SOIL_DIVISORS = {
+    "clay": 10.0,
+    "sand": 10.0,
+    "silt": 10.0,
+    "bdod": 100.0,
+    "cfvo": 10.0,
+    "wv0010": 10.0,
+    "wv0033": 10.0,
+    "wv1500": 10.0,
+}
+_WORLDCOVER_CLASSES = {
+    10: "tree_cover", 20: "shrubland", 30: "grassland", 40: "cropland",
+    50: "built_up", 60: "bare_sparse", 70: "snow_ice", 80: "permanent_water",
+    90: "herbaceous_wetland", 95: "mangroves", 100: "moss_lichen",
+}
+_BASINATLAS_FIELDS = (
+    "dis_m3_pyr", "run_mm_syr", "inu_pc_smn", "inu_pc_smx", "lka_pc_sse",
+    "dor_pc_pva", "ria_ha_ssu", "riv_tc_ssu", "gwt_cm_sav", "ele_mt_sav",
+    "ele_mt_smn", "ele_mt_smx", "slp_dg_sav", "sgr_dk_sav", "pre_mm_syr",
+)
+
 
 @dataclass(frozen=True)
 class FeatureConfig:
@@ -50,10 +71,14 @@ def load_feature_config(path: Path | None = None) -> FeatureConfig:
         raise ValueError("features config has invalid Task 15 semantics") from error
     if config.processing_crs != "EPSG:32648" or config.terrain_resolution_m != 30:
         raise ValueError("Task 15 requires EPSG:32648 at 30 m")
-    if set(config.soil_properties) != set(config.soil_divisors) or len(config.soil_divisors) != 8:
-        raise ValueError("features config must define one divisor for each SoilGrids property")
+    if config.soil_divisors != _SOIL_DIVISORS:
+        raise ValueError("features config must define the exact SoilGrids divisor mapping")
     if len(config.soil_properties) * len(config.soil_depths) * len(config.soil_statistics) != 96:
         raise ValueError("features config must define the 96 SoilGrids asset labels")
     if config.soil_depth_bands_cm != ((0, 30), (30, 100)):
         raise ValueError("Task 15 requires 0-30 and 30-100 cm SoilGrids bands")
+    if config.worldcover_classes != _WORLDCOVER_CLASSES or len(set(config.worldcover_classes.values())) != 11:
+        raise ValueError("features config must define the exact WorldCover code-to-name mapping")
+    if config.basinatlas_fields != _BASINATLAS_FIELDS:
+        raise ValueError("features config must define the exact BasinATLAS field set")
     return config

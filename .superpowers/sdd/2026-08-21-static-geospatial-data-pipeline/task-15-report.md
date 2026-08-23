@@ -84,6 +84,29 @@ Dependency check:
 No broken requirements found.
 ```
 
+## Fix round 2 — fixed semantic contract
+
+Mutation-style RED tests changed `bdod`'s divisor, reassigned WorldCover code
+10, and replaced a BasinATLAS field. Each invalid configuration previously
+loaded successfully. The validated repository-relative loader now rejects any
+deviation from the exact eight SoilGrids divisor values, eleven stable unique
+WorldCover code/name pairs, or ordered set of fifteen BasinATLAS fields, while
+retaining the EPSG:32648/30 m checks.
+
+```text
+.venv/bin/pytest tests/unit/test_feature_config.py -q
+4 passed in 0.08s
+
+.venv/bin/pytest -q
+281 passed in 8.32s
+
+.venv/bin/ruff check .
+All checks passed!
+
+.venv/bin/pip check
+No broken requirements found.
+```
+
 ## Concerns
 
 - The bounded raster work is confined to a basin window rather than loading an
