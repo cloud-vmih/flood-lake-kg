@@ -1,0 +1,10 @@
+sources:
+  - source_id: gadm_vnm_4_1
+    adapter: gadm_admin
+    version: "4.1"
+    license_id: gadm-license
+    settings:
+      archive_url: https://geodata.ucdavis.edu/gadm/gadm4.1/shp/gadm41_VNM_shp.zip
+      license_url: https://gadm.org/license.html
+      province_name: Sơn La
+      historical_valid_to: "2025-06-30"

@@ -1,0 +1,9 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"GID_3": "VNM.14.1.1_1", "NAME_1": "Sơn La", "NAME_2": "Thành phố Sơn La", "NAME_3": "Chiềng An"}, "geometry": {"type": "Polygon", "coordinates": [[[103.0, 21.0], [103.025, 21.0], [103.025, 21.1], [103.0, 21.1], [103.0, 21.0]]]}} ,
+    {"type": "Feature", "properties": {"GID_3": "VNM.14.1.2_1", "NAME_1": "Sơn La", "NAME_2": "Thành phố Sơn La", "NAME_3": "Chiềng Xôm"}, "geometry": {"type": "Polygon", "coordinates": [[[103.025, 21.0], [103.05, 21.0], [103.05, 21.1], [103.025, 21.1], [103.025, 21.0]]]}} ,
+    {"type": "Feature", "properties": {"GID_3": "VNM.14.1.3_1", "NAME_1": "Sơn La", "NAME_2": "Thành phố Sơn La", "NAME_3": "Chiềng Đen"}, "geometry": {"type": "Polygon", "coordinates": [[[103.05, 21.0], [103.1, 21.0], [103.1, 21.1], [103.05, 21.1], [103.05, 21.0]]]}} ,
+    {"type": "Feature", "properties": {"GID_3": "VNM.99.1.1_1", "NAME_1": "Điện Biên", "NAME_2": "Fixture district", "NAME_3": "Outside Sơn La"}, "geometry": {"type": "Polygon", "coordinates": [[[104.0, 22.0], [104.1, 22.0], [104.1, 22.1], [104.0, 22.1], [104.0, 22.0]]]}}
+  ]
+}
