@@ -26,7 +26,7 @@ from flashflood_data.models import (
     RemoteAsset,
     ValidationResult,
 )
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.vector import write_geoparquet
 
 _MD5 = re.compile(r"^[0-9a-fA-F]{32}$")
@@ -286,7 +286,7 @@ class GeofabrikOsmAdapter(SourceAdapter):
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
         if not isinstance(value, str) or not value:
-            raise ValueError(f"Geofabrik setting {key!r} must be a non-empty string")
+            raise SourceConfigurationError(f"Geofabrik setting {key!r} must be a non-empty string")
         return value
 
     def _pbf_metadata(self) -> SnapshotMetadata:

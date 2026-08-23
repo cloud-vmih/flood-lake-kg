@@ -31,7 +31,7 @@ from flashflood_data.raster import (
     raster_coverage_ratio,
     validate_raster,
 )
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 
 _DEFAULT_VALID_CLASSES = (10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100)
 _WATER_CLASS = 80
@@ -103,19 +103,19 @@ class WorldCoverAdapter(SourceAdapter):
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
         if not isinstance(value, str) or not value:
-            raise ValueError(f"WorldCover setting {key!r} must be a non-empty string")
+            raise SourceConfigurationError(f"WorldCover setting {key!r} must be a non-empty string")
         return value
 
     def _classes(self) -> tuple[int, ...]:
         value = self.spec.settings.get("valid_classes")
         if not isinstance(value, tuple) or not value or any(type(item) is not int for item in value):
-            raise ValueError("WorldCover valid_classes must be a non-empty integer list")
+            raise SourceConfigurationError("WorldCover valid_classes must be a non-empty integer list")
         return value
 
     def _nodata(self) -> int:
         value = self.spec.settings.get("nodata")
         if type(value) is not int or not 0 <= value <= 255:
-            raise ValueError("WorldCover nodata must be a byte value")
+            raise SourceConfigurationError("WorldCover nodata must be a byte value")
         return value
 
     def _aoi(self, context: SourceContext, name: str) -> BaseGeometry:

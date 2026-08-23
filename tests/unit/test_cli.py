@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 from flashflood_data.cli import app
 from flashflood_data.http import BudgetRejected
 from flashflood_data.pipeline import RunSummary, Stage
+from flashflood_data.sources.base import SourceConfigurationError
 from flashflood_data.sources.cop_dem import MissingCredentials
 
 
@@ -107,6 +108,19 @@ class BudgetPipeline(RecordingPipeline):
 
 def test_cli_treats_budget_rejection_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("flashflood_data.cli.StaticPipeline", BudgetPipeline)
+
+    result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
+
+    assert result.exit_code == 2
+
+
+class ConfigurationPipeline(RecordingPipeline):
+    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
+        raise SourceConfigurationError("fixture setting is invalid")
+
+
+def test_cli_treats_typed_adapter_configuration_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", ConfigurationPipeline)
 
     result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
 

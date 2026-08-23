@@ -17,7 +17,7 @@ from flashflood_data.http import BudgetRejected
 from flashflood_data.models import AssetStatus, RunRecord
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.pipeline import STATIC_ORDER, RunSummary, Stage, StaticPipeline
-from flashflood_data.sources.base import SourceContext
+from flashflood_data.sources.base import SourceConfigurationError, SourceContext
 from flashflood_data.sources.cop_dem import MissingCredentials
 from flashflood_data.sources.existing import inventory_existing
 
@@ -52,7 +52,7 @@ def _run_stage(
         summary = StaticPipeline(ProjectPaths.discover(root), profile=profile).run(
             stages, source, resolve_only=resolve_only, command=command
         )
-    except (BudgetRejected, TypeError, ValueError, MissingCredentials) as exc:
+    except (BudgetRejected, SourceConfigurationError, TypeError, ValueError, MissingCredentials) as exc:
         typer.echo(json.dumps({"error_code": "configuration_error", "status": "failed"}), err=True)
         raise typer.Exit(code=2) from exc
     except Exception as exc:

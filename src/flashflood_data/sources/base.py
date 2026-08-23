@@ -21,6 +21,10 @@ class SourceContext:
     run_id: str
 
 
+class SourceConfigurationError(ValueError):
+    """Raised for invalid manifest settings before source work can begin."""
+
+
 class SourceAdapter(ABC):
     """Resolve, validate, and harmonize assets for one configured source."""
 

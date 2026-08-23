@@ -23,7 +23,7 @@ from flashflood_data.models import (
     RemoteAsset,
     ValidationResult,
 )
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.vector import repair_geometries, validate_vector, write_geoparquet
 
 CURRENT_FIELD_MAP: Final[dict[str, str]] = {
@@ -268,7 +268,7 @@ class CurrentAdminAdapter(SourceAdapter):
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
         if not isinstance(value, str):
-            raise TypeError(f"admin source setting {key!r} must be a string")
+            raise SourceConfigurationError(f"admin source setting {key!r} must be a string")
         return value
 
     def _index_remote(self) -> RemoteAsset:
@@ -276,7 +276,7 @@ class CurrentAdminAdapter(SourceAdapter):
         if not isinstance(form, dict) or not all(
             isinstance(key, str) and isinstance(value, str) for key, value in form.items()
         ):
-            raise ValueError("admin source index_form must be a string mapping")
+            raise SourceConfigurationError("admin source index_form must be a string mapping")
         return RemoteAsset(
             asset_id=INDEX_ASSET_ID,
             source_id=self.spec.source_id,
@@ -471,7 +471,7 @@ class GadmAdminAdapter(SourceAdapter):
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
         if not isinstance(value, str):
-            raise TypeError(f"GADM source setting {key!r} must be a string")
+            raise SourceConfigurationError(f"GADM source setting {key!r} must be a string")
         return value
 
     def _archive_remote(self) -> RemoteAsset:

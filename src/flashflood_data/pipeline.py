@@ -27,7 +27,7 @@ from flashflood_data.models import (
 )
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.sources.cop_dem import MissingCredentials
 from flashflood_data.sources.existing import inventory_existing
 
@@ -61,7 +61,12 @@ STATIC_ORDER = (
 _HYDRO_SOURCES = frozenset({"hydrobasins_v1c", "basinatlas_v10", "hydrorivers_v10"})
 _BOOTSTRAP_SOURCES = ("sonla_admin_2025", "gadm_vnm_4_1")
 _PROCESSOR_VERSION = "0.1.0"
-_CONFIGURATION_ERRORS = (BudgetRejected, MissingCredentials, UnsupportedAdapter)
+_CONFIGURATION_ERRORS = (
+    BudgetRejected,
+    MissingCredentials,
+    SourceConfigurationError,
+    UnsupportedAdapter,
+)
 
 
 class RunSummary(BaseModel):
@@ -353,9 +358,25 @@ class StaticPipeline:
             and asset.media_type == remote.media_type
             and asset.license_id == remote.license_id
             and asset.source_valid_time == remote.source_valid_time
+            and self._remote_request_matches(asset, remote)
             and asset.status in {AssetStatus.FETCHED, AssetStatus.VALIDATED}
             and self._checksum_matches(asset)
         )
+
+    @staticmethod
+    def _remote_request_matches(asset: AssetRecord, remote: RemoteAsset) -> bool:
+        """Compare transport semantics retained in catalog metadata without admitting secrets."""
+        try:
+            metadata = json.loads(asset.metadata_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return metadata == {
+            "budget_size_bytes": remote.budget_size_bytes,
+            "expected_checksum": remote.expected_checksum,
+            "expected_size": remote.expected_size,
+            "request_form": dict(remote.request_form),
+            "request_method": remote.request_method,
+        }
 
     def _fetch_remote(
         self, adapter: SourceAdapter, context: SourceContext, remote: RemoteAsset

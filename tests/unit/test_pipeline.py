@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from flashflood_data.models import (
     ValidationResult,
 )
 from flashflood_data.pipeline import STATIC_ORDER, Stage, StaticPipeline, dependency_fingerprint
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.sources.cop_dem import MissingCredentials
 
 
@@ -100,6 +101,17 @@ class FixtureFetcher:
             license_id=remote.license_id,
             pipeline_run_id=run_id,
             status=AssetStatus.FETCHED,
+            metadata_json=json.dumps(
+                {
+                    "budget_size_bytes": remote.budget_size_bytes,
+                    "expected_checksum": remote.expected_checksum,
+                    "expected_size": remote.expected_size,
+                    "request_form": dict(remote.request_form),
+                    "request_method": remote.request_method,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
         return self.catalog.upsert(record)
 
@@ -354,3 +366,72 @@ def test_budget_rejection_escapes_per_source_failure_handling(project_paths) -> 
 
 def test_static_order_has_independent_map_stage() -> None:
     assert [stage.value for stage in STATIC_ORDER][-3:] == ["derive", "map", "qa"]
+
+
+class IdentityAdapter(FixtureAdapter):
+    def __init__(self, spec: SourceSpec, updates: dict[str, object]) -> None:
+        super().__init__(spec)
+        self.updates = updates
+
+    def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
+        return [
+            RemoteAsset(
+                asset_id=f"{self.spec.source_id}-raw",
+                source_id=self.spec.source_id,
+                source_version=self.spec.version,
+                uri=f"https://example.invalid/{self.spec.source_id}.bin",
+                target_relative_path=Path(f"raw/{self.spec.source_id}-{self.spec.version}.bin"),
+                media_type="application/octet-stream",
+                license_id=self.spec.license_id,
+                expected_size=7,
+            ).model_copy(update=self.updates)
+        ]
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"request_method": "POST"},
+        {"request_form": {"tile": "N21E103"}},
+        {"expected_size": 8},
+        {"expected_checksum": "a" * 64},
+        {"budget_size_bytes": 8},
+    ],
+)
+def test_complete_remote_identity_change_invalidates_raw_reuse(project_paths, updates: dict[str, object]) -> None:
+    catalog = AssetCatalog(project_paths)
+    spec = SourceSpec(source_id="source-a", adapter="fixture", version="1", license_id="fixture")
+    first = StaticPipeline(
+        project_paths,
+        source_specs={spec.source_id: spec},
+        adapter_factory=lambda item: IdentityAdapter(item, {}),
+        fetcher=FixtureFetcher(catalog, project_paths),
+    )
+    first.run([Stage.FETCH], ["source-a"])
+    second = StaticPipeline(
+        project_paths,
+        source_specs={spec.source_id: spec},
+        adapter_factory=lambda item: IdentityAdapter(item, updates),
+        fetcher=FixtureFetcher(catalog, project_paths),
+    )
+
+    summary = second.run([Stage.FETCH], ["source-a"])
+
+    assert summary.fetched == 1
+
+
+class ConfigurationAdapter(FixtureAdapter):
+    def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
+        raise SourceConfigurationError("fixture setting is invalid")
+
+
+def test_typed_source_configuration_error_escapes_per_source_failure(project_paths) -> None:
+    spec = SourceSpec(source_id="source-a", adapter="fixture", version="1", license_id="fixture")
+    pipeline = StaticPipeline(
+        project_paths,
+        source_specs={spec.source_id: spec},
+        adapter_factory=ConfigurationAdapter,
+    )
+
+    with pytest.raises(SourceConfigurationError):
+        pipeline.run([Stage.FETCH], ["source-a"])

@@ -36,7 +36,7 @@ from flashflood_data.raster import (
     raster_coverage_ratio,
     validate_raster,
 )
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 
 _DEM_DTYPES = ("int16", "uint16", "float32", "float64")
 _GRID_LATITUDE_LIMIT = 90
@@ -243,7 +243,7 @@ class CopDemAdapter(SourceAdapter):
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
         if not isinstance(value, str) or not value:
-            raise ValueError(f"Copernicus DEM setting {key!r} must be a non-empty string")
+            raise SourceConfigurationError(f"Copernicus DEM setting {key!r} must be a non-empty string")
         return value
 
     def _token_client(self, context: SourceContext) -> CdseTokenClient:

@@ -24,7 +24,7 @@ from flashflood_data.models import (
     ValidationResult,
 )
 from flashflood_data.raster import RasterExpectation, mosaic_clip_to_cog, validate_raster
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 
 DEFAULT_ENDPOINT_TEMPLATE: Final = "https://maps.isric.org/mapserv?map=/map/{property}.map"
 DEFAULT_SOURCE_ID: Final = "soilgrids_2_0"
@@ -150,13 +150,13 @@ class SoilGridsAdapter(SourceAdapter):
     def _strings(self, key: str) -> tuple[str, ...]:
         value = self.spec.settings.get(key)
         if not isinstance(value, (list, tuple)) or not value or not all(isinstance(item, str) for item in value):
-            raise ValueError(f"SoilGrids setting {key!r} must be a non-empty string list")
+            raise SourceConfigurationError(f"SoilGrids setting {key!r} must be a non-empty string list")
         return tuple(value)
 
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
         if not isinstance(value, str) or not value:
-            raise ValueError(f"SoilGrids setting {key!r} must be a non-empty string")
+            raise SourceConfigurationError(f"SoilGrids setting {key!r} must be a non-empty string")
         return value
 
     def _capability_id(self, property_id: str) -> str:
@@ -195,7 +195,7 @@ class SoilGridsAdapter(SourceAdapter):
         depths = self._strings("depths")
         statistics = self._strings("statistics")
         if self._setting("format") != "GEOTIFF_INT16":
-            raise ValueError("SoilGrids requires GEOTIFF_INT16 raw products")
+            raise SourceConfigurationError("SoilGrids requires GEOTIFF_INT16 raw products")
         capabilities = {asset.asset_id: asset for asset in available if asset.asset_id.endswith("-capabilities")}
         if not capabilities:
             return [self._capabilities_remote(property_id) for property_id in properties]

@@ -378,6 +378,9 @@ class HttpFetcher:
         except KeyError:
             catalogued = None
         if catalogued is not None:
+            if catalogued.status is AssetStatus.STALE:
+                self._quarantine_stale_target(remote, final_path)
+                return None
             self._require_catalog_identity(catalogued, remote, final_path)
             partial = Path(f"{final_path}.partial")
             if (
@@ -452,6 +455,19 @@ class HttpFetcher:
             raise ExistingAssetConflict(
                 f"quarantined asset requires a new asset ID or operator action: {remote.asset_id}"
             )
+        if current.status is AssetStatus.STALE and not self._catalog_identity_matches(
+            current, remote, final_path
+        ):
+            current = self.catalog.upsert(
+                self._record(
+                    remote,
+                    final_path,
+                    run_id,
+                    status=AssetStatus.DISCOVERED,
+                    size_bytes=0,
+                    checksum="",
+                )
+            )
         self._require_catalog_identity(current, remote, final_path)
         if current.status in {AssetStatus.DISCOVERED, AssetStatus.FAILED, AssetStatus.STALE}:
             self.catalog.transition(remote.asset_id, AssetStatus.FETCHING, pipeline_run_id=run_id)
@@ -468,7 +484,14 @@ class HttpFetcher:
             raise ExistingAssetConflict(
                 f"quarantined asset requires a new asset ID or operator action: {remote.asset_id}"
             )
-        matches = (
+        if not HttpFetcher._catalog_identity_matches(record, remote, final_path):
+            raise ExistingAssetConflict(f"catalog provenance conflict: {remote.asset_id}")
+
+    @staticmethod
+    def _catalog_identity_matches(
+        record: AssetRecord, remote: RemoteAsset, final_path: Path
+    ) -> bool:
+        return (
             record.asset_id == remote.asset_id
             and record.source_id == remote.source_id
             and record.source_version == remote.source_version
@@ -479,8 +502,22 @@ class HttpFetcher:
             and record.source_valid_time == remote.source_valid_time
             and record.kind is AssetKind.RAW
         )
-        if not matches:
-            raise ExistingAssetConflict(f"catalog provenance conflict: {remote.asset_id}")
+
+    def _quarantine_stale_target(self, remote: RemoteAsset, final_path: Path) -> Path:
+        """Preserve stale canonical bytes before reusing their atomic publication target."""
+        actual_size = final_path.stat().st_size
+        actual_checksum = sha256_file(final_path)
+        opaque_asset_id = sha256(remote.asset_id.encode("utf-8")).hexdigest()
+        quarantine_dir = (self.paths.raw / "_quarantine" / opaque_asset_id).resolve()
+        quarantine_root = (self.paths.raw / "_quarantine").resolve()
+        quarantine_dir.relative_to(quarantine_root)
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        evidence = self._publish_quarantine_evidence(
+            final_path, quarantine_dir, actual_size, actual_checksum
+        )
+        final_path.unlink()
+        self._resume_state_path(remote).unlink(missing_ok=True)
+        return evidence
 
     def _download_attempt(
         self, remote: RemoteAsset, partial: Path, size_bound: int, request_headers: dict[str, str]
@@ -1091,4 +1128,15 @@ class HttpFetcher:
             license_id=remote.license_id,
             pipeline_run_id=run_id,
             status=status,
+            metadata_json=json.dumps(
+                {
+                    "budget_size_bytes": remote.budget_size_bytes,
+                    "expected_checksum": remote.expected_checksum,
+                    "expected_size": remote.expected_size,
+                    "request_form": dict(remote.request_form),
+                    "request_method": remote.request_method,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )

@@ -145,6 +145,34 @@ def test_fetcher_streams_and_publishes_only_verified_payload(
 
 
 @respx.mock
+def test_stale_canonical_raw_is_quarantined_then_atomically_refetched(
+    fetcher: HttpFetcher, remote_asset: RemoteAsset, catalog, project_paths
+) -> None:
+    first_payload = b"valid-payload"
+    replacement = b"newer-payload"
+    remote = remote_asset.model_copy(update={"expected_size": len(first_payload)})
+    route = respx.get(remote.uri).mock(
+        side_effect=[
+            httpx.Response(200, content=first_payload),
+            httpx.Response(200, content=replacement),
+        ]
+    )
+    first = fetcher.fetch(remote, "run-first")
+    target = Path(first.storage_path)
+    target.write_bytes(b"x" * len(first_payload))
+    catalog.transition(first.asset_id, AssetStatus.VALIDATED)
+    catalog.transition(first.asset_id, AssetStatus.STALE)
+
+    recovered = fetcher.fetch(remote, "run-recovery")
+
+    quarantined = list((project_paths.raw / "_quarantine").rglob("*payload.bin*"))
+    assert route.call_count == 2
+    assert target.read_bytes() == replacement
+    assert recovered.status is AssetStatus.FETCHED
+    assert any(path.read_bytes() == b"x" * len(first_payload) for path in quarantined)
+
+
+@respx.mock
 def test_fetcher_preserves_ephemeral_headers_when_resuming(
     fetcher: HttpFetcher, remote_asset: RemoteAsset
 ) -> None:
