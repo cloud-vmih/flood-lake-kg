@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Static data QA map</title>
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.2/dist/maplibre-gl.css" rel="stylesheet">
+  <style>body { margin: 0; font: 14px system-ui; } #map { height: 100vh; } #layers { position: absolute; z-index: 1; top: 10px; left: 10px; background: #fff; padding: 8px; }</style>
+</head>
+<body>
+  <div id="layers"><strong>Layers</strong></div><div id="map"></div>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.2/dist/maplibre-gl.js"></script>
+  <script>
+    const map = new maplibregl.Map({container: 'map', style: 'https://demotiles.maplibre.org/style.json', center: [104.1, 21.3], zoom: 7});
+    const popupText = (name, properties) => '<b>' + (properties.name || properties.current_commune_name || name) + '</b><br>Source ID: ' + (properties.source_id || properties.osm_id || 'unknown');
+    const addToggle = (name, id) => {
+      const input = document.createElement('input'); input.type = 'checkbox'; input.checked = true;
+      input.onchange = () => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', input.checked ? 'visible' : 'none');
+      const label = document.createElement('label'); label.append(input, ' ' + name);
+      document.querySelector('#layers').append(document.createElement('br'), label);
+    };
+    map.on('load', () => fetch('layer-manifest.json').then(response => response.json()).then(manifest => {
+      Object.entries(manifest.layers).forEach(([name, layer]) => {
+        const id = 'qa-' + name;
+        if (layer.type === 'raster-preview') {
+          if (layer.present && layer.bounds) {
+            map.addSource(id, {type: 'image', url: layer.path, coordinates: [[layer.bounds[0], layer.bounds[3]], [layer.bounds[2], layer.bounds[3]], [layer.bounds[2], layer.bounds[1]], [layer.bounds[0], layer.bounds[1]]]});
+            map.addLayer({id, type: 'raster', source: id, paint: {'raster-opacity': 0.55}}); addToggle(name, id);
+          }
+          return;
+        }
+        map.addSource(id, {type: 'geojson', data: layer.path});
+        map.addLayer({id, type: 'line', source: id, paint: {'line-color': ['case', ['has', 'quality_flags_json'], '#d17c00', '#1677ff'], 'line-width': 2}});
+        map.on('click', id, event => new maplibregl.Popup().setLngLat(event.lngLat).setHTML(popupText(name, event.features[0].properties)).addTo(map));
+        addToggle(name, id);
+      });
+    }));
+  </script>
+</body>
+</html>

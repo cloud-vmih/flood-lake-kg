@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Static data QA report</title>
+<style>body{font-family:system-ui;margin:2rem}table{border-collapse:collapse;width:100%;margin-bottom:2rem}th,td{border:1px solid #ddd;padding:.45rem;text-align:left}.failed{background:#fee}</style>
+</head><body>
+<h1>Static data QA report</h1><p>Run: <code>{{ report.run_id }}</code><br>Config: <code>{{ report.config_fingerprint }}</code></p>
+<p>Artifacts: <a href="report.json">report.json</a> · <a href="report.parquet">report.parquet</a> · <a href="map/index.html">inspection map</a></p>
+{% for severity in ('fatal', 'warning', 'info') %}<h2>{{ severity|capitalize }} checks</h2><table><thead><tr><th>Check</th><th>Pass</th><th>Expected</th><th>Actual</th><th>Message</th></tr></thead><tbody>
+{% for check in grouped[severity] %}<tr class="{{ '' if check.passed else 'failed' }}"><td>{{ check.check_id }}</td><td>{{ check.passed }}</td><td>{{ check.expected }}</td><td>{{ check.actual }}</td><td>{{ check.message }}</td></tr>{% endfor %}
+</tbody></table>{% endfor %}</body></html>
