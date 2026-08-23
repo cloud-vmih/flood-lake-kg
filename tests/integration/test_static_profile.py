@@ -1,0 +1,111 @@
+"""The final static predictor profile preserves the selected L10 population."""
+
+from __future__ import annotations
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import pytest
+import rasterio
+from rasterio.transform import from_origin
+from shapely.geometry import box
+
+from flashflood_data.derive.profile import (
+    Task16MapInputs,
+    assemble_static_profile,
+    task16_map_handler,
+)
+from flashflood_data.models import SourceSpec
+
+
+def _basins() -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(
+        {"HYBAS_ID": [2, 1], "SUB_AREA": [20.0, 10.0], "UP_AREA": [30.0, 11.0]},
+        geometry=[box(105, 20, 106, 21), box(104, 20, 105, 21)],
+        crs="EPSG:4326",
+    )
+
+
+def _required_features() -> dict[str, pd.DataFrame]:
+    return {
+        name: pd.DataFrame({"HYBAS_ID": [1, 2], f"{name}_value": [1.0, 2.0]})
+        for name in ("terrain", "soil", "landcover", "hydrology")
+    }
+
+
+def test_profile_has_exactly_one_row_per_selected_l10_and_keeps_optional_nulls() -> None:
+    """An inner join to optional evidence would silently remove an otherwise selected L10."""
+    features = _required_features()
+    features["population"] = pd.DataFrame({"HYBAS_ID": [1], "population_sum": [40.0]})
+
+    profile = assemble_static_profile(_basins(), features, "run-1")
+
+    assert profile.HYBAS_ID.tolist() == [1, 2]
+    assert profile.HYBAS_ID.is_unique
+    assert len(profile) == 2
+    assert profile.crs.to_epsg() == 4326
+    assert profile.loc[profile.HYBAS_ID == 2, "population_sum"].isna().all()
+    assert profile.pipeline_run_id.tolist() == ["run-1", "run-1"]
+    assert set(profile) >= {"dependency_fingerprint", "feature_group_source_asset_ids_json", "quality_flags_json"}
+
+
+def test_profile_rejects_duplicate_feature_keys_before_join() -> None:
+    """Permitting duplicate Task 15 keys would violate the one-row-per-L10 output contract."""
+    features = _required_features()
+    features["terrain"] = pd.DataFrame({"HYBAS_ID": [1, 1], "terrain_value": [1.0, 2.0]})
+
+    with pytest.raises(ValueError, match="duplicate HYBAS_ID"):
+        assemble_static_profile(_basins(), features, "run-1")
+
+
+def test_profile_rejects_a_missing_required_task15_basin_key() -> None:
+    """A partial required predictor table must be a QA failure instead of a dropped basin."""
+    features = _required_features()
+    features["soil"] = pd.DataFrame({"HYBAS_ID": [1], "soil_value": [1.0]})
+
+    with pytest.raises(ValueError, match="missing required basin keys"):
+        assemble_static_profile(_basins(), features, "run-1")
+
+
+def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_path) -> None:
+    """Moving these products to a separate PROFILE stage would break the static stage order."""
+    worldpop = tmp_path / "worldpop.tif"
+    with rasterio.open(
+        worldpop,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=1,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(104, 21, 1, 1),
+    ) as destination:
+        destination.write(np.asarray([[10, 20]], dtype="float32"), 1)
+    inputs = Task16MapInputs(
+        basins=_basins(),
+        core=box(104, 20, 106, 21),
+        worldpop=worldpop,
+        feature_tables=_required_features(),
+    )
+    handler = task16_map_handler(inputs, tmp_path / "derived", owner_source_id="worldpop")
+    pipeline = type(
+        "Pipeline",
+        (), {"source_specs": {"worldpop": SourceSpec(source_id="worldpop", adapter="existing", version="1", license_id="x")}},
+    )()
+    context = type("Context", (), {"run_id": "map-test"})()
+
+    assert handler(pipeline, "map", "other", context) == []
+    records = handler(pipeline, "map", "worldpop", context)
+
+    assert {record.asset_id for record in records} == {
+        "task16-map-subbasin-commune",
+        "task16-map-subbasin-river",
+        "task16-map-subbasin-road",
+        "task16-map-subbasin-bridge",
+        "task16-map-subbasin-facility",
+        "task16-map-subbasin-settlement",
+        "task16-map-subbasin-population",
+        "task16-subbasin-static-feature",
+    }
+    assert (tmp_path / "derived" / "subbasin_static_feature.geoparquet").is_file()
