@@ -210,14 +210,7 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         repaired,
         "geometry repairs are retained as QA evidence",
     )
-    core, _ = _geometry(paths, "core")
-    if (
-        admin.empty
-        or admin.crs is None
-        or "legal_area_km2" not in admin
-        or core is None
-        or core.empty
-    ):
+    if admin.empty or admin.crs is None or "legal_area_km2" not in admin:
         legal = _check(
             "admin.legal_coverage",
             False,
@@ -228,15 +221,13 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         )
     else:
         metric = admin.to_crs(config.processing_crs)
-        core_metric = core.to_crs(config.processing_crs).geometry.union_all()
-        core_area = float(core_metric.area)
-        clipped = metric.geometry.intersection(core_metric)
-        union_area = float(clipped.union_all().area)
-        total_area = float(clipped.area.sum())
-        overlap = max(0.0, total_area - union_area) / core_area * 100 if core_area else 100.0
-        gap = max(0.0, core_area - union_area) / core_area * 100 if core_area else 100.0
         legal_area = pd.to_numeric(metric["legal_area_km2"], errors="coerce")
         computed = metric.geometry.area / 1_000_000
+        legal_total = float(legal_area.sum())
+        union_area = float(metric.geometry.union_all().area) / 1_000_000
+        total_area = float(metric.geometry.area.sum()) / 1_000_000
+        overlap = max(0.0, total_area - union_area) / legal_total * 100 if legal_total else 100.0
+        gap = max(0.0, legal_total - union_area) / legal_total * 100 if legal_total else 100.0
         difference = ((computed - legal_area).abs() / legal_area * 100).fillna(float("inf"))
         exceptions = {str(value).zfill(5) for value in config.admin_area_exceptions}
         outside = difference[~metric["current_commune_code"].astype(str).isin(exceptions)]
@@ -249,7 +240,7 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
             "fatal",
             f"gap/overlap <= {config.admin_gap_overlap_max_pct}%; legal area difference <= {config.legal_area_diff_max_pct}%",
             f"gap={gap:.6f}%, overlap={overlap:.6f}%, legal_difference={max_difference:.6f}%",
-            "Core-area-normalized gaps, overlaps, and legal-area tolerance",
+            "independent legal-area-total-normalized gaps, overlaps, and per-unit tolerance",
         )
     exceptions_used = (
         sorted(
@@ -416,15 +407,41 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
     except Exception:  # noqa: BLE001
         basin_ids, commune_ids = set(), set()
     products = {
-        "commune": ("current_commune_code", (admin_path,), {"commune_fraction"}),
-        "river": ("HYRIV_ID", (paths.harmonized / "hydro" / "river_reach.geoparquet",), set()),
+        "commune": (
+            "current_commune_code",
+            (admin_path,),
+            {
+                "intersection_area_km2",
+                "basin_fraction",
+                "commune_fraction",
+                "quality_flags_json",
+                "processing_crs",
+                "source_asset_ids_json",
+            },
+        ),
+        "river": (
+            "HYRIV_ID",
+            (paths.harmonized / "hydro" / "river_reach.geoparquet",),
+            {
+                "intersected_length_km",
+                "boundary_case",
+                "quality_flags_json",
+                "processing_crs",
+                "source_asset_ids_json",
+            },
+        ),
         "road": (
             "segment_id",
             (
                 paths.derived / "exposure" / "road_segment.geoparquet",
                 paths.harmonized / "exposure" / "road_segment.geoparquet",
             ),
-            set(),
+            {
+                "intersected_length_km",
+                "quality_flags_json",
+                "processing_crs",
+                "source_asset_ids_json",
+            },
         ),
         "bridge": (
             "bridge_id",
@@ -432,7 +449,14 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
                 paths.derived / "exposure" / "bridge.geoparquet",
                 paths.harmonized / "exposure" / "bridge.geoparquet",
             ),
-            set(),
+            {
+                "intersected_length_km",
+                "relationship_geometry_wkt",
+                "boundary_case",
+                "quality_flags_json",
+                "processing_crs",
+                "source_asset_ids_json",
+            },
         ),
         "facility": (
             "facility_id",
@@ -440,7 +464,14 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
                 paths.derived / "exposure" / "facility.geoparquet",
                 paths.harmonized / "exposure" / "facility.geoparquet",
             ),
-            set(),
+            {
+                "relationship_type",
+                "tags_json",
+                "boundary_case",
+                "quality_flags_json",
+                "processing_crs",
+                "source_asset_ids_json",
+            },
         ),
         "settlement": (
             "settlement_id",
@@ -448,7 +479,14 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
                 paths.derived / "exposure" / "settlement.geoparquet",
                 paths.harmonized / "exposure" / "settlement.geoparquet",
             ),
-            set(),
+            {
+                "relationship_type",
+                "tags_json",
+                "boundary_case",
+                "quality_flags_json",
+                "processing_crs",
+                "source_asset_ids_json",
+            },
         ),
         "population": (
             None,
@@ -459,6 +497,9 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
                 "nodata_pixel_count",
                 "aoi_pixel_count",
                 "coverage_ratio",
+                "boundary_center_tie_pixel_count",
+                "quality_flags_json",
+                "source_asset_ids_json",
             },
         ),
     }
@@ -479,11 +520,9 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             if not required.issubset(table.columns):
                 foreign_ok, bad = False, bad + 1
                 continue
-            invalid = (
-                set(pd.to_numeric(table["HYBAS_ID"], errors="coerce").dropna().astype("int64"))
-                - basin_ids
-            )
-            if invalid:
+            basin_values = pd.to_numeric(table["HYBAS_ID"], errors="coerce")
+            invalid = set(basin_values.dropna().astype("int64")) - basin_ids
+            if basin_values.isna().any() or invalid:
                 foreign_ok, bad = False, bad + len(invalid)
             if entity_key:
                 entity_path = _first(entity_paths)
@@ -499,6 +538,12 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
                     else entity_key
                 )
                 if source_key not in entity:
+                    foreign_ok, bad = False, bad + 1
+                    continue
+                if (
+                    table[entity_key].isna().any()
+                    or table[entity_key].astype(str).str.strip().eq("").any()
+                ):
                     foreign_ok, bad = False, bad + 1
                     continue
                 invalid = set(table[entity_key].dropna().astype(str)) - set(
@@ -627,6 +672,16 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
                             "required configured SoilGrids product or Hydrological AOI is missing",
                         )
                     )
+                    checks.append(
+                        _check(
+                            check_id.removesuffix(".coverage") + ".nodata",
+                            False,
+                            "warning",
+                            "0 source nodata pixels in AOI",
+                            "unavailable",
+                            "configured SoilGrids nodata evidence is unavailable",
+                        )
+                    )
                     continue
                 try:
                     ratio = raster_coverage_ratio(path, hydro.geometry.union_all())
@@ -640,6 +695,16 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
                             "configured SoilGrids product native-grid valid-pixel coverage",
                         )
                     )
+                    checks.append(
+                        _check(
+                            check_id.removesuffix(".coverage") + ".nodata",
+                            ratio >= 1.0,
+                            "warning",
+                            "0 source nodata pixels in AOI",
+                            f"{(1 - ratio) * 100:.6f}%",
+                            "configured SoilGrids source nodata is retained as evidence",
+                        )
+                    )
                 except Exception as error:  # noqa: BLE001
                     checks.append(
                         _check(
@@ -649,6 +714,16 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
                             f">= {config.environmental_raster_coverage_min_pct}% valid coverage of Hydrological AOI",
                             type(error).__name__,
                             "configured SoilGrids product could not be evaluated",
+                        )
+                    )
+                    checks.append(
+                        _check(
+                            check_id.removesuffix(".coverage") + ".nodata",
+                            False,
+                            "warning",
+                            "0 source nodata pixels in AOI",
+                            type(error).__name__,
+                            "configured SoilGrids nodata evidence could not be evaluated",
                         )
                     )
     return checks
@@ -736,12 +811,22 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
         .eq(values["aoi_pixel_count"])
         .all()
     )
+    positive = values["aoi_pixel_count"].gt(0)
+    zero_rows = values["aoi_pixel_count"].eq(0)
     ratios_ok = (
-        values["aoi_pixel_count"].gt(0)
-        & np.isclose(
-            values["coverage_ratio"],
-            values["contributing_pixel_count"] / values["aoi_pixel_count"],
-            equal_nan=False,
+        (
+            positive
+            & np.isclose(
+                values["coverage_ratio"],
+                values["contributing_pixel_count"] / values["aoi_pixel_count"],
+                equal_nan=False,
+            )
+        )
+        | (
+            zero_rows
+            & values["contributing_pixel_count"].eq(0)
+            & values["nodata_pixel_count"].eq(0)
+            & values["coverage_ratio"].isna()
         )
     ).all()
     l10_path = paths.harmonized / "hydro" / "subbasin_l10.geoparquet"
@@ -779,6 +864,21 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
                 and int(values["nodata_pixel_count"].sum()) == nodata_total
                 and int(values["aoi_pixel_count"].sum()) == valid_total + nodata_total
             )
+            from flashflood_data.derive.population import aggregate_population_by_basin
+
+            expected = aggregate_population_by_basin(
+                worldpop, gpd.read_parquet(l10_path), core.geometry.union_all()
+            ).set_index("HYBAS_ID")
+            observed = table.assign(HYBAS_ID=mapped_ids.astype("int64")).set_index("HYBAS_ID")
+            for basin_id, row in expected.iterrows():
+                observed_row = observed.loc[int(basin_id)]
+                independent_ok = (
+                    independent_ok
+                    and int(observed_row["contributing_pixel_count"])
+                    == int(row["contributing_pixel_count"])
+                    and int(observed_row["nodata_pixel_count"]) == int(row["nodata_pixel_count"])
+                    and int(observed_row["aoi_pixel_count"]) == int(row["aoi_pixel_count"])
+                )
         except Exception:  # noqa: BLE001 - malformed evidence is a fatal outcome.
             independent_ok = False
     ties = int(
@@ -901,6 +1001,49 @@ def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
 
 def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckResult]:
     assets = _asset_records(paths)
+    by_id = {asset.asset_id: asset for asset in assets}
+
+    def dependency_ids(asset: AssetRecord) -> set[str] | None:
+        try:
+            metadata = json.loads(asset.metadata_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        references: set[str] = set()
+        for key in ("source_asset_ids", "dependency_asset_ids", "input_asset_ids"):
+            value = metadata.get(key, [])
+            if value is None:
+                continue
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                return None
+            references.update(value)
+        return references
+
+    roots = [asset for asset in assets if asset.kind is AssetKind.DERIVED]
+    unresolved: set[str] = set()
+    used_ids: set[str] = set()
+
+    def visit(asset_id: str, visiting: set[str]) -> None:
+        if asset_id in visiting:
+            unresolved.add(asset_id)
+            return
+        asset = by_id.get(asset_id)
+        if asset is None:
+            unresolved.add(asset_id)
+            return
+        if asset.kind is AssetKind.RAW:
+            used_ids.add(asset_id)
+            return
+        references = dependency_ids(asset)
+        if not references:
+            unresolved.add(asset_id)
+            return
+        for reference in sorted(references):
+            visit(reference, visiting | {asset_id})
+
+    for root in sorted(roots, key=lambda asset: asset.asset_id):
+        visit(root.asset_id, set())
     raw_root = paths.raw.resolve()
     raw = [
         asset
@@ -909,24 +1052,7 @@ def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[Che
         and Path(asset.storage_path).resolve().is_relative_to(raw_root)
         and asset.duplicate_of_asset_id is None
     ]
-    referenced: set[str] = set()
-    evidence_malformed = False
-    for path in sorted(paths.derived.glob("**/*.parquet")):
-        try:
-            table = pd.read_parquet(path)
-            for column in ("source_asset_ids_json", "feature_group_source_asset_ids_json"):
-                if column in table:
-                    for value in table[column].dropna():
-                        decoded = json.loads(str(value))
-                        if isinstance(decoded, list):
-                            referenced.update(str(item) for item in decoded)
-                        elif isinstance(decoded, dict):
-                            referenced.update(
-                                str(item) for values in decoded.values() for item in values
-                            )
-        except Exception:  # noqa: BLE001 - malformed evidence is fatal provenance evidence.
-            evidence_malformed = True
-    used = [asset for asset in raw if not referenced or asset.asset_id in referenced]
+    used = [asset for asset in raw if asset.asset_id in used_ids]
     required = ("source_uri", "source_version", "license_id", "checksum", "retrieved_at")
     incomplete = [
         asset.asset_id for asset in used if any(not getattr(asset, field) for field in required)
@@ -936,12 +1062,12 @@ def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[Che
     return [
         _check(
             "raw.provenance",
-            bool(used) and not incomplete and not evidence_malformed,
+            bool(used) and not incomplete and not unresolved,
             "fatal",
             "every used raw asset has URI/version/license/retrieval/checksum",
-            f"{len(used) - len(incomplete)}/{len(used)} used pipeline raw assets complete",
+            f"{len(used) - len(incomplete)}/{len(used)} used raw assets complete; {len(unresolved)} unresolved dependencies",
             "provenance for raw assets actually used through source-asset references",
-            [*incomplete],
+            [*incomplete, *sorted(unresolved)],
         ),
         _check(
             "storage.raw_cap",

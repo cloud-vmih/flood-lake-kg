@@ -57,7 +57,11 @@ def _geojson(path: Path, output: Path, tolerance_m: float) -> dict[str, object]:
         for _, row in display.iterrows():
             values = {column: _json_value(row[column]) for column in properties}
             flags = str(values.get("quality_flags_json", "{} ")).strip()
-            values["qa_warning"] = flags not in {"", "{}", "null", "None"}
+            values["qa_warning"] = (
+                flags not in {"", "{}", "null", "None"}
+                or bool(values.get("geometry_repaired", False))
+                or bool(values.get("boundary_case", False))
+            )
             features.append(
                 {
                     "type": "Feature",
@@ -155,15 +159,15 @@ def publish_qa_map(paths: ProjectPaths, qa_dir: Path) -> Path:
     for name, (candidates, tolerance) in sorted(_VECTOR_LAYERS.items()):
         source = next(
             (
-                paths.root / candidate
+                paths.dataset / candidate
                 for candidate in candidates
-                if (paths.root / candidate).is_file()
+                if (paths.dataset / candidate).is_file()
             ),
-            paths.root / candidates[0],
+            paths.dataset / candidates[0],
         )
         manifest["layers"][name] = _geojson(source, data_dir / f"{name}.geojson", tolerance)  # type: ignore[index]
     for name, relative in sorted(_RASTERS.items()):
-        source = paths.root / relative
+        source = paths.dataset / relative
         manifest["layers"][name] = _preview(
             source if source.is_file() else None, preview_dir / f"{name}.png"
         )  # type: ignore[index]

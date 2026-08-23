@@ -16,7 +16,7 @@
       const title = document.createElement('strong');
       title.textContent = properties.name || properties.current_commune_name || name;
       const source = document.createElement('div');
-      source.textContent = 'Source ID: ' + (properties.source_id || properties.osm_id || properties.HYBAS_ID || 'unknown');
+      source.textContent = 'Source ID: ' + (properties.current_commune_code || properties.HYRIV_ID || properties.source_id || properties.osm_id || properties.HYBAS_ID || 'unknown');
       node.append(title, source); return node;
     };
     const addToggle = (name, ids) => {

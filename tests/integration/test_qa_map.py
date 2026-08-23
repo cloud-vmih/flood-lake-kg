@@ -63,3 +63,22 @@ def test_map_manifest_lists_required_vectors_and_is_display_only(tmp_path: Path)
     assert "type: 'circle'" in html
     assert "type: 'fill'" in html
     assert all(not Path(layer["path"]).is_absolute() for layer in manifest["layers"].values())
+
+
+def test_map_warning_flag_includes_repaired_geometry_and_popup_ids(tmp_path: Path) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source = paths.harmonized / "admin" / "admin_commune_2025.geoparquet"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(
+        {"current_commune_code": ["14001"], "geometry_repaired": [True]},
+        geometry=[box(104, 21, 104.1, 21.1)],
+        crs="EPSG:4326",
+    ).to_parquet(source, index=False)
+
+    index = publish_qa_map(paths, paths.qa)
+
+    feature = json.loads((index.parent / "data" / "communes.geojson").read_text())["features"][0]
+    assert feature["properties"]["qa_warning"] is True
+    assert "current_commune_code" in index.read_text()
+    assert "HYRIV_ID" in index.read_text()
