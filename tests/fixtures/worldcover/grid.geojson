@@ -1,0 +1,20 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"ll_tile": "N18E102"},
+      "geometry": {"type": "Polygon", "coordinates": [[[102, 18], [105, 18], [105, 21], [102, 21], [102, 18]]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"ll_tile": "N21E102"},
+      "geometry": {"type": "Polygon", "coordinates": [[[102, 21], [105, 21], [105, 24], [102, 24], [102, 21]]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"ll_tile": "N18E105"},
+      "geometry": {"type": "Polygon", "coordinates": [[[105, 18], [108, 18], [108, 21], [105, 21], [105, 18]]]}
+    }
+  ]
+}

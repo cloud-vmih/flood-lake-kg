@@ -1,0 +1,10 @@
+sources:
+  - source_id: esa_worldcover_2021_v200
+    adapter: worldcover
+    version: "2021-v200"
+    license_id: CC-BY-4.0
+    settings:
+      grid_url: https://esa-worldcover.s3.eu-central-1.amazonaws.com/v100/2020/esa_worldcover_2020_grid.geojson
+      tile_template: https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{tile}_Map.tif
+      valid_classes: [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100]
+      nodata: 0
