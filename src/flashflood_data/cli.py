@@ -7,10 +7,17 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 from uuid import uuid4
 
+import geopandas as gpd
 import typer
 
-from flashflood_data.catalog import AssetCatalog
+from flashflood_data.aoi import build_study_areas
+from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
+from flashflood_data.harmonize.hydro import (
+    default_hydro_inputs,
+    harmonize_hydro,
+    select_l10_with_upstream,
+)
 from flashflood_data.models import AssetStatus, RunRecord
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.sources.base import SourceContext
@@ -88,9 +95,46 @@ def validate(root: Annotated[Path | None, typer.Option("--root")] = None) -> NoR
 
 
 @app.command()
-def harmonize(root: Annotated[Path | None, typer.Option("--root")] = None) -> NoReturn:
-    """Harmonize raw source assets."""
-    stage_unavailable("harmonize")
+def harmonize(
+    root: Annotated[Path | None, typer.Option("--root")] = None,
+    source: Annotated[list[str] | None, typer.Option("--source")] = None,
+) -> None:
+    """Harmonize the existing HydroBASINS, BasinATLAS, and HydroRIVERS sources."""
+    requested = set(source or ("hydrobasins_v1c", "basinatlas_v10", "hydrorivers_v10"))
+    supported = {"hydrobasins_v1c", "basinatlas_v10", "hydrorivers_v10"}
+    unsupported = requested - supported
+    if unsupported:
+        raise typer.BadParameter(f"unsupported source(s): {', '.join(sorted(unsupported))}")
+    paths = ProjectPaths.discover(root)
+    paths.ensure_output_dirs()
+    config_path = paths.root / "config" / "study_area.yaml"
+    if not config_path.is_file():
+        stage_unavailable("harmonize")
+    config = load_study_area(config_path)
+    core_path = paths.harmonized / "aoi" / "core_aoi.geoparquet"
+    vietnam_path = paths.harmonized / "admin" / "vietnam_boundary.geoparquet"
+    if not core_path.is_file() or not vietnam_path.is_file():
+        raise typer.BadParameter("core AOI and Vietnam boundary must be harmonized before hydrology")
+    core_layer = gpd.read_parquet(core_path)
+    vietnam_layer = gpd.read_parquet(vietnam_path).to_crs(core_layer.crs)
+    core = core_layer.geometry.union_all()
+    vietnam = vietnam_layer.geometry.union_all()
+    source_paths = default_hydro_inputs(paths)
+    l10 = gpd.read_file(source_paths.l10)
+    selected = select_l10_with_upstream(l10, core, hops=config.upstream_hops)
+    areas = build_study_areas(core, selected, vietnam, config)
+    outputs = harmonize_hydro(paths, areas, inputs=source_paths, hops=config.upstream_hops)
+    typer.echo(
+        json.dumps(
+            {
+                "intersecting_l10": int(l10.geometry.intersects(core).sum()),
+                "selected_l10": len(selected),
+                "upstream_l10": len(selected) - int(l10.geometry.intersects(core).sum()),
+                "outputs": {str(path.relative_to(paths.root)): sha256_file(path) for path in outputs},
+            },
+            sort_keys=True,
+        )
+    )
 
 
 @app.command()

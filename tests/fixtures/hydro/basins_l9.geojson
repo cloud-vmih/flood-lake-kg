@@ -1,0 +1,6 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"HYBAS_ID": 90, "PFAF_ID": "123"}, "geometry": {"type": "Polygon", "coordinates": [[[102.9,19.9],[103.4,19.9],[103.4,20.2],[102.9,20.2],[102.9,19.9]]]}}
+  ]
+}

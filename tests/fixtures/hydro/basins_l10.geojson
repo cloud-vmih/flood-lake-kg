@@ -1,0 +1,8 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"HYBAS_ID": 100, "NEXT_DOWN": 0, "PFAF_ID": "123456"}, "geometry": {"type": "Polygon", "coordinates": [[[103.0,20.0],[103.1,20.0],[103.1,20.1],[103.0,20.1],[103.0,20.0]]]}},
+    {"type": "Feature", "properties": {"HYBAS_ID": 101, "NEXT_DOWN": 100, "PFAF_ID": "123457"}, "geometry": {"type": "Polygon", "coordinates": [[[103.1,20.0],[103.2,20.0],[103.2,20.1],[103.1,20.1],[103.1,20.0]]]}},
+    {"type": "Feature", "properties": {"HYBAS_ID": 102, "NEXT_DOWN": 101, "PFAF_ID": "123458"}, "geometry": {"type": "Polygon", "coordinates": [[[103.2,20.0],[103.3,20.0],[103.3,20.1],[103.2,20.1],[103.2,20.0]]]}}
+  ]
+}
