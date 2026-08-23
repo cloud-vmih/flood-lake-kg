@@ -5,7 +5,9 @@ from typing import ClassVar
 from typer.testing import CliRunner
 
 from flashflood_data.cli import app
+from flashflood_data.http import BudgetRejected
 from flashflood_data.pipeline import RunSummary, Stage
+from flashflood_data.sources.cop_dem import MissingCredentials
 
 
 def test_cli_lists_static_stages() -> None:
@@ -73,6 +75,42 @@ def test_run_static_uses_verified_prefix_and_live_profile(monkeypatch, tmp_path:
     assert RecordingPipeline.calls == [
         ([Stage.INVENTORY, Stage.BOOTSTRAP_ADMIN, Stage.AOI], None, False, "run-static")
     ]
+
+
+def test_map_routes_to_its_own_stage(monkeypatch, tmp_path: Path) -> None:
+    RecordingPipeline.calls = []
+    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", RecordingPipeline)
+
+    result = CliRunner().invoke(app, ["map", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert RecordingPipeline.calls[0][0][0].value == "map"
+
+
+class CredentialsPipeline(RecordingPipeline):
+    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
+        raise MissingCredentials("CDSE credentials missing")
+
+
+def test_cli_treats_missing_credentials_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", CredentialsPipeline)
+
+    result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
+
+    assert result.exit_code == 2
+
+
+class BudgetPipeline(RecordingPipeline):
+    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
+        raise BudgetRejected("minimum_free_space")
+
+
+def test_cli_treats_budget_rejection_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", BudgetPipeline)
+
+    result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
+
+    assert result.exit_code == 2
 
 
 def test_run_static_rejects_unknown_profile(tmp_path: Path) -> None:

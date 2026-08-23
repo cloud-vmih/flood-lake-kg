@@ -13,10 +13,12 @@ import typer
 
 from flashflood_data.catalog import AssetCatalog
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
+from flashflood_data.http import BudgetRejected
 from flashflood_data.models import AssetStatus, RunRecord
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.pipeline import STATIC_ORDER, RunSummary, Stage, StaticPipeline
 from flashflood_data.sources.base import SourceContext
+from flashflood_data.sources.cop_dem import MissingCredentials
 from flashflood_data.sources.existing import inventory_existing
 
 app = typer.Typer(no_args_is_help=True)
@@ -50,7 +52,7 @@ def _run_stage(
         summary = StaticPipeline(ProjectPaths.discover(root), profile=profile).run(
             stages, source, resolve_only=resolve_only, command=command
         )
-    except (TypeError, ValueError) as exc:
+    except (BudgetRejected, TypeError, ValueError, MissingCredentials) as exc:
         typer.echo(json.dumps({"error_code": "configuration_error", "status": "failed"}), err=True)
         raise typer.Exit(code=2) from exc
     except Exception as exc:
@@ -210,9 +212,9 @@ def map_stage(
     json_summary: JsonSummaryOption = False,
     profile: ProfileOption = "smoke",
 ) -> None:
-    """Run registered mapping and profile handlers through the QA seam."""
+    """Run registered mapping and profile handlers through the MAP seam."""
     _run_stage(
-        [Stage.QA],
+        [Stage.MAP],
         root=root,
         source=source,
         resolve_only=resolve_only,

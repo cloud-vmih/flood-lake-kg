@@ -17,10 +17,18 @@ from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.http import BudgetRejected, HttpFetcher
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, RunRecord, SourceSpec
+from flashflood_data.models import (
+    AssetKind,
+    AssetRecord,
+    AssetStatus,
+    RemoteAsset,
+    RunRecord,
+    SourceSpec,
+)
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.registry import build_adapter, load_source_specs
+from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
 from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.sources.cop_dem import MissingCredentials
 from flashflood_data.sources.existing import inventory_existing
 
 
@@ -34,6 +42,7 @@ class Stage(StrEnum):
     VALIDATE = "validate"
     HARMONIZE = "harmonize"
     DERIVE = "derive"
+    MAP = "map"
     QA = "qa"
 
 
@@ -45,12 +54,14 @@ STATIC_ORDER = (
     Stage.VALIDATE,
     Stage.HARMONIZE,
     Stage.DERIVE,
+    Stage.MAP,
     Stage.QA,
 )
 
 _HYDRO_SOURCES = frozenset({"hydrobasins_v1c", "basinatlas_v10", "hydrorivers_v10"})
 _BOOTSTRAP_SOURCES = ("sonla_admin_2025", "gadm_vnm_4_1")
 _PROCESSOR_VERSION = "0.1.0"
+_CONFIGURATION_ERRORS = (BudgetRejected, MissingCredentials, UnsupportedAdapter)
 
 
 class RunSummary(BaseModel):
@@ -168,7 +179,7 @@ class StaticPipeline:
                     self._run_bootstrap(context, summary, failed, completed, resolve_only)
                     continue
                 if stage is Stage.AOI:
-                    self._run_handler(stage, "aoi", context, summary)
+                    self._run_aoi(context, summary)
                     continue
                 if stage is Stage.HARMONIZE and not selected:
                     self._run_legacy_hydro(context, summary)
@@ -178,6 +189,8 @@ class StaticPipeline:
                         continue
                     try:
                         self._run_source_stage(stage, source_id, context, summary, resolve_only)
+                    except _CONFIGURATION_ERRORS:
+                        raise
                     except Exception:  # noqa: BLE001 - independent source failures are retained.
                         failed.add(source_id)
                         summary.errors[source_id] = "stage_failed"
@@ -212,6 +225,30 @@ class StaticPipeline:
     def _run_inventory(self, context: SourceContext) -> None:
         inventory_existing(context)
 
+    def _run_aoi(self, context: SourceContext, summary: RunSummary) -> None:
+        """Compose the approved AOIs after administration is available and before downloads resolve."""
+        import geopandas as gpd
+
+        from flashflood_data.aoi import build_study_areas, write_study_areas
+        from flashflood_data.harmonize.hydro import default_hydro_inputs, select_l10_with_upstream
+
+        core_path = self.paths.harmonized / "aoi" / "core_aoi.geoparquet"
+        vietnam_path = self.paths.harmonized / "admin" / "vietnam_boundary.geoparquet"
+        if not core_path.is_file() or not vietnam_path.is_file():
+            raise ValueError("core AOI and Vietnam boundary are required before AOI composition")
+        core_layer = gpd.read_parquet(core_path)
+        vietnam_layer = gpd.read_parquet(vietnam_path).to_crs(core_layer.crs)
+        if core_layer.empty or vietnam_layer.empty or core_layer.crs is None:
+            raise ValueError("administrative AOI inputs are empty or missing a CRS")
+        core = core_layer.geometry.union_all()
+        vietnam = vietnam_layer.geometry.union_all()
+        l10 = gpd.read_file(default_hydro_inputs(self.paths).l10)
+        selected = select_l10_with_upstream(l10, core, hops=self.study_area.upstream_hops)
+        areas = build_study_areas(core, selected, vietnam, self.study_area)
+        write_study_areas(areas, self.paths.harmonized / "aoi", self.study_area.storage_crs)
+        summary.metrics.update({"selected_l10": len(selected)})
+        self._run_handler(Stage.AOI, "aoi", context, summary)
+
     def _run_bootstrap(
         self,
         context: SourceContext,
@@ -228,6 +265,8 @@ class StaticPipeline:
                 if not resolve_only:
                     self._run_source_stage(Stage.VALIDATE, source_id, context, summary, False)
                     self._run_source_stage(Stage.HARMONIZE, source_id, context, summary, False)
+            except _CONFIGURATION_ERRORS:
+                raise
             except Exception:  # noqa: BLE001 - bootstrap sources remain independently recoverable.
                 failed.add(source_id)
                 summary.errors[source_id] = "bootstrap_failed"
@@ -248,7 +287,7 @@ class StaticPipeline:
             self._validate_source(source_id, summary)
         elif stage is Stage.HARMONIZE:
             self._harmonize_source(source_id, context, summary)
-        elif stage is Stage.DERIVE or stage is Stage.QA:
+        elif stage is Stage.DERIVE or stage is Stage.MAP or stage is Stage.QA:
             self._run_handler(stage, source_id, context, summary)
         else:
             raise ValueError(f"unsupported source stage: {stage.value}")
@@ -257,14 +296,12 @@ class StaticPipeline:
         self, source_id: str, context: SourceContext, summary: RunSummary, resolve_only: bool
     ) -> None:
         adapter = self.adapter_factory(self.source_specs[source_id])
-        known_ids = {asset.asset_id for asset in self._assets()}
         while True:
-            remotes = adapter.resolve(context, self._assets())
-            pending = [remote for remote in remotes if remote.asset_id not in known_ids]
+            remotes = adapter.resolve(context, self._available_for_resolution(source_id))
+            pending = [remote for remote in remotes if not self._remote_is_reusable(remote)]
             if not pending:
                 if remotes or any(
-                    asset.source_id == source_id and asset.kind is AssetKind.RAW
-                    for asset in self._assets()
+                    self._raw_matches_spec(asset, source_id) for asset in self._assets()
                 ):
                     summary.reused += 1
                 return
@@ -272,13 +309,61 @@ class StaticPipeline:
                 if resolve_only:
                     self._preflight(remote)
                 else:
-                    record = self.fetcher.fetch(remote, context.run_id)  # type: ignore[attr-defined]
+                    record = self._fetch_remote(adapter, context, remote)
                     if record.status is not AssetStatus.FETCHED:
                         raise ValueError("fetcher returned a non-fetched asset")
                     summary.fetched += 1
-                known_ids.add(remote.asset_id)
             if resolve_only:
                 return
+
+    def _available_for_resolution(self, source_id: str) -> list[AssetRecord]:
+        return [
+            asset
+            for asset in self._assets()
+            if asset.source_id != source_id
+            or asset.kind is not AssetKind.RAW
+            or self._raw_matches_spec(asset, source_id)
+        ]
+
+    def _raw_matches_spec(self, asset: AssetRecord, source_id: str) -> bool:
+        spec = self.source_specs[source_id]
+        return (
+            asset.source_id == spec.source_id
+            and asset.source_version == spec.version
+            and asset.kind is AssetKind.RAW
+            and asset.status in {AssetStatus.FETCHED, AssetStatus.VALIDATED}
+            and self._checksum_matches(asset)
+        )
+
+    def _remote_is_reusable(self, remote: RemoteAsset) -> bool:
+        candidates = [asset for asset in self._assets() if asset.asset_id == remote.asset_id]
+        reusable = any(self._remote_matches(asset, remote) for asset in candidates)
+        if not reusable:
+            for candidate in candidates:
+                self._mark_stale(candidate)
+        return reusable
+
+    def _remote_matches(self, asset: AssetRecord, remote: RemoteAsset) -> bool:
+        return (
+            asset.source_id == remote.source_id
+            and asset.source_version == remote.source_version
+            and asset.kind is AssetKind.RAW
+            and asset.source_uri == remote.uri
+            and Path(asset.storage_path) == self.paths.dataset / remote.target_relative_path
+            and asset.media_type == remote.media_type
+            and asset.license_id == remote.license_id
+            and asset.source_valid_time == remote.source_valid_time
+            and asset.status in {AssetStatus.FETCHED, AssetStatus.VALIDATED}
+            and self._checksum_matches(asset)
+        )
+
+    def _fetch_remote(
+        self, adapter: SourceAdapter, context: SourceContext, remote: RemoteAsset
+    ) -> AssetRecord:
+        fetch_raw = getattr(adapter, "fetch_raw", None)
+        if callable(fetch_raw):
+            return fetch_raw(self.fetcher, context, remote)
+        return self.fetcher.fetch(remote, context.run_id)  # type: ignore[attr-defined,no-any-return]
 
     def _preflight(self, remote) -> None:
         size = remote.expected_size or remote.budget_size_bytes
@@ -300,6 +385,9 @@ class StaticPipeline:
         for record in records:
             if record.status is AssetStatus.VALIDATED and self._checksum_matches(record):
                 summary.reused += 1
+                continue
+            if record.status is AssetStatus.VALIDATED:
+                self._mark_stale(record)
                 continue
             if record.status is not AssetStatus.FETCHED:
                 continue
@@ -324,13 +412,23 @@ class StaticPipeline:
             item
             for item in self._assets()
             if item.source_id == source_id
+            and item.source_version == self.source_specs[source_id].version
             and item.kind is not AssetKind.RAW
             and item.dependency_fingerprint == fingerprint
+            and item.status in {AssetStatus.HARMONIZED, AssetStatus.DERIVED}
             and self._checksum_matches(item)
         ]
-        if existing:
+        output_candidates = [
+            item
+            for item in self._assets()
+            if item.source_id == source_id and item.kind is not AssetKind.RAW
+        ]
+        if existing and len(existing) == len(output_candidates):
             summary.reused += 1
             return
+        for output in output_candidates:
+            if output not in existing:
+                self._mark_stale(output)
         if source_id in _HYDRO_SOURCES:
             outputs = self._harmonize_hydro(context)
         else:
@@ -452,10 +550,20 @@ class StaticPipeline:
         ]
         config = {
             "stage": stage.value,
+            "source_version": source.version,
             "study_area": self.study_area.model_dump(mode="json"),
             "source_settings": source.settings,
         }
         return dependency_fingerprint(checksums, config, _PROCESSOR_VERSION)
+
+    def _mark_stale(self, record: AssetRecord) -> None:
+        if record.status in {
+            AssetStatus.VALIDATED,
+            AssetStatus.FETCHED,
+            AssetStatus.HARMONIZED,
+            AssetStatus.DERIVED,
+        }:
+            self.catalog.transition(record.asset_id, AssetStatus.STALE)
 
     @staticmethod
     def _checksum_matches(record: AssetRecord) -> bool:

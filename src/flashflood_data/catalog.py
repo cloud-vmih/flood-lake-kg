@@ -14,7 +14,12 @@ from flashflood_data.paths import ProjectPaths
 LEGAL_TRANSITIONS: dict[AssetStatus, set[AssetStatus]] = {
     AssetStatus.DISCOVERED: {AssetStatus.FETCHING, AssetStatus.VALIDATED, AssetStatus.FAILED},
     AssetStatus.FETCHING: {AssetStatus.FETCHED, AssetStatus.FAILED, AssetStatus.QUARANTINED},
-    AssetStatus.FETCHED: {AssetStatus.VALIDATED, AssetStatus.FAILED, AssetStatus.QUARANTINED},
+    AssetStatus.FETCHED: {
+        AssetStatus.VALIDATED,
+        AssetStatus.FAILED,
+        AssetStatus.STALE,
+        AssetStatus.QUARANTINED,
+    },
     AssetStatus.VALIDATED: {AssetStatus.HARMONIZED, AssetStatus.DERIVED, AssetStatus.STALE},
     AssetStatus.HARMONIZED: {AssetStatus.DERIVED, AssetStatus.STALE},
     AssetStatus.DERIVED: {AssetStatus.STALE},
