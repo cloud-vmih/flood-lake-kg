@@ -1,0 +1,4 @@
+{"type":"FeatureCollection","features":[
+  {"type":"Feature","properties":{"osm_id":"9","osm_type":"relation","natural":"water","water":"reservoir","name":"Fixture Reservoir"},"geometry":{"type":"Polygon","coordinates":[[[103.5,20.5],[103.7,20.5],[103.7,20.7],[103.5,20.7],[103.5,20.5]]]}},
+  {"type":"Feature","properties":{"osm_id":"88","osm_type":"relation","natural":"water"},"geometry":{"type":"Polygon","coordinates":[[[105,22],[106,22],[106,23],[105,23],[105,22]]]}}
+]}

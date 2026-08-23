@@ -1,0 +1,8 @@
+sources:
+  - source_id: geofabrik_vietnam_snapshot
+    adapter: geofabrik_osm
+    version: snapshot
+    license_id: ODbL-1.0
+    settings:
+      pbf_url: https://download.geofabrik.de/asia/vietnam-latest.osm.pbf
+      md5_url: https://download.geofabrik.de/asia/vietnam-latest.osm.pbf.md5

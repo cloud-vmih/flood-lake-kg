@@ -1,0 +1,5 @@
+{"type":"FeatureCollection","features":[
+  {"type":"Feature","properties":{"osm_id":"7","osm_type":"node","amenity":"clinic","name":"Fixture Clinic","other_tags":"{\"operator\": \"fixture clinic\"}"},"geometry":{"type":"Point","coordinates":[103.3,20.3]}},
+  {"type":"Feature","properties":{"osm_id":"8","osm_type":"node","place":"village","name":"Fixture Village"},"geometry":{"type":"Point","coordinates":[103.4,20.4]}},
+  {"type":"Feature","properties":{"osm_id":"99","osm_type":"node","amenity":"school","name":"Outside"},"geometry":{"type":"Point","coordinates":[105.0,22.0]}}
+]}
