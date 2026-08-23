@@ -12,14 +12,32 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from flashflood_data.io_atomic import atomic_target
 from flashflood_data.qa.checks import QAReport
 
-_SENSITIVE = re.compile(
-    r"(?i)(?:bearer\s+)[^\s<]+|([?&](?:token|signature|sig|x-amz-signature|credential|apikey|api_key|password)=[^&#\s]+)"
+_BEARER = re.compile(r"(?i)\bbearer\s+[^\s<,;]+")
+_USERINFO = re.compile(r"(?i)(https?://)[^/\s@]+@")
+_QUERY_FIELD = re.compile(r"([?&])([^=&#\s]+)=([^&#\s]*)")
+_SENSITIVE_PARTS = (
+    "secret",
+    "token",
+    "password",
+    "authorization",
+    "apikey",
+    "signature",
+    "credential",
 )
 
 
 def redact(value: object) -> str:
     """Redact credentials and signed URL parameters before QA publication."""
-    return _SENSITIVE.sub("[REDACTED]", str(value))
+    text = _BEARER.sub("Bearer [REDACTED]", str(value))
+    text = _USERINFO.sub(r"\1[REDACTED]@", text)
+
+    def replace_query(match: re.Match[str]) -> str:
+        normalized = re.sub(r"[^a-z0-9]", "", match.group(2).lower())
+        if any(part in normalized for part in _SENSITIVE_PARTS):
+            return f"{match.group(1)}{match.group(2)}=[REDACTED]"
+        return match.group(0)
+
+    return _QUERY_FIELD.sub(replace_query, text)
 
 
 def _rows(report: QAReport) -> list[dict[str, object]]:
@@ -31,7 +49,7 @@ def _rows(report: QAReport) -> list[dict[str, object]]:
             "expected": redact(check.expected),
             "actual": redact(check.actual),
             "message": redact(check.message),
-            "asset_ids": list(check.asset_ids),
+            "asset_ids": [redact(asset_id) for asset_id in check.asset_ids],
         }
         for check in sorted(report.checks, key=lambda check: check.check_id)
     ]

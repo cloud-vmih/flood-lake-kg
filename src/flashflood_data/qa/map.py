@@ -49,13 +49,15 @@ def _geojson(path: Path, output: Path, tolerance_m: float) -> dict[str, object]:
         layer = gpd.read_parquet(path)
         if layer.crs is None:
             raise ValueError("missing CRS")
-        metric = layer.to_crs("EPSG:3857").copy()
+        metric = layer.to_crs("EPSG:32648").copy()
         metric.geometry = metric.geometry.simplify(tolerance_m, preserve_topology=True)
         display = metric.to_crs("EPSG:4326")
         properties = [column for column in display.columns if column != "geometry"]
         features: list[dict[str, object]] = []
         for _, row in display.iterrows():
             values = {column: _json_value(row[column]) for column in properties}
+            flags = str(values.get("quality_flags_json", "{} ")).strip()
+            values["qa_warning"] = flags not in {"", "{}", "null", "None"}
             features.append(
                 {
                     "type": "Feature",

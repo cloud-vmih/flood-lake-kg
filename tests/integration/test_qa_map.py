@@ -57,6 +57,9 @@ def test_map_manifest_lists_required_vectors_and_is_display_only(tmp_path: Path)
     assert layers["communes"].read_bytes() == before
     html = index.read_text()
     assert "maplibre-gl@5.6.2" in html
-    assert "quality_flags_json" in html
+    assert "qa_warning" in html
     assert "raster" in html
+    assert "setHTML" not in html
+    assert "type: 'circle'" in html
+    assert "type: 'fill'" in html
     assert all(not Path(layer["path"]).is_absolute() for layer in manifest["layers"].values())

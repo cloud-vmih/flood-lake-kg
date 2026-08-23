@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+import rasterio
+from rasterio.features import geometry_mask
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import StudyAreaConfig
@@ -207,7 +210,14 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         repaired,
         "geometry repairs are retained as QA evidence",
     )
-    if admin.empty or admin.crs is None or "legal_area_km2" not in admin:
+    core, _ = _geometry(paths, "core")
+    if (
+        admin.empty
+        or admin.crs is None
+        or "legal_area_km2" not in admin
+        or core is None
+        or core.empty
+    ):
         legal = _check(
             "admin.legal_coverage",
             False,
@@ -218,9 +228,13 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         )
     else:
         metric = admin.to_crs(config.processing_crs)
-        union_area = float(metric.geometry.union_all().area)
-        total_area = float(metric.geometry.area.sum())
-        overlap = max(0.0, total_area - union_area) / union_area * 100 if union_area else 100.0
+        core_metric = core.to_crs(config.processing_crs).geometry.union_all()
+        core_area = float(core_metric.area)
+        clipped = metric.geometry.intersection(core_metric)
+        union_area = float(clipped.union_all().area)
+        total_area = float(clipped.area.sum())
+        overlap = max(0.0, total_area - union_area) / core_area * 100 if core_area else 100.0
+        gap = max(0.0, core_area - union_area) / core_area * 100 if core_area else 100.0
         legal_area = pd.to_numeric(metric["legal_area_km2"], errors="coerce")
         computed = metric.geometry.area / 1_000_000
         difference = ((computed - legal_area).abs() / legal_area * 100).fillna(float("inf"))
@@ -229,14 +243,35 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         max_difference = float(outside.max()) if not outside.empty else 0.0
         legal = _check(
             "admin.legal_coverage",
-            overlap <= config.admin_gap_overlap_max_pct
+            gap <= config.admin_gap_overlap_max_pct
+            and overlap <= config.admin_gap_overlap_max_pct
             and max_difference <= config.legal_area_diff_max_pct,
             "fatal",
             f"gap/overlap <= {config.admin_gap_overlap_max_pct}%; legal area difference <= {config.legal_area_diff_max_pct}%",
-            f"overlap={overlap:.6f}%, legal_difference={max_difference:.6f}%",
-            "dissolved coverage and legal-area tolerance",
+            f"gap={gap:.6f}%, overlap={overlap:.6f}%, legal_difference={max_difference:.6f}%",
+            "Core-area-normalized gaps, overlaps, and legal-area tolerance",
         )
-    return [count, geometry, legal, repair]
+    exceptions_used = (
+        sorted(
+            set(
+                metric.loc[
+                    metric["current_commune_code"].astype(str).isin(exceptions),
+                    "current_commune_code",
+                ].astype(str)
+            )
+        )
+        if "metric" in locals()
+        else []
+    )
+    exception_warning = _check(
+        "admin.legal_area.exceptions",
+        not exceptions_used,
+        "warning",
+        "0 approved legal-area exceptions used",
+        ",".join(exceptions_used) or "0",
+        "approved legal-area exceptions are explicit QA evidence",
+    )
+    return [count, geometry, legal, repair, exception_warning]
 
 
 def _hydro_checks(paths: ProjectPaths) -> list[CheckResult]:
@@ -245,6 +280,11 @@ def _hydro_checks(paths: ProjectPaths) -> list[CheckResult]:
     try:
         l10 = gpd.read_parquet(l10_path)
         hierarchy = pd.read_parquet(hierarchy_path)
+        from flashflood_data.harmonize.hydro import default_hydro_inputs
+
+        inputs = default_hydro_inputs(paths)
+        l9 = gpd.read_file(inputs.l9)
+        l8 = gpd.read_file(inputs.l8)
     except Exception:  # noqa: BLE001
         return [
             _check(
@@ -266,10 +306,44 @@ def _hydro_checks(paths: ProjectPaths) -> list[CheckResult]:
         ]
     ids = pd.to_numeric(l10.get("HYBAS_ID", pd.Series(dtype="object")), errors="coerce")
     parent_fields = {"HYBAS_ID", "parent_l9_hybas_id", "parent_l8_hybas_id", "scope_exit"}
-    parents_ok = (
-        parent_fields.issubset(hierarchy.columns)
-        and not hierarchy[["parent_l9_hybas_id", "parent_l8_hybas_id"]].isna().any().any()
+    l9_ids = set(
+        pd.to_numeric(l9.get("HYBAS_ID", pd.Series(dtype="object")), errors="coerce")
+        .dropna()
+        .astype("int64")
     )
+    l8_ids = set(
+        pd.to_numeric(l8.get("HYBAS_ID", pd.Series(dtype="object")), errors="coerce")
+        .dropna()
+        .astype("int64")
+    )
+    l10_pfaf = {
+        int(row.HYBAS_ID): str(row.PFAF_ID).removesuffix(".0")
+        for row in l10.itertuples(index=False)
+        if hasattr(row, "HYBAS_ID") and hasattr(row, "PFAF_ID")
+    }
+    l9_pfaf = {
+        int(row.HYBAS_ID): str(row.PFAF_ID).removesuffix(".0")
+        for row in l9.itertuples(index=False)
+        if hasattr(row, "HYBAS_ID") and hasattr(row, "PFAF_ID")
+    }
+    l8_pfaf = {
+        int(row.HYBAS_ID): str(row.PFAF_ID).removesuffix(".0")
+        for row in l8.itertuples(index=False)
+        if hasattr(row, "HYBAS_ID") and hasattr(row, "PFAF_ID")
+    }
+    parents_ok = parent_fields.issubset(hierarchy.columns)
+    if parents_ok:
+        for row in hierarchy.itertuples(index=False):
+            child = int(row.HYBAS_ID)
+            parent9, parent8 = int(row.parent_l9_hybas_id), int(row.parent_l8_hybas_id)
+            parents_ok = (
+                parents_ok
+                and parent9 in l9_ids
+                and parent8 in l8_ids
+                and child in l10_pfaf
+                and l10_pfaf[child].startswith(l9_pfaf.get(parent9, "!"))
+                and l10_pfaf[child].startswith(l8_pfaf.get(parent8, "!"))
+            )
     hierarchy_ok = (
         ids.notna().all()
         and ids.is_unique
@@ -341,43 +415,112 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
         commune_ids = set(gpd.read_parquet(admin_path)["current_commune_code"].astype(str))
     except Exception:  # noqa: BLE001
         basin_ids, commune_ids = set(), set()
-    mapping_dir = paths.derived / "mappings"
-    candidates = sorted(mapping_dir.glob("map_subbasin_*.parquet")) if mapping_dir.is_dir() else []
-    if not candidates:
-        candidates = (
-            sorted((paths.derived / "mappings").glob("*.parquet"))
-            if (paths.derived / "mappings").is_dir()
-            else []
+    products = {
+        "commune": ("current_commune_code", (admin_path,), {"commune_fraction"}),
+        "river": ("HYRIV_ID", (paths.harmonized / "hydro" / "river_reach.geoparquet",), set()),
+        "road": (
+            "segment_id",
+            (
+                paths.derived / "exposure" / "road_segment.geoparquet",
+                paths.harmonized / "exposure" / "road_segment.geoparquet",
+            ),
+            set(),
+        ),
+        "bridge": (
+            "bridge_id",
+            (
+                paths.derived / "exposure" / "bridge.geoparquet",
+                paths.harmonized / "exposure" / "bridge.geoparquet",
+            ),
+            set(),
+        ),
+        "facility": (
+            "facility_id",
+            (
+                paths.derived / "exposure" / "facility.geoparquet",
+                paths.harmonized / "exposure" / "facility.geoparquet",
+            ),
+            set(),
+        ),
+        "settlement": (
+            "settlement_id",
+            (
+                paths.derived / "exposure" / "settlement.geoparquet",
+                paths.harmonized / "exposure" / "settlement.geoparquet",
+            ),
+            set(),
+        ),
+        "population": (
+            None,
+            (),
+            {
+                "population_scope",
+                "contributing_pixel_count",
+                "nodata_pixel_count",
+                "aoi_pixel_count",
+                "coverage_ratio",
+            },
+        ),
+    }
+    foreign_ok, bad, coverage, boundary_cases = True, 0, pd.Series(dtype="float64"), 0
+    for name, (entity_key, entity_paths, extras) in products.items():
+        path = _first(
+            [
+                paths.derived / "mappings" / f"map_subbasin_{name}.parquet",
+                paths.derived / f"map_subbasin_{name}.parquet",
+            ]
         )
-    foreign_ok, bad, coverage = True, 0, pd.Series(dtype="float64")
-    for path in candidates:
-        try:
-            table = pd.read_parquet(path)
-        except Exception:  # noqa: BLE001
+        if path is None:
             foreign_ok, bad = False, bad + 1
             continue
-        if "HYBAS_ID" in table:
+        try:
+            table = pd.read_parquet(path)
+            required = {"HYBAS_ID", *extras} | ({entity_key} if entity_key else set())
+            if not required.issubset(table.columns):
+                foreign_ok, bad = False, bad + 1
+                continue
             invalid = (
                 set(pd.to_numeric(table["HYBAS_ID"], errors="coerce").dropna().astype("int64"))
                 - basin_ids
             )
-            bad += len(invalid)
-            foreign_ok = foreign_ok and not invalid
-        if "current_commune_code" in table:
-            invalid = set(table["current_commune_code"].dropna().astype(str)) - commune_ids
-            bad += len(invalid)
-            foreign_ok = foreign_ok and not invalid
-            if "commune_fraction" in table:
+            if invalid:
+                foreign_ok, bad = False, bad + len(invalid)
+            if entity_key:
+                entity_path = _first(entity_paths)
+                if entity_path is None:
+                    foreign_ok, bad = False, bad + 1
+                    continue
+                entity = gpd.read_parquet(entity_path)
+                source_key = (
+                    entity_key
+                    if entity_key in entity.columns
+                    else "osm_id"
+                    if "osm_id" in entity.columns
+                    else entity_key
+                )
+                if source_key not in entity:
+                    foreign_ok, bad = False, bad + 1
+                    continue
+                invalid = set(table[entity_key].dropna().astype(str)) - set(
+                    entity[source_key].dropna().astype(str)
+                )
+                if invalid:
+                    foreign_ok, bad = False, bad + len(invalid)
+            if name == "commune":
                 coverage = pd.to_numeric(
                     table.groupby("current_commune_code")["commune_fraction"].sum(), errors="coerce"
                 )
+            if "boundary_case" in table:
+                boundary_cases += int(table["boundary_case"].fillna(False).astype(bool).sum())
+        except Exception:  # noqa: BLE001
+            foreign_ok, bad = False, bad + 1
     fk = _check(
         "mapping.foreign_keys",
-        bool(candidates) and foreign_ok,
+        foreign_ok,
         "fatal",
         "every mapping foreign key exists",
-        f"{bad} invalid keys across {len(candidates)} tables",
-        "mapping keys refer to selected L10 basins and current communes",
+        f"{bad} invalid/missing mapping products or keys",
+        "all seven approved mappings have exact schemas and two-sided foreign keys",
     )
     if coverage.empty:
         coverage_check = _check(
@@ -389,8 +532,8 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             "commune-to-L10 area mapping is missing",
         )
     else:
-        percentages = coverage * 100
-        passed = percentages.between(99.5, 100.5).all()
+        percentages = coverage.reindex(sorted(commune_ids)) * 100
+        passed = percentages.notna().all() and percentages.between(99.5, 100.5).all()
         coverage_check = _check(
             "mapping.commune_coverage",
             bool(passed),
@@ -399,7 +542,15 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             f"{percentages.min():.6f}–{percentages.max():.6f}%",
             "commune fractions summed by current commune",
         )
-    return [fk, coverage_check]
+    boundary_warning = _check(
+        "mapping.boundary_cases",
+        boundary_cases == 0,
+        "warning",
+        "0 mapping boundary cases/ties",
+        boundary_cases,
+        "boundary-case relationships remain explicit QA evidence",
+    )
+    return [fk, coverage_check, boundary_warning]
 
 
 def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckResult]:
@@ -407,7 +558,6 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
     core, _ = _geometry(paths, "core")
     rasters: dict[str, tuple[Path | None, gpd.GeoDataFrame | None]] = {
         "dem": (_first([paths.harmonized / "rasters" / "dem_glo30.tif"]), hydro),
-        "soilgrids": (_first(sorted((paths.harmonized / "soilgrids").glob("**/*.tif"))), hydro),
         "worldcover": (_first([paths.harmonized / "rasters" / "worldcover_2021.tif"]), hydro),
         "worldpop": (_first([paths.harmonized / "rasters" / "worldpop_2025.tif"]), core),
     }
@@ -458,6 +608,49 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
                     "raster coverage could not be evaluated",
                 )
             )
+    from flashflood_data.derive.features import load_feature_config
+
+    semantics = load_feature_config()
+    for property_id in semantics.soil_properties:
+        for depth in semantics.soil_depths:
+            for statistic in semantics.soil_statistics:
+                path = paths.harmonized / "soilgrids" / property_id / depth / f"{statistic}.tif"
+                check_id = f"raster.soilgrids.{property_id}.{depth}.{statistic}.coverage"
+                if hydro is None or hydro.empty or not path.is_file():
+                    checks.append(
+                        _check(
+                            check_id,
+                            False,
+                            "fatal",
+                            f">= {config.environmental_raster_coverage_min_pct}% valid coverage of Hydrological AOI",
+                            "missing",
+                            "required configured SoilGrids product or Hydrological AOI is missing",
+                        )
+                    )
+                    continue
+                try:
+                    ratio = raster_coverage_ratio(path, hydro.geometry.union_all())
+                    checks.append(
+                        _check(
+                            check_id,
+                            ratio * 100 >= config.environmental_raster_coverage_min_pct,
+                            "fatal",
+                            f">= {config.environmental_raster_coverage_min_pct}% valid coverage of Hydrological AOI",
+                            f"{ratio * 100:.6f}%",
+                            "configured SoilGrids product native-grid valid-pixel coverage",
+                        )
+                    )
+                except Exception as error:  # noqa: BLE001
+                    checks.append(
+                        _check(
+                            check_id,
+                            False,
+                            "fatal",
+                            f">= {config.environmental_raster_coverage_min_pct}% valid coverage of Hydrological AOI",
+                            type(error).__name__,
+                            "configured SoilGrids product could not be evaluated",
+                        )
+                    )
     return checks
 
 
@@ -520,22 +713,74 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
         and not table.empty
         and table["population_scope"].eq("core_aoi_only").all()
     )
-    duplicate_ids = table.get("HYBAS_ID", pd.Series(dtype="object")).duplicated().any()
-    counts_ok = (
-        (
-            pd.to_numeric(
-                table.get("contributing_pixel_count", pd.Series(dtype="float64")), errors="coerce"
-            )
-            + pd.to_numeric(
-                table.get("nodata_pixel_count", pd.Series(dtype="float64")), errors="coerce"
-            )
-            <= pd.to_numeric(
-                table.get("aoi_pixel_count", pd.Series(dtype="float64")), errors="coerce"
-            )
+    mapped_ids = pd.to_numeric(table.get("HYBAS_ID", pd.Series(dtype="object")), errors="coerce")
+    duplicate_ids = mapped_ids.duplicated().any() or mapped_ids.isna().any()
+    values = {
+        name: pd.to_numeric(table.get(name, pd.Series(dtype="float64")), errors="coerce")
+        for name in (
+            "contributing_pixel_count",
+            "nodata_pixel_count",
+            "aoi_pixel_count",
+            "coverage_ratio",
         )
-        .fillna(False)
+    }
+    integer_counts = all(
+        np.isfinite(values[name]).all()
+        and (values[name] >= 0).all()
+        and np.equal(values[name], np.floor(values[name])).all()
+        for name in ("contributing_pixel_count", "nodata_pixel_count", "aoi_pixel_count")
+    )
+    counts_ok = (
+        integer_counts
+        and (values["contributing_pixel_count"] + values["nodata_pixel_count"])
+        .eq(values["aoi_pixel_count"])
         .all()
     )
+    ratios_ok = (
+        values["aoi_pixel_count"].gt(0)
+        & np.isclose(
+            values["coverage_ratio"],
+            values["contributing_pixel_count"] / values["aoi_pixel_count"],
+            equal_nan=False,
+        )
+    ).all()
+    l10_path = paths.harmonized / "hydro" / "subbasin_l10.geoparquet"
+    try:
+        selected_ids = set(
+            pd.to_numeric(gpd.read_parquet(l10_path)["HYBAS_ID"], errors="raise").astype("int64")
+        )
+    except Exception:  # noqa: BLE001
+        selected_ids = set()
+    membership_ok = bool(selected_ids) and set(mapped_ids.astype("int64")) == selected_ids
+    independent_ok = False
+    core, _ = _geometry(paths, "core")
+    worldpop = paths.harmonized / "rasters" / "worldpop_2025.tif"
+    if core is not None and not core.empty and worldpop.is_file():
+        try:
+            from flashflood_data.derive._spatial import geometry_in_dataset_crs
+
+            with rasterio.open(worldpop) as dataset:
+                core_geometry = geometry_in_dataset_crs(
+                    core.geometry.union_all(), core.crs.to_string(), dataset.crs
+                )
+                valid_total = nodata_total = 0
+                for _, window in dataset.block_windows(1):
+                    inside = geometry_mask(
+                        [core_geometry.__geo_interface__],
+                        out_shape=(int(window.height), int(window.width)),
+                        transform=dataset.window_transform(window),
+                        invert=True,
+                    )
+                    valid = dataset.read_masks(1, window=window) > 0
+                    valid_total += int((inside & valid).sum())
+                    nodata_total += int((inside & ~valid).sum())
+            independent_ok = (
+                int(values["contributing_pixel_count"].sum()) == valid_total
+                and int(values["nodata_pixel_count"].sum()) == nodata_total
+                and int(values["aoi_pixel_count"].sum()) == valid_total + nodata_total
+            )
+        except Exception:  # noqa: BLE001 - malformed evidence is a fatal outcome.
+            independent_ok = False
     ties = int(
         pd.to_numeric(
             table.get("boundary_center_tie_pixel_count", pd.Series(0, index=table.index)),
@@ -555,13 +800,21 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
         ),
         _check(
             "population.no_double_count",
-            not duplicate_ids and bool(counts_ok),
+            not duplicate_ids
+            and bool(counts_ok)
+            and bool(ratios_ok)
+            and membership_ok
+            and (not worldpop.is_file() or independent_ok),
             "fatal",
             "each Core pixel assigned to at most one L10",
-            "unique L10 assignments"
-            if not duplicate_ids and counts_ok
-            else "duplicate or inconsistent pixel counts",
-            "population pixel assignment is exclusive",
+            "complete selected-L10 accounting"
+            if not duplicate_ids
+            and counts_ok
+            and ratios_ok
+            and membership_ok
+            and (not worldpop.is_file() or independent_ok)
+            else "duplicate, incomplete, or inconsistent pixel accounting",
+            "population pixel assignment is exclusive with exact accounting",
         ),
         _check(
             "population.boundary_ties",
@@ -648,21 +901,46 @@ def _event_checks(paths: ProjectPaths) -> list[CheckResult]:
 
 def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckResult]:
     assets = _asset_records(paths)
-    raw = [asset for asset in assets if asset.kind is AssetKind.RAW]
+    raw_root = paths.raw.resolve()
+    raw = [
+        asset
+        for asset in assets
+        if asset.kind is AssetKind.RAW
+        and Path(asset.storage_path).resolve().is_relative_to(raw_root)
+        and asset.duplicate_of_asset_id is None
+    ]
+    referenced: set[str] = set()
+    evidence_malformed = False
+    for path in sorted(paths.derived.glob("**/*.parquet")):
+        try:
+            table = pd.read_parquet(path)
+            for column in ("source_asset_ids_json", "feature_group_source_asset_ids_json"):
+                if column in table:
+                    for value in table[column].dropna():
+                        decoded = json.loads(str(value))
+                        if isinstance(decoded, list):
+                            referenced.update(str(item) for item in decoded)
+                        elif isinstance(decoded, dict):
+                            referenced.update(
+                                str(item) for values in decoded.values() for item in values
+                            )
+        except Exception:  # noqa: BLE001 - malformed evidence is fatal provenance evidence.
+            evidence_malformed = True
+    used = [asset for asset in raw if not referenced or asset.asset_id in referenced]
     required = ("source_uri", "source_version", "license_id", "checksum", "retrieved_at")
     incomplete = [
-        asset.asset_id for asset in raw if any(not getattr(asset, field) for field in required)
+        asset.asset_id for asset in used if any(not getattr(asset, field) for field in required)
     ]
     raw_bytes = sum(asset.size_bytes for asset in raw)
     disk_free = shutil.disk_usage(paths.dataset if paths.dataset.exists() else paths.root).free
     return [
         _check(
             "raw.provenance",
-            bool(raw) and not incomplete,
+            bool(used) and not incomplete and not evidence_malformed,
             "fatal",
             "every used raw asset has URI/version/license/retrieval/checksum",
-            f"{len(raw) - len(incomplete)}/{len(raw)} complete",
-            "raw catalog provenance completeness",
+            f"{len(used) - len(incomplete)}/{len(used)} used pipeline raw assets complete",
+            "provenance for raw assets actually used through source-asset references",
             [*incomplete],
         ),
         _check(
@@ -686,14 +964,30 @@ def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[Che
 
 def run_quality_gates(paths: ProjectPaths, config: StudyAreaConfig) -> QAReport:
     """Evaluate every gate without stopping at the first fatal outcome."""
+
+    def contained(prefix: str, gate: Callable[[], list[CheckResult]]) -> list[CheckResult]:
+        try:
+            return gate()
+        except Exception as error:  # noqa: BLE001 - report publication is fail-safe.
+            return [
+                _check(
+                    f"{prefix}.gate_execution",
+                    False,
+                    "fatal",
+                    "malformed artifacts produce a published fatal result",
+                    type(error).__name__,
+                    "quality gate could not evaluate its malformed input",
+                )
+            ]
+
     checks = [
-        *_admin_checks(paths, config),
-        *_hydro_checks(paths),
-        *_mapping_checks(paths),
-        *_raster_checks(paths, config),
-        *_population_checks(paths),
-        *_event_checks(paths),
-        *_provenance_checks(paths, config),
+        *contained("admin", lambda: _admin_checks(paths, config)),
+        *contained("hydro", lambda: _hydro_checks(paths)),
+        *contained("mapping", lambda: _mapping_checks(paths)),
+        *contained("raster", lambda: _raster_checks(paths, config)),
+        *contained("population", lambda: _population_checks(paths)),
+        *contained("events", lambda: _event_checks(paths)),
+        *contained("raw", lambda: _provenance_checks(paths, config)),
     ]
     ordered = tuple(sorted(checks, key=lambda check: check.check_id))
     config_fingerprint = _config_fingerprint(config)
