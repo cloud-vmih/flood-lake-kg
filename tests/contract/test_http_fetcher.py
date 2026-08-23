@@ -145,6 +145,34 @@ def test_fetcher_streams_and_publishes_only_verified_payload(
 
 
 @respx.mock
+def test_fetcher_preserves_ephemeral_headers_when_resuming(
+    fetcher: HttpFetcher, remote_asset: RemoteAsset
+) -> None:
+    """Catches dropping an authenticated header when a partial CDSE download is resumed."""
+    requests: list[httpx.Request] = []
+
+    def first_response(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, headers={"ETag": '"fixture-v1"'}, stream=InterruptedStream(b"valid-"))
+
+    def resumed_response(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            206,
+            headers={"Content-Range": "bytes 6-12/13", "ETag": '"fixture-v1"'},
+            stream=ChunkStream(b"payload"),
+        )
+
+    respx.get(remote_asset.uri).mock(side_effect=[first_response, resumed_response])
+
+    record = fetcher.fetch(remote_asset, "run-resume-auth", headers={"Authorization": "Bearer ephemeral"})
+
+    assert Path(record.storage_path).read_bytes() == b"valid-payload"
+    assert [request.headers.get("Authorization") for request in requests] == ["Bearer ephemeral", "Bearer ephemeral"]
+    assert requests[1].headers["Range"] == "bytes=6-"
+
+
+@respx.mock
 def test_budget_rejection_happens_before_request_or_payload_write(
     project_paths, catalog, remote_asset: RemoteAsset
 ) -> None:

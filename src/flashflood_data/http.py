@@ -219,7 +219,9 @@ class HttpFetcher:
         self.logger = logger or logging.getLogger(__name__)
         self.logger.addFilter(SecretRedactionFilter(environment))
 
-    def fetch(self, remote: RemoteAsset, run_id: str) -> AssetRecord:
+    def fetch(
+        self, remote: RemoteAsset, run_id: str, *, headers: dict[str, str] | None = None
+    ) -> AssetRecord:
         """Fetch *remote* into its immutable dataset-relative target."""
         final_path = self._target_path(remote)
         size_bound = (
@@ -237,10 +239,15 @@ class HttpFetcher:
             raise BudgetRejected(decision.reason)
 
         with self._target_lock(remote):
-            return self._fetch_locked(remote, run_id, final_path, size_bound)
+            return self._fetch_locked(remote, run_id, final_path, size_bound, headers or {})
 
     def _fetch_locked(
-        self, remote: RemoteAsset, run_id: str, final_path: Path, size_bound: int
+        self,
+        remote: RemoteAsset,
+        run_id: str,
+        final_path: Path,
+        size_bound: int,
+        headers: dict[str, str],
     ) -> AssetRecord:
         self._read_resume_state(self._resume_state_path(remote))
         existing = self._existing_record(remote, final_path, run_id)
@@ -253,7 +260,7 @@ class HttpFetcher:
         for attempt in range(1, self.max_attempts + 1):
             published = False
             try:
-                retry_after = self._download_attempt(remote, partial, size_bound)
+                retry_after = self._download_attempt(remote, partial, size_bound, headers)
                 if retry_after is not None:
                     raise _RetryableStatus(retry_after[0], retry_after[1])
                 verified = self._verify_or_quarantine(partial, remote, run_id)
@@ -476,17 +483,19 @@ class HttpFetcher:
             raise ExistingAssetConflict(f"catalog provenance conflict: {remote.asset_id}")
 
     def _download_attempt(
-        self, remote: RemoteAsset, partial: Path, size_bound: int
+        self, remote: RemoteAsset, partial: Path, size_bound: int, request_headers: dict[str, str]
     ) -> tuple[int, float | None] | None:
         resume = self._owned_resume_state(remote, partial)
         for request_number in range(2):
             partial_size = partial.stat().st_size if resume is not None else 0
-            headers: dict[str, str] = {}
+            headers = dict(request_headers)
             if resume is not None:
-                headers = {
-                    "Range": f"bytes={partial_size}-",
-                    "If-Range": resume.validator_value,
-                }
+                headers.update(
+                    {
+                        "Range": f"bytes={partial_size}-",
+                        "If-Range": resume.validator_value,
+                    }
+                )
             with self.client.stream(
                 remote.request_method,
                 remote.uri,

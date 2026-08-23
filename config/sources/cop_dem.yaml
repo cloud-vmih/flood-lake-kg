@@ -1,0 +1,11 @@
+sources:
+  - source_id: cop_dem_glo30_2024_1
+    adapter: cop_dem
+    version: "2024_1"
+    license_id: COP-DEM-30
+    settings:
+      token_url: https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token
+      catalogue_url: https://catalogue.dataspace.copernicus.eu/odata/v1/Products
+      download_template: https://download.dataspace.copernicus.eu/odata/v1/Products({product_id})/$value
+      dataset: COP-DEM_GLO-30-DGED/2024_1
+      product_type: SAR_DGE_30_A4AD

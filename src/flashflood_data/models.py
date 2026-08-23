@@ -48,6 +48,11 @@ def _is_sensitive_key(key: object) -> bool:
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
+def _is_public_endpoint_key(key: object) -> bool:
+    """Recognize public OAuth endpoint names without admitting credential values."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) in {"tokenurl"}
+
+
 def _reject_credential_url(value: str) -> None:
     parsed = urlsplit(value)
     if parsed.username is not None or parsed.password is not None:
@@ -63,7 +68,7 @@ def _reject_credential_text(value: str) -> None:
 
 def _reject_credential_mapping(value: Mapping[object, object]) -> None:
     for key, nested_value in value.items():
-        if _is_sensitive_key(key):
+        if _is_sensitive_key(key) and not _is_public_endpoint_key(key):
             raise ValueError("credential-like mapping keys are not allowed")
         if isinstance(nested_value, Mapping):
             _reject_credential_mapping(nested_value)

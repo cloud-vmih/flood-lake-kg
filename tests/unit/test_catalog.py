@@ -227,6 +227,19 @@ def test_source_settings_reject_nested_credential_key() -> None:
         )
 
 
+def test_source_settings_allow_public_token_endpoint_name() -> None:
+    """Catches rejecting a public OAuth endpoint merely because its key contains token."""
+    source = SourceSpec(
+        source_id="dem",
+        adapter="cop_dem",
+        version="2024_1",
+        license_id="COP-DEM-30",
+        settings={"token_url": "https://identity.example.test/token"},
+    )
+
+    assert source.settings["token_url"] == "https://identity.example.test/token"
+
+
 def test_credential_rejection_does_not_echo_secret_in_error_text() -> None:
     with pytest.raises(ValidationError) as exc_info:
         RemoteAsset(
