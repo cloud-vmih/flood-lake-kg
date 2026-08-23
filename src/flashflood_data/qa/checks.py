@@ -210,7 +210,18 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         repaired,
         "geometry repairs are retained as QA evidence",
     )
-    if admin.empty or admin.crs is None or "legal_area_km2" not in admin:
+    reference_path = paths.harmonized / "admin" / "sonla_reference_boundary.geoparquet"
+    try:
+        reference = gpd.read_parquet(reference_path)
+    except Exception:  # noqa: BLE001 - independent boundary absence is a fatal result.
+        reference = None
+    if (
+        admin.empty
+        or admin.crs is None
+        or "legal_area_km2" not in admin
+        or reference is None
+        or reference.empty
+    ):
         legal = _check(
             "admin.legal_coverage",
             False,
@@ -221,13 +232,21 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         )
     else:
         metric = admin.to_crs(config.processing_crs)
+        reference_metric = reference.to_crs(config.processing_crs).geometry.union_all()
+        reference_area = float(reference_metric.area) / 1_000_000
+        clipped = metric.geometry.intersection(reference_metric)
         legal_area = pd.to_numeric(metric["legal_area_km2"], errors="coerce")
         computed = metric.geometry.area / 1_000_000
-        legal_total = float(legal_area.sum())
-        union_area = float(metric.geometry.union_all().area) / 1_000_000
-        total_area = float(metric.geometry.area.sum()) / 1_000_000
-        overlap = max(0.0, total_area - union_area) / legal_total * 100 if legal_total else 100.0
-        gap = max(0.0, legal_total - union_area) / legal_total * 100 if legal_total else 100.0
+        union_area = float(clipped.union_all().area) / 1_000_000
+        total_area = float(clipped.area.sum()) / 1_000_000
+        overlap = (
+            max(0.0, total_area - union_area) / reference_area * 100 if reference_area else 100.0
+        )
+        gap = (
+            max(0.0, reference_area - union_area) / reference_area * 100
+            if reference_area
+            else 100.0
+        )
         difference = ((computed - legal_area).abs() / legal_area * 100).fillna(float("inf"))
         exceptions = {str(value).zfill(5) for value in config.admin_area_exceptions}
         outside = difference[~metric["current_commune_code"].astype(str).isin(exceptions)]
@@ -240,7 +259,7 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
             "fatal",
             f"gap/overlap <= {config.admin_gap_overlap_max_pct}%; legal area difference <= {config.legal_area_diff_max_pct}%",
             f"gap={gap:.6f}%, overlap={overlap:.6f}%, legal_difference={max_difference:.6f}%",
-            "independent legal-area-total-normalized gaps, overlaps, and per-unit tolerance",
+            "independent Son La reference-boundary-normalized gaps, overlaps, and per-unit tolerance",
         )
     exceptions_used = (
         sorted(
@@ -493,10 +512,16 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
             (),
             {
                 "population_scope",
+                "population_sum",
+                "population_mean",
                 "contributing_pixel_count",
                 "nodata_pixel_count",
                 "aoi_pixel_count",
                 "coverage_ratio",
+                "source_resolution_x",
+                "source_resolution_y",
+                "source_resolution_unit",
+                "source_crs",
                 "boundary_center_tie_pixel_count",
                 "quality_flags_json",
                 "source_asset_ids_json",
@@ -522,7 +547,10 @@ def _mapping_checks(paths: ProjectPaths) -> list[CheckResult]:
                 continue
             basin_values = pd.to_numeric(table["HYBAS_ID"], errors="coerce")
             invalid = set(basin_values.dropna().astype("int64")) - basin_ids
-            if basin_values.isna().any() or invalid:
+            nonintegral = (
+                ~np.isclose(basin_values.dropna(), np.floor(basin_values.dropna()))
+            ).any()
+            if basin_values.isna().any() or nonintegral or invalid:
                 foreign_ok, bad = False, bad + len(invalid)
             if entity_key:
                 entity_path = _first(entity_paths)
@@ -1020,7 +1048,12 @@ def _provenance_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[Che
             references.update(value)
         return references
 
-    roots = [asset for asset in assets if asset.kind is AssetKind.DERIVED]
+    roots = [
+        asset
+        for asset in assets
+        if asset.kind is AssetKind.DERIVED
+        and (asset.asset_id.startswith("task15-") or asset.asset_id.startswith("task16-"))
+    ]
     unresolved: set[str] = set()
     used_ids: set[str] = set()
 

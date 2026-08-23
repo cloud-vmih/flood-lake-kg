@@ -82,3 +82,23 @@ def test_map_warning_flag_includes_repaired_geometry_and_popup_ids(tmp_path: Pat
     assert feature["properties"]["qa_warning"] is True
     assert "current_commune_code" in index.read_text()
     assert "HYRIV_ID" in index.read_text()
+
+
+def test_map_joins_task16_boundary_warning_to_river_feature(tmp_path: Path) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    river = paths.harmonized / "hydro" / "river_reach.geoparquet"
+    river.parent.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(
+        {"HYRIV_ID": [9]}, geometry=[LineString([(104, 21), (104.1, 21.1)])], crs="EPSG:4326"
+    ).to_parquet(river, index=False)
+    mapping = paths.derived / "mappings" / "map_subbasin_river.parquet"
+    mapping.parent.mkdir(parents=True, exist_ok=True)
+    __import__("pandas").DataFrame(
+        {"HYRIV_ID": [9], "boundary_case": [True], "quality_flags_json": ["{}"]}
+    ).to_parquet(mapping, index=False)
+
+    index = publish_qa_map(paths, paths.qa)
+
+    feature = json.loads((index.parent / "data" / "rivers.geojson").read_text())["features"][0]
+    assert feature["properties"]["qa_warning"] is True

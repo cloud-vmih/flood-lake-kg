@@ -40,7 +40,7 @@ INDEX_ASSET_ID: Final = "sonla-admin-2025-index"
 RESOLUTION_PAGE_ASSET_ID: Final = "resolution-1681-page"
 RESOLUTION_PDF_ASSET_ID: Final = "resolution-1681-pdf"
 GADM_ARCHIVE_ASSET_ID: Final = "gadm-vnm-4-1-archive"
-_PDF_LINK = re.compile(r'''href=["']([^"']*1681[^"']*\.pdf[^"']*)["']''', re.IGNORECASE)
+_PDF_LINK = re.compile(r"""href=["']([^"']*1681[^"']*\.pdf[^"']*)["']""", re.IGNORECASE)
 
 
 def classify_unit(name: str) -> str:
@@ -113,9 +113,7 @@ def _number(value: object, field: str) -> float:
 def normalize_current_admin(index_path: Path, geometry_paths: Sequence[Path]) -> gpd.GeoDataFrame:
     """Normalize immutable one-feature raw responses into a current-admin layer."""
     index_codes = {
-        str(row["ma"]).zfill(5)
-        for row in _index_rows(index_path)
-        if row.get("ma") is not None
+        str(row["ma"]).zfill(5) for row in _index_rows(index_path) if row.get("ma") is not None
     }
     rows: list[dict[str, object]] = []
     geometries: list[object] = []
@@ -194,6 +192,23 @@ def normalize_historical_admin(
     return repair_geometries(normalized)
 
 
+def build_sonla_reference_boundary(historical: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Dissolve historical GADM Sơn La units into an independent QA boundary."""
+    if historical.empty or historical.crs is None:
+        raise ValueError("historical GADM units are required for the Sơn La reference boundary")
+    return repair_geometries(
+        gpd.GeoDataFrame(
+            {
+                "reference_id": ["gadm-sonla-historical-dissolve"],
+                "source_version": [str(historical.iloc[0]["source_version"])],
+                "raw_asset_id": [str(historical.iloc[0]["raw_asset_id"])],
+            },
+            geometry=[historical.geometry.union_all()],
+            crs=historical.crs,
+        )
+    )
+
+
 def validate_current_admin(gdf: gpd.GeoDataFrame, study_area: StudyAreaConfig) -> ValidationResult:
     """Validate legal unit counts, area tolerances, and dissolved coverage metrics."""
     vector = validate_vector(
@@ -214,7 +229,9 @@ def validate_current_admin(gdf: gpd.GeoDataFrame, study_area: StudyAreaConfig) -
     codes = gdf["current_commune_code"]
     count = len(gdf)
     if count != study_area.admin_expected_count or not codes.is_unique:
-        raise ValueError(f"expected {study_area.admin_expected_count} unique current admin units, got {count}")
+        raise ValueError(
+            f"expected {study_area.admin_expected_count} unique current admin units, got {count}"
+        )
     unit_counts = gdf["unit_type"].value_counts()
     communes = int(unit_counts.get("commune", 0))
     wards = int(unit_counts.get("ward", 0))
@@ -329,7 +346,9 @@ class CurrentAdminAdapter(SourceAdapter):
         return sorted(remotes, key=lambda remote: remote.asset_id)
 
     def _resolution_pdf_remote(self, page: AssetRecord) -> RemoteAsset | None:
-        match = _PDF_LINK.search(Path(page.storage_path).read_text(encoding="utf-8", errors="replace"))
+        match = _PDF_LINK.search(
+            Path(page.storage_path).read_text(encoding="utf-8", errors="replace")
+        )
         if match is None:
             raise ValueError("Resolution 1681 page does not link to a PDF")
         return RemoteAsset(
@@ -371,7 +390,11 @@ class CurrentAdminAdapter(SourceAdapter):
                 valid = isinstance(payload, (dict, list))
                 checks = {"json_readable": valid}
             elif suffix == ".html":
-                checks = {"html_non_empty": bool(path.read_text(encoding="utf-8", errors="replace").strip())}
+                checks = {
+                    "html_non_empty": bool(
+                        path.read_text(encoding="utf-8", errors="replace").strip()
+                    )
+                }
             elif suffix == ".pdf":
                 checks = {"pdf_signature": path.read_bytes()[:5] == b"%PDF-"}
             else:
@@ -396,9 +419,10 @@ class CurrentAdminAdapter(SourceAdapter):
             (asset for asset in assets if asset.asset_id.startswith("sonla-admin-2025-unit-")),
             key=lambda asset: asset.asset_id,
         )
-        normalized = normalize_current_admin(index_path=Path(index.storage_path), geometry_paths=[
-            Path(asset.storage_path) for asset in geometry_assets
-        ])
+        normalized = normalize_current_admin(
+            index_path=Path(index.storage_path),
+            geometry_paths=[Path(asset.storage_path) for asset in geometry_assets],
+        )
         validation = validate_current_admin(normalized, context.study_area)
         if not validation.passed:
             raise ValueError("current administrative unit validation failed")
@@ -486,7 +510,9 @@ class GadmAdminAdapter(SourceAdapter):
             source_valid_time=self._setting("historical_valid_to"),
         )
 
-    def resolve(self, context: SourceContext | None, available: list[AssetRecord]) -> list[RemoteAsset]:
+    def resolve(
+        self, context: SourceContext | None, available: list[AssetRecord]
+    ) -> list[RemoteAsset]:
         """Declare the one immutable ZIP only until it is available locally."""
         del context
         if any(asset.asset_id == GADM_ARCHIVE_ASSET_ID for asset in available):
@@ -519,7 +545,9 @@ class GadmAdminAdapter(SourceAdapter):
         """Read a member via GDAL's virtual ZIP filesystem, never extracting raw files."""
         return gpd.read_file(f"/vsizip/{archive_path.resolve()}/{layer_name}")
 
-    def _normalize_vietnam_boundary(self, raw: gpd.GeoDataFrame, raw_asset_id: str) -> gpd.GeoDataFrame:
+    def _normalize_vietnam_boundary(
+        self, raw: gpd.GeoDataFrame, raw_asset_id: str
+    ) -> gpd.GeoDataFrame:
         if raw.empty or "geometry" not in raw.columns or raw.crs is None:
             raise ValueError("GADM ADM0 layer is incomplete")
         row = raw.iloc[0]
@@ -559,10 +587,15 @@ class GadmAdminAdapter(SourceAdapter):
         vietnam = self._normalize_vietnam_boundary(
             self._read_archive_layer(archive_path, "gadm41_VNM_0.shp"), archive.asset_id
         )
+        sonla_reference = build_sonla_reference_boundary(historical)
         historical_path = context.paths.harmonized / "admin" / "admin_commune_historical.geoparquet"
         vietnam_path = context.paths.harmonized / "admin" / "vietnam_boundary.geoparquet"
+        sonla_reference_path = (
+            context.paths.harmonized / "admin" / "sonla_reference_boundary.geoparquet"
+        )
         write_geoparquet(historical, historical_path, context.study_area.storage_crs)
         write_geoparquet(vietnam, vietnam_path, context.study_area.storage_crs)
+        write_geoparquet(sonla_reference, sonla_reference_path, context.study_area.storage_crs)
         current_path = context.paths.harmonized / "admin" / "admin_commune_2025.geoparquet"
         if not current_path.is_file():
             raise ValueError("GADM harmonization requires validated current admin GeoParquet")
@@ -573,12 +606,38 @@ class GadmAdminAdapter(SourceAdapter):
         now = datetime.now(UTC)
         dependency = f"{archive.checksum}|{sha256_file(current_path)}"
         outputs = (
-            ("gadm-vnm-4-1-historical-harmonized", historical_path, AssetKind.HARMONIZED,
-             "generated:gadm-adm3-normalization", "application/geoparquet", AssetStatus.HARMONIZED),
-            ("vietnam-boundary-gadm-4-1-harmonized", vietnam_path, AssetKind.HARMONIZED,
-             "generated:gadm-adm0-normalization", "application/geoparquet", AssetStatus.HARMONIZED),
-            ("admin-commune-crosswalk-2025", crosswalk_path, AssetKind.DERIVED,
-             "generated:historical-to-current-admin-crosswalk", "application/vnd.apache.parquet", AssetStatus.DERIVED),
+            (
+                "gadm-vnm-4-1-historical-harmonized",
+                historical_path,
+                AssetKind.HARMONIZED,
+                "generated:gadm-adm3-normalization",
+                "application/geoparquet",
+                AssetStatus.HARMONIZED,
+            ),
+            (
+                "vietnam-boundary-gadm-4-1-harmonized",
+                vietnam_path,
+                AssetKind.HARMONIZED,
+                "generated:gadm-adm0-normalization",
+                "application/geoparquet",
+                AssetStatus.HARMONIZED,
+            ),
+            (
+                "sonla-reference-boundary-gadm-4-1-harmonized",
+                sonla_reference_path,
+                AssetKind.HARMONIZED,
+                "generated:gadm-adm3-sonla-dissolve",
+                "application/geoparquet",
+                AssetStatus.HARMONIZED,
+            ),
+            (
+                "admin-commune-crosswalk-2025",
+                crosswalk_path,
+                AssetKind.DERIVED,
+                "generated:historical-to-current-admin-crosswalk",
+                "application/vnd.apache.parquet",
+                AssetStatus.DERIVED,
+            ),
         )
         records = [
             AssetRecord(
@@ -597,6 +656,7 @@ class GadmAdminAdapter(SourceAdapter):
                 pipeline_run_id=context.run_id,
                 status=status,
                 dependency_fingerprint=dependency,
+                metadata_json=json.dumps({"source_asset_ids": [archive.asset_id]}, sort_keys=True),
             )
             for asset_id, path, kind, source_uri, media_type, status in outputs
         ]

@@ -46,7 +46,11 @@ def test_profile_has_exactly_one_row_per_selected_l10_and_keeps_optional_nulls()
     assert profile.crs.to_epsg() == 4326
     assert profile.loc[profile.HYBAS_ID == 2, "population_sum"].isna().all()
     assert profile.pipeline_run_id.tolist() == ["run-1", "run-1"]
-    assert set(profile) >= {"dependency_fingerprint", "feature_group_source_asset_ids_json", "quality_flags_json"}
+    assert set(profile) >= {
+        "dependency_fingerprint",
+        "feature_group_source_asset_ids_json",
+        "quality_flags_json",
+    }
 
 
 def test_profile_rejects_duplicate_feature_keys_before_join() -> None:
@@ -131,7 +135,14 @@ def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_pa
     handler = task16_map_handler(inputs, tmp_path / "derived", owner_source_id="worldpop")
     pipeline = type(
         "Pipeline",
-        (), {"source_specs": {"worldpop": SourceSpec(source_id="worldpop", adapter="existing", version="1", license_id="x")}},
+        (),
+        {
+            "source_specs": {
+                "worldpop": SourceSpec(
+                    source_id="worldpop", adapter="existing", version="1", license_id="x"
+                )
+            }
+        },
     )()
     context = type("Context", (), {"run_id": "map-test"})()
 
@@ -149,6 +160,20 @@ def test_task16_map_handler_publishes_all_relationship_tables_and_profile(tmp_pa
         "task16-subbasin-static-feature",
     }
     assert (tmp_path / "derived" / "subbasin_static_feature.geoparquet").is_file()
+    metadata = {
+        record.asset_id: __import__("json").loads(record.metadata_json) for record in records
+    }
+    assert metadata["task16-map-subbasin-population"]["dependency_asset_ids"] == [
+        "worldpop-harmonized"
+    ]
+    assert metadata["task16-subbasin-static-feature"]["dependency_asset_ids"] == [
+        "basinatlas-harmonized",
+        "dem-harmonized",
+        "hydrorivers-harmonized",
+        "soilgrids-harmonized",
+        "worldcover-harmonized",
+        "worldpop-harmonized",
+    ]
     profile = gpd.read_parquet(tmp_path / "derived" / "subbasin_static_feature.geoparquet")
     assert __import__("json").loads(profile.feature_group_source_asset_ids_json.iloc[0]) == {
         "hydrology": ["hydrorivers-harmonized", "basinatlas-harmonized"],

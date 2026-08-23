@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ class StaticPredictorInputs:
     basins: gpd.GeoDataFrame
     basinatlas: gpd.GeoDataFrame | None = None
     processing_crs: str = "EPSG:32648"
+    source_asset_ids: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _validate_output(table: pd.DataFrame) -> None:
@@ -84,9 +86,7 @@ def derive_static_predictor_tables(
     }
 
 
-def task15_derive_handler(
-    inputs: StaticPredictorInputs, output_dir: Path, *, owner_source_id: str
-):
+def task15_derive_handler(inputs: StaticPredictorInputs, output_dir: Path, *, owner_source_id: str):
     """Build a DERIVE seam handler after Task 19 has resolved all five dependencies.
 
     The owner source selects exactly one call in the pipeline's per-source loop;
@@ -100,6 +100,15 @@ def task15_derive_handler(
             return []
         outputs = derive_static_predictor_tables(inputs, output_dir)
         source = pipeline.source_specs[source_id]
+        dependency_asset_ids = tuple(
+            sorted(
+                {
+                    asset_id
+                    for asset_ids in inputs.source_asset_ids.values()
+                    for asset_id in asset_ids
+                }
+            )
+        )
         return [
             AssetRecord(
                 asset_id=f"task15-{name}-features",
@@ -115,6 +124,9 @@ def task15_derive_handler(
                 license_id=source.license_id,
                 pipeline_run_id=context.run_id,
                 status=AssetStatus.DERIVED,
+                metadata_json=json.dumps(
+                    {"dependency_asset_ids": dependency_asset_ids}, sort_keys=True
+                ),
             )
             for name, path in outputs.items()
         ]

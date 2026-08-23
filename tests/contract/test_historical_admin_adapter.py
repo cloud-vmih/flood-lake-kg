@@ -8,7 +8,11 @@ from pathlib import Path
 import geopandas as gpd
 
 from flashflood_data.models import SourceSpec
-from flashflood_data.sources.admin import GadmAdminAdapter, normalize_historical_admin
+from flashflood_data.sources.admin import (
+    GadmAdminAdapter,
+    build_sonla_reference_boundary,
+    normalize_historical_admin,
+)
 
 
 def _adapter() -> GadmAdminAdapter:
@@ -50,3 +54,16 @@ def test_historical_normalization_filters_son_la_and_preserves_validity_metadata
     assert result.valid_from.isna().all()
     assert result.valid_to.tolist() == [date(2025, 6, 30)] * 3
     assert result.raw_asset_id.tolist() == ["raw"] * 3
+
+
+def test_historical_son_la_dissolve_is_an_independent_reference_boundary() -> None:
+    fixture = Path(__file__).parents[1] / "fixtures" / "admin" / "gadm_old_communes.geojson"
+    historical = normalize_historical_admin(
+        gpd.read_file(fixture), source_version="4.1", valid_to=date(2025, 6, 30), raw_asset_id="raw"
+    )
+
+    boundary = build_sonla_reference_boundary(historical)
+
+    assert len(boundary) == 1
+    assert boundary.reference_id.iloc[0] == "gadm-sonla-historical-dissolve"
+    assert boundary.geometry.iloc[0].equals(historical.geometry.union_all())

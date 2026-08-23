@@ -50,7 +50,10 @@ def test_static_predictor_writer_persists_four_id_keyed_tables(tmp_path: Path) -
     dem = _raster(tmp_path / "dem.tif", 10.0, "float32")
     worldcover = _raster(tmp_path / "worldcover.tif", 10, "int16")
     soil_paths = _full_soil_matrix(
-        {depth: _raster(tmp_path / f"soil-{depth}.tif", 100, "int16") for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")}
+        {
+            depth: _raster(tmp_path / f"soil-{depth}.tif", 100, "int16")
+            for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")
+        }
     )
     basins = gpd.GeoDataFrame(
         {"HYBAS_ID": [99]}, geometry=[box(500_000, 0, 500_060, 60)], crs="EPSG:32648"
@@ -81,7 +84,10 @@ def test_task15_handler_runs_once_for_its_composed_owner_source(tmp_path: Path) 
     dem = _raster(tmp_path / "dem.tif", 10.0, "float32")
     worldcover = _raster(tmp_path / "worldcover.tif", 10, "int16")
     soil_paths = _full_soil_matrix(
-        {depth: _raster(tmp_path / f"soil-{depth}.tif", 100, "int16") for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")}
+        {
+            depth: _raster(tmp_path / f"soil-{depth}.tif", 100, "int16")
+            for depth in ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")
+        }
     )
     basins = gpd.GeoDataFrame(
         {"HYBAS_ID": [99]}, geometry=[box(500_000, 0, 500_060, 60)], crs="EPSG:32648"
@@ -94,10 +100,15 @@ def test_task15_handler_runs_once_for_its_composed_owner_source(tmp_path: Path) 
             geometry=[LineString([(500_000, 30), (500_060, 30)])], crs="EPSG:32648"
         ),
         basins=basins,
+        source_asset_ids={"terrain": ("dem-harmonized",)},
     )
     handler = task15_derive_handler(inputs, tmp_path / "derived", owner_source_id="terrain")
     pipeline = SimpleNamespace(
-        source_specs={"terrain": SourceSpec(source_id="terrain", adapter="existing", version="1", license_id="x")}
+        source_specs={
+            "terrain": SourceSpec(
+                source_id="terrain", adapter="existing", version="1", license_id="x"
+            )
+        }
     )
     context = SimpleNamespace(run_id="task15-test")
 
@@ -111,3 +122,7 @@ def test_task15_handler_runs_once_for_its_composed_owner_source(tmp_path: Path) 
         "landcover_features.parquet",
         "hydrology_features.parquet",
     }
+    assert all(
+        __import__("json").loads(record.metadata_json)["dependency_asset_ids"] == ["dem-harmonized"]
+        for record in records
+    )

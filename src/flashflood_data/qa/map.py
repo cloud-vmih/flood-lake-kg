@@ -8,6 +8,7 @@ from typing import Any
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import rasterio
 from PIL import Image
 from rasterio.warp import transform_bounds
@@ -44,7 +45,9 @@ _RASTERS = {
 }
 
 
-def _geojson(path: Path, output: Path, tolerance_m: float) -> dict[str, object]:
+def _geojson(
+    path: Path, output: Path, tolerance_m: float, mapping_warning_ids: set[str] | None = None
+) -> dict[str, object]:
     try:
         layer = gpd.read_parquet(path)
         if layer.crs is None:
@@ -61,6 +64,17 @@ def _geojson(path: Path, output: Path, tolerance_m: float) -> dict[str, object]:
                 flags not in {"", "{}", "null", "None"}
                 or bool(values.get("geometry_repaired", False))
                 or bool(values.get("boundary_case", False))
+                or any(
+                    str(values.get(key, "")) in (mapping_warning_ids or set())
+                    for key in (
+                        "HYRIV_ID",
+                        "segment_id",
+                        "bridge_id",
+                        "facility_id",
+                        "settlement_id",
+                        "osm_id",
+                    )
+                )
             )
             features.append(
                 {
@@ -89,6 +103,39 @@ def _geojson(path: Path, output: Path, tolerance_m: float) -> dict[str, object]:
         "present": present,
         "tolerance_m": tolerance_m,
     }
+
+
+def _mapping_warning_ids(paths: ProjectPaths, name: str) -> set[str]:
+    identifiers = {
+        "rivers": ("river", "HYRIV_ID"),
+        "roads": ("road", "segment_id"),
+        "bridges": ("bridge", "bridge_id"),
+        "facilities": ("facility", "facility_id"),
+        "settlements": ("settlement", "settlement_id"),
+    }
+    definition = identifiers.get(name)
+    if definition is None:
+        return set()
+    mapping_name, identifier = definition
+    path = paths.derived / "mappings" / f"map_subbasin_{mapping_name}.parquet"
+    if not path.is_file():
+        return set()
+    try:
+        table = pd.read_parquet(path)
+        if identifier not in table:
+            return set()
+        flags = (
+            table.get("quality_flags_json", pd.Series("{}", index=table.index))
+            .fillna("{}")
+            .astype(str)
+            .str.strip()
+        )
+        warned = table.get("boundary_case", pd.Series(False, index=table.index)).fillna(
+            False
+        ).astype(bool) | ~flags.isin({"", "{}", "null", "None"})
+        return set(table.loc[warned, identifier].dropna().astype(str))
+    except Exception:  # noqa: BLE001 - map remains inspectable if an optional mapping is malformed.
+        return set()
 
 
 def _json_value(value: Any) -> object:
@@ -165,7 +212,9 @@ def publish_qa_map(paths: ProjectPaths, qa_dir: Path) -> Path:
             ),
             paths.dataset / candidates[0],
         )
-        manifest["layers"][name] = _geojson(source, data_dir / f"{name}.geojson", tolerance)  # type: ignore[index]
+        manifest["layers"][name] = _geojson(
+            source, data_dir / f"{name}.geojson", tolerance, _mapping_warning_ids(paths, name)
+        )  # type: ignore[index]
     for name, relative in sorted(_RASTERS.items()):
         source = paths.dataset / relative
         manifest["layers"][name] = _preview(

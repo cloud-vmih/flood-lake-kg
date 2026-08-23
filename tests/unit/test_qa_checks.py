@@ -239,12 +239,28 @@ def test_admin_legal_area_evidence_detects_a_spatial_gap_without_core_aoi(
             }
         )
     gpd.GeoDataFrame(rows, crs="EPSG:3857").to_crs("EPSG:4326").to_parquet(admin, index=False)
+    reference = qa_paths.harmonized / "admin" / "sonla_reference_boundary.geoparquet"
+    gpd.GeoDataFrame(
+        {"reference": ["historical_gadm_sonla"]},
+        geometry=[box(0, 0, 75, 1)],
+        crs="EPSG:3857",
+    ).to_crs("EPSG:4326").to_parquet(reference, index=False)
 
     report = run_quality_gates(qa_paths, StudyAreaConfig())
 
     check = report.by_id("admin.legal_coverage")
     assert not check.passed
     assert "gap=" in check.actual
+
+
+def test_admin_spatial_coverage_requires_independent_son_la_reference(
+    qa_paths: ProjectPaths,
+) -> None:
+    report = run_quality_gates(qa_paths, StudyAreaConfig())
+
+    check = report.by_id("admin.legal_coverage")
+    assert not check.passed
+    assert check.actual == "unavailable"
 
 
 def test_mapping_gate_rejects_null_fk_and_missing_task16_evidence(
@@ -258,6 +274,23 @@ def test_mapping_gate_rejects_null_fk_and_missing_task16_evidence(
     mapping = qa_paths.derived / "mappings" / "map_subbasin_population.parquet"
     mapping.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"HYBAS_ID": [None], "population_scope": ["core_aoi_only"]}).to_parquet(
+        mapping, index=False
+    )
+
+    report = run_quality_gates(qa_paths, StudyAreaConfig())
+
+    assert not report.by_id("mapping.foreign_keys").passed
+
+
+def test_mapping_gate_rejects_nonintegral_hybas_ids(qa_paths: ProjectPaths) -> None:
+    hydro = qa_paths.harmonized / "hydro" / "subbasin_l10.geoparquet"
+    hydro.parent.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame({"HYBAS_ID": [1]}, geometry=[box(0, 0, 1, 1)], crs="EPSG:4326").to_parquet(
+        hydro, index=False
+    )
+    mapping = qa_paths.derived / "mappings" / "map_subbasin_population.parquet"
+    mapping.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"HYBAS_ID": [1.5], "population_scope": ["core_aoi_only"]}).to_parquet(
         mapping, index=False
     )
 
@@ -293,7 +326,7 @@ def test_provenance_traverses_derived_to_harmonized_to_raw(qa_paths: ProjectPath
 
     catalog.upsert(record("raw", AssetKind.RAW, {}))
     catalog.upsert(record("harm", AssetKind.HARMONIZED, {"source_asset_ids": ["raw"]}))
-    catalog.upsert(record("derived", AssetKind.DERIVED, {"dependency_asset_ids": ["harm"]}))
+    catalog.upsert(record("task16-derived", AssetKind.DERIVED, {"dependency_asset_ids": ["harm"]}))
 
     report = run_quality_gates(qa_paths, StudyAreaConfig())
 
@@ -304,7 +337,7 @@ def test_provenance_marks_an_unresolved_nonraw_dependency_fatal(qa_paths: Projec
     catalog = AssetCatalog(qa_paths)
     catalog.upsert(
         AssetRecord(
-            asset_id="derived",
+            asset_id="task16-derived",
             source_id="fixture",
             source_version="1",
             kind=AssetKind.DERIVED,
