@@ -13,10 +13,14 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.enums import Resampling
+from rasterio.errors import WindowError
+from rasterio.features import geometry_mask, geometry_window
+from rasterio.windows import Window
+from shapely.geometry import mapping
 from shapely.geometry.base import BaseGeometry
 
-from flashflood_data.raster import mosaic_clip_to_cog
+from flashflood_data.io_atomic import atomic_target
+from flashflood_data.raster import COG_PROFILE
 
 EVENT_COLUMNS: Final[dict[str, str]] = {
     "STT": "source_row_number",
@@ -49,7 +53,43 @@ def harmonize_worldpop(raw_path: Path, core_aoi: BaseGeometry, output: Path) -> 
         dtype = source.dtypes[0]
         if not np.issubdtype(np.dtype(dtype), np.number):
             raise ValueError("WorldPop input must have a numeric cell type")
-    return mosaic_clip_to_cog((raw_path,), core_aoi, output, Resampling.nearest)
+        try:
+            crop = geometry_window(source, [mapping(core_aoi)]).round_offsets().round_lengths()
+            crop = crop.intersection(Window(0, 0, source.width, source.height))
+        except WindowError as error:
+            raise ValueError("Core AOI does not intersect WorldPop input") from error
+        if crop.width <= 0 or crop.height <= 0:
+            raise ValueError("Core AOI does not intersect WorldPop input")
+        profile = source.profile.copy()
+        profile.update(
+            COG_PROFILE,
+            dtype="float32",
+            nodata=float(source.nodata) if source.nodata is not None else None,
+            width=int(crop.width),
+            height=int(crop.height),
+            transform=source.window_transform(crop),
+            predictor=3,
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with atomic_target(output) as partial, rasterio.open(partial, "w", **profile) as destination:
+            values = source.read(1, window=crop, out_dtype="float32")
+            valid = source.read_masks(1, window=crop) > 0
+            inside = geometry_mask(
+                [mapping(core_aoi)],
+                out_shape=(int(crop.height), int(crop.width)),
+                transform=source.window_transform(crop),
+                invert=True,
+            )
+            valid &= inside
+            if source.nodata is not None:
+                values[~valid] = np.float32(source.nodata)
+            destination.write(values, 1)
+            destination.write_mask(np.where(valid, 255, 0).astype("uint8"))
+            factors = [factor for factor in (2, 4, 8, 16) if min(destination.width, destination.height) >= factor]
+            if factors:
+                destination.build_overviews(factors, rasterio.enums.Resampling.average)
+                destination.update_tags(ns="rio_overview", resampling="average")
+    return output
 
 
 def _text(value: object) -> str | None:
@@ -193,11 +233,12 @@ def _historical_lookup(crosswalk: pd.DataFrame) -> dict[str, tuple[set[str], boo
         if status not in {"matched", "ambiguous"}:
             continue
         codes = _candidate_codes(row)
-        if not codes:
+        if not codes and status == "matched":
             continue
-        stored_codes, was_ambiguous = lookup.setdefault(_normal_form(str(row["old_admin_name"])), (set(), False))
+        name = _normal_form(str(row["old_admin_name"]))
+        stored_codes, was_ambiguous = lookup.setdefault(name, (set(), False))
         stored_codes.update(codes)
-        lookup[_normal_form(str(row["old_admin_name"]))] = (stored_codes, was_ambiguous or status == "ambiguous")
+        lookup[name] = (stored_codes, was_ambiguous or status == "ambiguous")
     return lookup
 
 
@@ -226,7 +267,7 @@ def resolve_event_administration(
         one_each = bool(names) and all(len(value[0]) == 1 and not value[1] for value in resolved)
         if one_each:
             status, confidence = "matched", 1.0
-        elif codes:
+        elif codes or any(value[1] for value in resolved):
             status, confidence = "ambiguous", 0.5
         else:
             status, confidence = "unresolved", 0.0

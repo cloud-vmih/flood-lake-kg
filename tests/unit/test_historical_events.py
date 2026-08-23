@@ -137,6 +137,18 @@ def test_pre_reform_crosswalk_candidates_remain_ambiguous(
     assert json.loads(result.loc[0, "current_commune_codes_json"]) == ["03664", "03665"]
 
 
+def test_pre_reform_ambiguous_name_without_codes_remains_ambiguous(
+    fixture_workbook: Path, current_admin: gpd.GeoDataFrame, crosswalk: pd.DataFrame
+) -> None:
+    crosswalk = crosswalk.assign(match_status="ambiguous", current_commune_code=None)
+
+    result = resolve_event_administration(read_historical_events(fixture_workbook).iloc[[0]], current_admin, crosswalk)
+
+    assert result.loc[0, "match_status"] == "ambiguous"
+    assert result.loc[0, "match_confidence"] == 0.5
+    assert result.loc[0, "current_commune_codes_json"] == "[]"
+
+
 def test_post_reform_name_match_tolerates_admin_type_prefix_change(
     fixture_workbook: Path, current_admin: gpd.GeoDataFrame, crosswalk: pd.DataFrame
 ) -> None:

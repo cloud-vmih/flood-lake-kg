@@ -40,6 +40,7 @@ from flashflood_data.models import (
     RemoteAsset,
     ValidationResult,
 )
+from flashflood_data.raster import raster_coverage_ratio
 from flashflood_data.sources.base import SourceAdapter, SourceContext
 
 _SHAPEFILE_SUFFIXES = (".shp", ".shx", ".dbf", ".prj", ".sbn", ".sbx", ".shp.xml")
@@ -411,6 +412,9 @@ class ExistingAdapter(SourceAdapter):
         core = core_layer.geometry.union_all()
         output_path = context.paths.harmonized / "rasters" / "worldpop_2025.tif"
         harmonize_worldpop(raw_path, core, output_path)
+        coverage = raster_coverage_ratio(output_path, core)
+        if coverage < 1.0:
+            raise ValueError(f"WorldPop Core AOI coverage is incomplete: {coverage:.2%}")
         with rasterio.open(raw_path) as source, rasterio.open(output_path) as output:
             if source.crs != output.crs:
                 raise ValueError("WorldPop harmonization changed the source CRS")
@@ -421,6 +425,7 @@ class ExistingAdapter(SourceAdapter):
                 "source_transform": list(source.transform)[:6],
                 "source_nodata": source.nodata,
                 "output_resolution": [abs(output.transform.a), abs(output.transform.e)],
+                "coverage_ratio_core_aoi": coverage,
             }
         record = AssetRecord(
             asset_id="worldpop-vnm-2025-harmonized",
