@@ -135,7 +135,9 @@ def test_existing_adapter_publishes_core_aoi_worldpop_record(tmp_path: Path) -> 
         assert dataset.read(1, masked=True).sum() == 18
 
 
-def test_existing_adapter_rejects_masked_core_aoi_worldpop_coverage(tmp_path: Path) -> None:
+def test_existing_adapter_accepts_constrained_worldpop_nodata_with_full_footprint(
+    tmp_path: Path,
+) -> None:
     paths = ProjectPaths.discover(tmp_path)
     paths.ensure_output_dirs()
     aoi_path = paths.harmonized / "aoi" / "core_aoi.geoparquet"
@@ -189,5 +191,75 @@ def test_existing_adapter_rejects_masked_core_aoi_worldpop_coverage(tmp_path: Pa
         )
     )
 
-    with pytest.raises(ValueError, match="Core AOI coverage"):
-        adapter.harmonize(context, [raw_asset])
+    outputs = adapter.harmonize(context, [raw_asset])
+
+    metadata = json.loads(outputs[0].metadata_json)
+    assert metadata["footprint_coverage_ratio_core_aoi"] == 1.0
+    assert metadata["valid_pixel_ratio_core_aoi"] == pytest.approx(0.75)
+    assert metadata["constrained_nodata_population_policy"] == "zero_during_aggregation"
+
+
+def test_existing_adapter_dispatches_only_its_configured_source(tmp_path: Path) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    aoi_path = paths.harmonized / "aoi" / "core_aoi.geoparquet"
+    aoi_path.parent.mkdir(parents=True)
+    gpd.GeoDataFrame(geometry=[box(104, 20, 106, 22)], crs="EPSG:4326").to_parquet(
+        aoi_path, index=False
+    )
+    raw = paths.dataset / "Data" / "worldpop.tif"
+    raw.parent.mkdir(parents=True)
+    with rasterio.open(
+        raw,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(104, 22, 1, 1),
+        nodata=-9999.0,
+    ) as dataset:
+        dataset.write(np.ones((2, 2), dtype="float32"), 1)
+    raw_asset = AssetRecord(
+        asset_id="worldpop-raw",
+        source_id="worldpop_vnm_2025",
+        source_version="R2025A-v1",
+        kind=AssetKind.RAW,
+        source_uri=raw.as_uri(),
+        storage_path=str(raw),
+        media_type="image/tiff",
+        size_bytes=raw.stat().st_size,
+        checksum=sha256_file(raw),
+        retrieved_at=datetime(2026, 8, 23, tzinfo=UTC),
+        license_id="CC-BY-4.0",
+        pipeline_run_id="dispatch-test",
+        status=AssetStatus.VALIDATED,
+    )
+    unrelated = raw_asset.model_copy(
+        update={
+            "asset_id": "historical-invalid",
+            "source_id": "historical_flood_evidence_2020_2026",
+            "storage_path": str(tmp_path / "missing.xlsx"),
+        }
+    )
+    context = SourceContext(
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+        run_id="dispatch-test",
+    )
+    adapter = ExistingAdapter(
+        SourceSpec(
+            source_id="worldpop_vnm_2025",
+            adapter="existing",
+            version="R2025A-v1",
+            license_id="CC-BY-4.0",
+        )
+    )
+
+    outputs = adapter.harmonize(context, [raw_asset, unrelated])
+
+    assert [output.asset_id for output in outputs] == ["worldpop-vnm-2025-harmonized"]

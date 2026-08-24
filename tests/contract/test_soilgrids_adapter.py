@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -14,7 +15,7 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
+from flashflood_data.sources.base import SourceConfigurationError, SourceContext
 from flashflood_data.sources.soilgrids import SoilGridsAdapter, parse_coverages
 
 PROPERTIES = ("clay", "sand", "silt", "bdod", "cfvo", "wv0010", "wv0033", "wv1500")
@@ -60,6 +61,9 @@ def adapter() -> SoilGridsAdapter:
                 "statistics": list(STATISTICS),
                 "format": "GEOTIFF_INT16",
                 "output_crs": "EPSG:4326",
+                "target_resolution_m": 250,
+                "capabilities_budget_size_bytes": 2_097_152,
+                "coverage_budget_size_bytes": 67_108_864,
             },
         )
     )
@@ -90,6 +94,37 @@ def test_capabilities_include_verified_wv0033_mean_and_uncertainty(fixture_dir: 
     assert "wv0033_100-200cm_uncertainty" in coverage_ids
 
 
+def test_validate_raw_accepts_capabilities_xml(
+    adapter: SoilGridsAdapter, fixture_dir: Path, tmp_path: Path
+) -> None:
+    capabilities = tmp_path / "wv0033" / "capabilities.xml"
+    capabilities.parent.mkdir()
+    capabilities.write_bytes((fixture_dir / "wv0033_capabilities.xml").read_bytes())
+
+    result = adapter.validate_raw(capabilities)
+
+    assert result.passed
+    assert result.checks["capabilities_xml"]
+
+
+def test_resolve_and_validation_accept_gzip_encoded_capabilities_without_renaming(
+    adapter: SoilGridsAdapter, context: SourceContext, fixture_dir: Path, tmp_path: Path
+) -> None:
+    capabilities = tmp_path / "wv0033" / "capabilities.xml"
+    capabilities.parent.mkdir()
+    capabilities.write_bytes(
+        gzip.compress((fixture_dir / "wv0033_capabilities.xml").read_bytes())
+    )
+
+    result = adapter.validate_raw(capabilities)
+    remotes = adapter.resolve(
+        context, [_available(capabilities, "soilgrids-2-0-wv0033-capabilities")]
+    )
+
+    assert result.passed
+    assert len(remotes) == len(PROPERTIES) - 1
+
+
 def test_resolve_declares_capabilities_before_coverage_requests(
     adapter: SoilGridsAdapter, context: SourceContext
 ) -> None:
@@ -100,6 +135,7 @@ def test_resolve_declares_capabilities_before_coverage_requests(
         Path(f"raw/soilgrids/2.0/{property}/capabilities.xml") for property in PROPERTIES
     }
     assert all("REQUEST=GetCapabilities" in asset.uri for asset in capabilities)
+    assert all(asset.budget_size_bytes == 2_097_152 for asset in capabilities)
 
 
 def test_resolve_emits_eight_by_six_by_two_coverages(
@@ -124,7 +160,23 @@ def test_resolve_emits_eight_by_six_by_two_coverages(
     assert request["REQUEST"] == ["GetCoverage"]
     assert request["FORMAT"] == ["GEOTIFF_INT16"]
     assert request["OUTPUTCRS"] == ["EPSG:4326"]
+    assert request["SUBSETTINGCRS"] == ["EPSG:4326"]
     assert request["SUBSET"] == ["Long(104,105)", "Lat(20,21)"]
+    assert len(request["SCALESIZE"]) == 2
+    assert request["SCALESIZE"][0].startswith("Long(")
+    assert request["SCALESIZE"][1].startswith("Lat(")
+    assert all(asset.budget_size_bytes == 67_108_864 for asset in coverage_assets)
+
+
+def test_resolve_rejects_missing_soilgrids_download_bound(
+    adapter: SoilGridsAdapter, context: SourceContext
+) -> None:
+    settings = dict(adapter.spec.settings)
+    settings.pop("capabilities_budget_size_bytes")
+    broken = SoilGridsAdapter(adapter.spec.model_copy(update={"settings": settings}))
+
+    with pytest.raises(SourceConfigurationError, match="capabilities_budget_size_bytes"):
+        broken.resolve(context, [])
 
 
 def test_resolve_rejects_property_missing_an_uncertainty_coverage(

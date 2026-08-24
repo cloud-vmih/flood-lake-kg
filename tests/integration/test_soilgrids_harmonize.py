@@ -93,10 +93,18 @@ def test_soilgrids_harmonize_keeps_int16_raw_values_and_scale_metadata(tmp_path:
     ) as dataset:
         dataset.write(data, 1)
     raw_checksum = sha256_file(raw_path)
+    capabilities = context.paths.raw / "soilgrids" / "2.0" / "wv0033" / "capabilities.xml"
+    capabilities.write_text("<Capabilities/>", encoding="utf-8")
+    capability_asset = _raw_asset(capabilities).model_copy(
+        update={
+            "asset_id": "soilgrids-2-0-wv0033-capabilities",
+            "media_type": "application/xml",
+        }
+    )
 
     adapter = _adapter()
     assert adapter.validate_raw(raw_path).passed
-    outputs = adapter.harmonize(context, [_raw_asset(raw_path)])
+    outputs = adapter.harmonize(context, [capability_asset, _raw_asset(raw_path)])
 
     assert sha256_file(raw_path) == raw_checksum
     assert len(outputs) == 1

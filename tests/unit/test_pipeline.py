@@ -10,6 +10,7 @@ from shapely.geometry import box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.http import BudgetRejected
+from flashflood_data.inventory import compound_checksum
 from flashflood_data.models import (
     AssetKind,
     AssetRecord,
@@ -165,6 +166,49 @@ def test_source_failure_keeps_independent_completed_assets(
     assert summary.failed_sources == ["bad"]
     assert summary.completed_sources == ["good"]
     assert summary.status == "partial_failure"
+    assert summary.errors == {"bad": "fetch_failed"}
+
+
+def test_validated_inventory_bundle_is_reused_when_every_member_matches(
+    fake_pipeline: StaticPipeline,
+) -> None:
+    bundle = fake_pipeline.paths.dataset / "legacy" / "basin.shp"
+    bundle.parent.mkdir(parents=True)
+    members = [bundle, bundle.with_suffix(".dbf"), bundle.with_suffix(".shx")]
+    for index, member in enumerate(members):
+        member.write_bytes(f"member-{index}".encode())
+    checksum = compound_checksum(
+        [(member.suffix, sha256_file(member)) for member in members]
+    )
+    record = AssetRecord(
+        asset_id="source-a-bundle",
+        source_id="source-a",
+        source_version="1",
+        kind=AssetKind.RAW,
+        source_uri=bundle.as_uri(),
+        storage_path=str(bundle),
+        media_type="application/x-esri-shapefile",
+        size_bytes=sum(member.stat().st_size for member in members),
+        checksum=checksum,
+        retrieved_at=datetime.now(UTC),
+        license_id="fixture",
+        pipeline_run_id="inventory-run",
+        status=AssetStatus.VALIDATED,
+        metadata_json=json.dumps(
+            {
+                "bundle_members": [
+                    member.relative_to(fake_pipeline.paths.dataset).as_posix()
+                    for member in members
+                ]
+            }
+        ),
+    )
+    fake_pipeline.catalog.upsert(record)
+
+    summary = fake_pipeline.run([Stage.VALIDATE], ["source-a"])
+
+    assert summary.reused == 1
+    assert fake_pipeline.catalog.get(record.asset_id).status is AssetStatus.VALIDATED
 
 
 class BootstrapAoiAdapter(FixtureAdapter):
@@ -237,6 +281,28 @@ def test_corrupt_raw_asset_is_not_reused(fake_pipeline: StaticPipeline) -> None:
     summary = fake_pipeline.run([Stage.FETCH], ["source-a"])
 
     assert summary.fetched == 1
+
+
+def test_failed_validation_record_with_intact_raw_is_revalidated_without_download(
+    fake_pipeline: StaticPipeline,
+) -> None:
+    fake_pipeline.run([Stage.FETCH], ["source-a"])
+    raw = fake_pipeline.catalog.get("source-a-raw")
+    fake_pipeline.catalog.upsert(
+        raw.model_copy(
+            update={
+                "status": AssetStatus.FAILED,
+                "error_code": "raw_validation_failed",
+                "error_message": "old validator rejected valid bytes",
+            }
+        )
+    )
+
+    summary = fake_pipeline.run([Stage.FETCH, Stage.VALIDATE], ["source-a"])
+
+    assert summary.fetched == 0
+    assert summary.validated == 1
+    assert fake_pipeline.catalog.get(raw.asset_id).status is AssetStatus.VALIDATED
 
 
 def test_source_version_change_is_not_reused(project_paths) -> None:
@@ -366,6 +432,29 @@ def test_budget_rejection_escapes_per_source_failure_handling(project_paths) -> 
 
 def test_static_order_has_independent_map_stage() -> None:
     assert [stage.value for stage in STATIC_ORDER][-3:] == ["derive", "map", "qa"]
+
+
+def test_osm_harmonize_fingerprint_includes_driver_config(project_paths: Path) -> None:
+    config = project_paths.root / "config" / "osmconf.ini"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("[lines]\nosm_id=yes\n", encoding="utf-8")
+    spec = SourceSpec(
+        source_id="geofabrik_vietnam_snapshot",
+        adapter="fixture",
+        version="1",
+        license_id="fixture",
+    )
+    pipeline = StaticPipeline(
+        project_paths,
+        source_specs={spec.source_id: spec},
+        adapter_factory=FixtureAdapter,
+    )
+    before = pipeline._source_fingerprint(spec.source_id, Stage.HARMONIZE)
+    config.write_text("[lines]\nosm_id=no\n", encoding="utf-8")
+
+    after = pipeline._source_fingerprint(spec.source_id, Stage.HARMONIZE)
+
+    assert before != after
 
 
 class IdentityAdapter(FixtureAdapter):

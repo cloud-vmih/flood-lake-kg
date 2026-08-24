@@ -17,6 +17,7 @@ from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.http import BudgetRejected, HttpFetcher
+from flashflood_data.inventory import compound_checksum
 from flashflood_data.models import (
     AssetKind,
     AssetRecord,
@@ -204,7 +205,7 @@ class StaticPipeline:
                         raise
                     except Exception:  # noqa: BLE001 - independent source failures are retained.
                         failed.add(source_id)
-                        summary.errors[source_id] = "stage_failed"
+                        summary.errors[source_id] = f"{stage.value}_failed"
                     else:
                         completed.add(source_id)
         except Exception:
@@ -353,6 +354,20 @@ class StaticPipeline:
 
     def _remote_is_reusable(self, remote: RemoteAsset) -> bool:
         candidates = [asset for asset in self._assets() if asset.asset_id == remote.asset_id]
+        for candidate in candidates:
+            if (
+                candidate.status is AssetStatus.FAILED
+                and self._remote_identity_matches(candidate, remote)
+                and self._checksum_matches(candidate)
+            ):
+                self.catalog.transition(candidate.asset_id, AssetStatus.FETCHING)
+                self.catalog.transition(
+                    candidate.asset_id,
+                    AssetStatus.FETCHED,
+                    error_code=None,
+                    error_message=None,
+                )
+        candidates = [asset for asset in self._assets() if asset.asset_id == remote.asset_id]
         reusable = any(self._remote_matches(asset, remote) for asset in candidates)
         if not reusable:
             for candidate in candidates:
@@ -360,6 +375,13 @@ class StaticPipeline:
         return reusable
 
     def _remote_matches(self, asset: AssetRecord, remote: RemoteAsset) -> bool:
+        return (
+            self._remote_identity_matches(asset, remote)
+            and asset.status in {AssetStatus.FETCHED, AssetStatus.VALIDATED}
+            and self._checksum_matches(asset)
+        )
+
+    def _remote_identity_matches(self, asset: AssetRecord, remote: RemoteAsset) -> bool:
         return (
             asset.source_id == remote.source_id
             and asset.source_version == remote.source_version
@@ -370,8 +392,6 @@ class StaticPipeline:
             and asset.license_id == remote.license_id
             and asset.source_valid_time == remote.source_valid_time
             and self._remote_request_matches(asset, remote)
-            and asset.status in {AssetStatus.FETCHED, AssetStatus.VALIDATED}
-            and self._checksum_matches(asset)
         )
 
     @staticmethod
@@ -596,6 +616,8 @@ class StaticPipeline:
             for asset in self._assets()
             if asset.source_id == source_id and asset.kind is AssetKind.RAW
         ]
+        if source_id == "geofabrik_vietnam_snapshot" and stage is Stage.HARMONIZE:
+            checksums.append(sha256_file(self.paths.root / "config" / "osmconf.ini"))
         config = {
             "stage": stage.value,
             "source_version": source.version,
@@ -649,11 +671,29 @@ class StaticPipeline:
         }:
             self.catalog.transition(record.asset_id, AssetStatus.STALE)
 
-    @staticmethod
-    def _checksum_matches(record: AssetRecord) -> bool:
+    def _checksum_matches(self, record: AssetRecord) -> bool:
         path = Path(record.storage_path)
-        return (
-            path.is_file()
-            and record.checksum_algorithm == "sha256"
-            and sha256_file(path) == record.checksum
-        )
+        if not path.is_file() or record.checksum_algorithm != "sha256":
+            return False
+        try:
+            metadata = json.loads(record.metadata_json or "{}")
+            relatives = metadata.get("bundle_members")
+            if not isinstance(relatives, list) or not relatives:
+                return sha256_file(path) == record.checksum
+            dataset = self.paths.dataset.resolve(strict=True)
+            members: list[tuple[str, str]] = []
+            for relative in relatives:
+                if not isinstance(relative, str):
+                    return False
+                member = (dataset / relative).resolve(strict=True)
+                if not member.is_relative_to(dataset) or not member.is_file():
+                    return False
+                suffix = (
+                    f"{path.suffix}.xml"
+                    if member.name == f"{path.name}.xml"
+                    else member.suffix
+                )
+                members.append((suffix, sha256_file(member)))
+            return compound_checksum(members) == record.checksum
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False

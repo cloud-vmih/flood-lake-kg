@@ -34,7 +34,7 @@ _FACILITY_AMENITIES = frozenset(
     {"hospital", "clinic", "school", "kindergarten", "college", "university", "fire_station", "police", "townhall", "shelter"}
 )
 _SETTLEMENT_PLACES = frozenset({"city", "town", "village", "hamlet", "locality"})
-_TAG_EXCLUSIONS = frozenset({"geometry", "osm_id", "osm_type"})
+_TAG_EXCLUSIONS = frozenset({"geometry", "osm_id", "osm_way_id", "osm_type"})
 
 
 @dataclass(frozen=True)
@@ -99,6 +99,8 @@ def _truthy(value: object) -> bool:
 
 
 def _source_identity(value: object, default_type: str) -> str:
+    if value is None or bool(pd.isna(value)):
+        raise ValueError("OSM feature is missing osm_id")
     text = str(value).strip()
     if not text:
         raise ValueError("OSM feature is missing osm_id")
@@ -136,14 +138,20 @@ def _tags(record: pd.Series) -> str:
 def _with_id(layer: gpd.GeoDataFrame, default_type: str) -> gpd.GeoDataFrame:
     if layer.empty:
         return layer.copy()
-    if "osm_id" not in layer.columns:
+    if "osm_id" not in layer.columns and "osm_way_id" not in layer.columns:
         raise ValueError(f"OSM {default_type} layer is missing osm_id")
     result = layer.copy()
     source_type = result["osm_type"] if "osm_type" in result.columns else pd.Series(default_type, index=result.index)
-    result["osm_id"] = [
-        _source_identity(value, str(kind) if isinstance(kind, str) and kind else default_type)
-        for value, kind in zip(result["osm_id"], source_type, strict=True)
-    ]
+    source_id = result["osm_id"] if "osm_id" in result.columns else pd.Series(None, index=result.index)
+    way_id = result["osm_way_id"] if "osm_way_id" in result.columns else pd.Series(None, index=result.index)
+    identities: list[str] = []
+    for value, fallback_way_id, kind in zip(source_id, way_id, source_type, strict=True):
+        identity_type = str(kind) if isinstance(kind, str) and kind else default_type
+        if value is None or bool(pd.isna(value)):
+            value = fallback_way_id
+            identity_type = "way"
+        identities.append(_source_identity(value, identity_type))
+    result["osm_id"] = identities
     result["tags_json"] = result.apply(_tags, axis=1)
     return result
 
@@ -360,7 +368,25 @@ class GeofabrikOsmAdapter(SourceAdapter):
         ]
 
     def validate_raw(self, path: Path) -> ValidationResult:
-        """Check that a retained immutable PBF payload exists and is non-empty."""
+        """Validate either an upstream MD5 sidecar or its immutable PBF payload."""
+        if path.suffix.lower() == ".md5":
+            try:
+                text = path.read_text(encoding="ascii")
+                token = text.strip().split(maxsplit=1)[0] if text.strip() else ""
+                checks = {
+                    "md5_sidecar": path.name.endswith(".osm.pbf.md5"),
+                    "md5_digest": bool(_MD5.fullmatch(token)),
+                    "non_empty": path.stat().st_size > 0,
+                }
+            except (OSError, UnicodeError):
+                checks = {"md5_sidecar": False, "md5_digest": False, "non_empty": False}
+            passed = all(checks.values())
+            return ValidationResult(
+                passed=passed,
+                checks=checks,
+                metrics={"size_bytes": path.stat().st_size if path.is_file() else 0},
+                messages=() if passed else ("raw Geofabrik MD5 sidecar is malformed",),
+            )
         passed = path.is_file() and path.suffixes[-2:] == [".osm", ".pbf"] and path.stat().st_size > 0
         return ValidationResult(
             passed=passed,

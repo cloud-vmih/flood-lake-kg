@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.features import geometry_mask
+from shapely.geometry import box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import StudyAreaConfig
@@ -234,11 +235,10 @@ def _admin_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRes
         metric = admin.to_crs(config.processing_crs)
         reference_metric = reference.to_crs(config.processing_crs).geometry.union_all()
         reference_area = float(reference_metric.area) / 1_000_000
-        clipped = metric.geometry.intersection(reference_metric)
         legal_area = pd.to_numeric(metric["legal_area_km2"], errors="coerce")
         computed = metric.geometry.area / 1_000_000
-        union_area = float(clipped.union_all().area) / 1_000_000
-        total_area = float(clipped.area.sum()) / 1_000_000
+        union_area = float(metric.geometry.union_all().area) / 1_000_000
+        total_area = float(metric.geometry.area.sum()) / 1_000_000
         overlap = (
             max(0.0, total_area - union_area) / reference_area * 100 if reference_area else 100.0
         )
@@ -680,7 +680,21 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
             )
             continue
         try:
-            ratio = raster_coverage_ratio(path, aoi.geometry.union_all())
+            valid_ratio = raster_coverage_ratio(path, aoi.geometry.union_all())
+            ratio = valid_ratio
+            coverage_kind = "native-grid valid-pixel"
+            if name == "worldpop":
+                with rasterio.open(path) as dataset:
+                    core = gpd.GeoSeries(
+                        [aoi.geometry.union_all()], crs=aoi.crs
+                    ).to_crs(dataset.crs).iloc[0]
+                    footprint = box(*dataset.bounds)
+                    ratio = (
+                        float(footprint.intersection(core).area) / float(core.area)
+                        if core.area
+                        else 0.0
+                    )
+                coverage_kind = "native-grid footprint"
             checks.append(
                 _check(
                     f"raster.{name}.coverage",
@@ -688,16 +702,16 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
                     "fatal",
                     f">= {config.environmental_raster_coverage_min_pct}% valid coverage of {'Core' if name == 'worldpop' else 'Hydrological'} AOI",
                     f"{ratio * 100:.6f}%",
-                    "native-grid valid-pixel AOI coverage",
+                    f"{coverage_kind} AOI coverage",
                 )
             )
             checks.append(
                 _check(
                     f"raster.{name}.nodata",
-                    ratio >= 1.0,
+                    valid_ratio >= 1.0,
                     "warning",
                     "0 source nodata pixels in AOI",
-                    f"{(1 - ratio) * 100:.6f}%",
+                    f"{(1 - valid_ratio) * 100:.6f}%",
                     "source nodata is retained as coverage evidence",
                 )
             )

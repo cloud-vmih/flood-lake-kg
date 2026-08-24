@@ -8,10 +8,11 @@ import geopandas as gpd
 import numpy as np
 import pytest
 import rasterio
+import shapely
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from flashflood_data.derive.population import aggregate_population_by_basin
+from flashflood_data.derive.population import _assign_points_to_zones, aggregate_population_by_basin
 
 
 def _worldpop(path: Path, values: list[list[float]], transform, *, crs: str = "EPSG:32648") -> Path:
@@ -31,6 +32,16 @@ def _worldpop(path: Path, values: list[list[float]], transform, *, crs: str = "E
     return path
 
 
+def test_pixel_zone_assignment_is_vectorized_and_resolves_boundary_ties() -> None:
+    zones = {20: box(0, 0, 10, 10), 10: box(10, 0, 20, 10)}
+    pixel_centers = shapely.points([5, 10, 25], [5, 5, 5])
+
+    winners, match_counts = _assign_points_to_zones(pixel_centers, zones)
+
+    assert winners.tolist() == [20, 10, -1]
+    assert match_counts.tolist() == [1, 2, 0]
+
+
 def test_population_is_clipped_to_core_not_whole_upstream_basin(tmp_path: Path) -> None:
     """Summing the full upstream basin would incorrectly include the third 30-person cell."""
     worldpop = _worldpop(tmp_path / "worldpop.tif", [[10, 20, 30]], from_origin(0, 10, 10, 10))
@@ -44,6 +55,25 @@ def test_population_is_clipped_to_core_not_whole_upstream_basin(tmp_path: Path) 
     assert result.loc[0, "contributing_pixel_count"] == 2
     assert result.loc[0, "aoi_pixel_count"] == 2
     assert result.loc[0, "coverage_ratio"] == pytest.approx(1.0)
+
+
+def test_constrained_worldpop_nodata_is_zero_population_with_evidence(tmp_path: Path) -> None:
+    worldpop = _worldpop(
+        tmp_path / "worldpop-constrained.tif",
+        [[10, -9999]],
+        from_origin(0, 10, 10, 10),
+    )
+    basins = gpd.GeoDataFrame(
+        {"HYBAS_ID": [1]}, geometry=[box(0, 0, 20, 10)], crs="EPSG:32648"
+    )
+
+    result = aggregate_population_by_basin(worldpop, basins, box(0, 0, 20, 10))
+
+    assert result.loc[0, "population_sum"] == pytest.approx(10.0)
+    assert result.loc[0, "population_mean"] == pytest.approx(5.0)
+    assert result.loc[0, "contributing_pixel_count"] == 1
+    assert result.loc[0, "nodata_pixel_count"] == 1
+    assert result.loc[0, "aoi_pixel_count"] == 2
     assert result.loc[0, "source_resolution_x"] == pytest.approx(10.0)
     assert result.loc[0, "source_resolution_y"] == pytest.approx(10.0)
     assert result.loc[0, "source_resolution_unit"] == "metre"

@@ -1671,6 +1671,29 @@ def test_failed_asset_with_same_provenance_uses_legal_retry_transition(
 
 
 @respx.mock
+def test_failed_asset_without_published_bytes_can_retry_corrected_remote_identity(
+    fetcher: HttpFetcher, remote_asset: RemoteAsset, catalog
+) -> None:
+    respx.get(remote_asset.uri).mock(return_value=httpx.Response(400))
+    with pytest.raises(DownloadFailed):
+        fetcher.fetch(remote_asset, "run-failed")
+    failed = catalog.get(remote_asset.asset_id)
+    assert failed.status is AssetStatus.FAILED
+    assert not Path(failed.storage_path).exists()
+    corrected = remote_asset.model_copy(
+        update={"uri": f"{remote_asset.uri}&SCALESIZE=Long(100)"}
+    )
+    respx.get(corrected.uri).mock(
+        return_value=httpx.Response(200, content=b"valid-payload")
+    )
+
+    record = fetcher.fetch(corrected, "run-corrected")
+
+    assert record.status is AssetStatus.FETCHED
+    assert record.source_uri == corrected.uri
+
+
+@respx.mock
 def test_stale_asset_with_same_provenance_uses_legal_fetching_transition(
     fetcher: HttpFetcher, remote_asset: RemoteAsset, catalog
 ) -> None:

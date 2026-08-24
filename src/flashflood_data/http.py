@@ -455,8 +455,8 @@ class HttpFetcher:
             raise ExistingAssetConflict(
                 f"quarantined asset requires a new asset ID or operator action: {remote.asset_id}"
             )
-        if current.status is AssetStatus.STALE and not self._catalog_identity_matches(
-            current, remote, final_path
+        if current.status in {AssetStatus.FAILED, AssetStatus.STALE} and not (
+            self._catalog_identity_matches(current, remote, final_path)
         ):
             current = self.catalog.upsert(
                 self._record(

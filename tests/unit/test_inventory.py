@@ -342,6 +342,20 @@ def test_inventory_preserves_matching_quarantined_catalog_row(tmp_path: Path) ->
     assert context.catalog.get(original.asset_id) == quarantined
 
 
+def test_inventory_revalidates_matching_stale_catalog_row(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    payload = context.paths.dataset / "legacy" / "stale.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"stable")
+    original = inventory_existing(context, rules=(_rule("legacy/stale.bin"),))[0]
+    context.catalog.upsert(original.model_copy(update={"status": AssetStatus.STALE}))
+
+    refreshed = inventory_existing(context, rules=(_rule("legacy/stale.bin"),))[0]
+
+    assert refreshed.status is AssetStatus.VALIDATED
+    assert context.catalog.get(original.asset_id).status is AssetStatus.VALIDATED
+
+
 @pytest.mark.parametrize("location", ["header", "record"])
 def test_csv_validation_rejects_oversize_header_or_record(tmp_path: Path, location: str) -> None:
     path = tmp_path / "oversize.csv"

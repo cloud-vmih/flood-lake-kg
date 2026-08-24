@@ -364,6 +364,40 @@ def test_soilgrids_nodata_warning_reports_a_readable_partial_nodata_ratio(
     assert nodata.actual == "25.000000%"
 
 
+def test_worldpop_coverage_uses_full_footprint_while_nodata_remains_warning(
+    qa_paths: ProjectPaths,
+) -> None:
+    core = qa_paths.harmonized / "aoi" / "core_aoi.geoparquet"
+    core.parent.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(
+        {"scope": ["core"]}, geometry=[box(0, 0, 2, 2)], crs="EPSG:32648"
+    ).to_parquet(core, index=False)
+    raster = qa_paths.harmonized / "rasters" / "worldpop_2025.tif"
+    raster.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        raster,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=1,
+        dtype="float32",
+        crs="EPSG:32648",
+        transform=from_origin(0, 2, 1, 1),
+        nodata=-9999.0,
+    ) as destination:
+        destination.write(np.asarray([[1, -9999], [3, 4]], dtype="float32"), 1)
+
+    results = {
+        check.check_id: check for check in checks._raster_checks(qa_paths, StudyAreaConfig())
+    }
+
+    assert results["raster.worldpop.coverage"].passed
+    assert results["raster.worldpop.coverage"].actual == "100.000000%"
+    assert not results["raster.worldpop.nodata"].passed
+    assert results["raster.worldpop.nodata"].actual == "25.000000%"
+
+
 def test_mapping_gate_requires_every_approved_product_and_all_communes(
     qa_paths: ProjectPaths,
 ) -> None:
@@ -536,6 +570,32 @@ def test_admin_legal_area_evidence_detects_a_spatial_gap_without_core_aoi(
     check = report.by_id("admin.legal_coverage")
     assert not check.passed
     assert "gap=" in check.actual
+
+
+def test_admin_coverage_normalizes_small_outer_boundary_source_offsets(
+    qa_paths: ProjectPaths,
+) -> None:
+    admin = qa_paths.harmonized / "admin" / "admin_commune_2025.geoparquet"
+    rows = [
+        {
+            "current_commune_code": f"{index:05d}",
+            "unit_type": "ward" if index >= 67 else "commune",
+            "legal_area_km2": 1.0,
+            "geometry": box(500_000 + index * 1_000, 2_200_000, 501_000 + index * 1_000, 2_201_000),
+        }
+        for index in range(75)
+    ]
+    gpd.GeoDataFrame(rows, crs="EPSG:32648").to_crs("EPSG:4326").to_parquet(admin, index=False)
+    reference = qa_paths.harmonized / "admin" / "sonla_reference_boundary.geoparquet"
+    gpd.GeoDataFrame(
+        {"reference": ["independent_offset_boundary"]},
+        geometry=[box(500_500, 2_200_000, 575_500, 2_201_000)],
+        crs="EPSG:32648",
+    ).to_crs("EPSG:4326").to_parquet(reference, index=False)
+
+    report = run_quality_gates(qa_paths, StudyAreaConfig())
+
+    assert report.by_id("admin.legal_coverage").passed
 
 
 def test_admin_spatial_coverage_requires_independent_son_la_reference(

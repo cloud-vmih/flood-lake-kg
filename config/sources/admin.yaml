@@ -9,3 +9,7 @@ sources:
       geometry_url: https://sapnhap.bando.com.vn/pread_json
       province_origin_code: "14"
       resolution_page: https://congbao.chinhphu.vn/van-ban/nghi-quyet-so-1681-nq-ubtvqh15-45137.htm
+      index_budget_size_bytes: 2097152
+      geometry_budget_size_bytes: 16777216
+      resolution_page_budget_size_bytes: 4194304
+      resolution_pdf_budget_size_bytes: 67108864

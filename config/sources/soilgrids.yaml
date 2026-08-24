@@ -10,3 +10,6 @@ sources:
       statistics: [mean, uncertainty]
       format: GEOTIFF_INT16
       output_crs: EPSG:4326
+      target_resolution_m: 250
+      capabilities_budget_size_bytes: 2097152
+      coverage_budget_size_bytes: 67108864

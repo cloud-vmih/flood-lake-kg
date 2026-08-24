@@ -24,7 +24,12 @@ LEGAL_TRANSITIONS: dict[AssetStatus, set[AssetStatus]] = {
     AssetStatus.HARMONIZED: {AssetStatus.DERIVED, AssetStatus.STALE},
     AssetStatus.DERIVED: {AssetStatus.STALE},
     AssetStatus.FAILED: {AssetStatus.FETCHING},
-    AssetStatus.STALE: {AssetStatus.FETCHING, AssetStatus.HARMONIZED, AssetStatus.DERIVED},
+    AssetStatus.STALE: {
+        AssetStatus.FETCHING,
+        AssetStatus.VALIDATED,
+        AssetStatus.HARMONIZED,
+        AssetStatus.DERIVED,
+    },
     AssetStatus.QUARANTINED: set(),
 }
 _PROTECTED_TRANSITION_FIELDS = frozenset({"asset_id", "status"})

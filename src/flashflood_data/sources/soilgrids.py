@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,6 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import geopandas as gpd
+from pyproj import Geod
 from rasterio.enums import Resampling
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
@@ -32,6 +35,7 @@ DEFAULT_SOURCE_VERSION: Final = "2.0"
 DEFAULT_LICENSE_ID: Final = "CC-BY-4.0"
 DEFAULT_OUTPUT_CRS: Final = "EPSG:4326"
 _WORLD = box(-180, -90, 180, 90)
+_MAX_CAPABILITIES_XML_BYTES = 16 * 1024 * 1024
 
 _PROPERTY_METADATA: Final[dict[str, tuple[str, int]]] = {
     "clay": ("g/kg", 10),
@@ -59,6 +63,14 @@ def _local_name(tag: str) -> str:
 
 def parse_coverages(capabilities_xml: bytes) -> set[str]:
     """Return advertised WCS coverage identifiers without assuming XML prefixes."""
+    if capabilities_xml.startswith(b"\x1f\x8b"):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(capabilities_xml)) as stream:
+                capabilities_xml = stream.read(_MAX_CAPABILITIES_XML_BYTES + 1)
+        except OSError as exc:
+            raise ValueError("SoilGrids capabilities gzip payload is malformed") from exc
+        if len(capabilities_xml) > _MAX_CAPABILITIES_XML_BYTES:
+            raise ValueError("SoilGrids capabilities XML exceeds the decode limit")
     try:
         root = ElementTree.fromstring(capabilities_xml)
     except ElementTree.ParseError as exc:
@@ -113,11 +125,22 @@ def build_wcs_getcoverage(
     license_id: str = DEFAULT_LICENSE_ID,
     output_crs: str = DEFAULT_OUTPUT_CRS,
     axes: tuple[str, str] = ("Long", "Lat"),
+    target_resolution_m: float,
+    budget_size_bytes: int,
 ) -> RemoteAsset:
     """Build one exact, URL-encoded WCS 2.0.1 GeoTIFF subset request."""
     west, south, east, north = bbox
     if west >= east or south >= north:
         raise ValueError("SoilGrids request bbox must have positive area")
+    if target_resolution_m <= 0:
+        raise ValueError("SoilGrids target resolution must be positive")
+    geod = Geod(ellps="WGS84")
+    center_lon = (west + east) / 2
+    center_lat = (south + north) / 2
+    width_m = abs(geod.inv(west, center_lat, east, center_lat)[2])
+    height_m = abs(geod.inv(center_lon, south, center_lon, north)[2])
+    width = max(1, int(width_m / target_resolution_m + 0.999999999))
+    height = max(1, int(height_m / target_resolution_m + 0.999999999))
     coverage_id = f"{property_id}_{depth}_{statistic}"
     uri = _request_uri(
         endpoint_template.format(property=property_id),
@@ -128,8 +151,11 @@ def build_wcs_getcoverage(
             ("COVERAGEID", coverage_id),
             ("FORMAT", "GEOTIFF_INT16"),
             ("OUTPUTCRS", output_crs),
+            ("SUBSETTINGCRS", "EPSG:4326"),
             ("SUBSET", f"{axes[0]}({_format_coordinate(west)},{_format_coordinate(east)})"),
             ("SUBSET", f"{axes[1]}({_format_coordinate(south)},{_format_coordinate(north)})"),
+            ("SCALESIZE", f"{axes[0]}({width})"),
+            ("SCALESIZE", f"{axes[1]}({height})"),
         ],
     )
     return RemoteAsset(
@@ -141,6 +167,7 @@ def build_wcs_getcoverage(
         media_type="image/tiff",
         license_id=license_id,
         source_valid_time=source_version,
+        budget_size_bytes=budget_size_bytes,
     )
 
 
@@ -159,6 +186,22 @@ class SoilGridsAdapter(SourceAdapter):
             raise SourceConfigurationError(f"SoilGrids setting {key!r} must be a non-empty string")
         return value
 
+    def _budget_setting(self, key: str) -> int:
+        value = self.spec.settings.get(key)
+        if type(value) is not int or value <= 0:
+            raise SourceConfigurationError(
+                f"SoilGrids setting {key!r} must be a positive integer"
+            )
+        return value
+
+    def _resolution_setting(self, key: str) -> float:
+        value = self.spec.settings.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise SourceConfigurationError(
+                f"SoilGrids setting {key!r} must be a positive number"
+            )
+        return float(value)
+
     def _capability_id(self, property_id: str) -> str:
         return f"soilgrids-2-0-{property_id}-capabilities"
 
@@ -173,6 +216,7 @@ class SoilGridsAdapter(SourceAdapter):
             media_type="application/xml",
             license_id=self.spec.license_id,
             source_valid_time=self.spec.version,
+            budget_size_bytes=self._budget_setting("capabilities_budget_size_bytes"),
         )
 
     def _environmental_aoi(self, context: SourceContext) -> BaseGeometry:
@@ -230,6 +274,8 @@ class SoilGridsAdapter(SourceAdapter):
                 source_version=self.spec.version,
                 license_id=self.spec.license_id,
                 output_crs=output_crs,
+                target_resolution_m=self._resolution_setting("target_resolution_m"),
+                budget_size_bytes=self._budget_setting("coverage_budget_size_bytes"),
             )
             for property_id in properties
             for depth in depths
@@ -238,7 +284,32 @@ class SoilGridsAdapter(SourceAdapter):
         return sorted(remotes, key=lambda asset: asset.asset_id)
 
     def validate_raw(self, path: Path) -> ValidationResult:
-        """Validate an unchanged WCS GeoTIFF structural payload before harmonization."""
+        """Validate an unchanged WCS capabilities XML or GeoTIFF payload."""
+        if path.suffix.lower() == ".xml":
+            try:
+                advertised = parse_coverages(path.read_bytes())
+                property_id = path.parent.name
+                required = {
+                    f"{property_id}_{depth}_{statistic}"
+                    for depth in self._strings("depths")
+                    for statistic in self._strings("statistics")
+                }
+                checks = {
+                    "capabilities_xml": True,
+                    "coverage_ids": bool(advertised),
+                    "configured_coverages": required.issubset(advertised),
+                }
+                return ValidationResult(
+                    passed=all(checks.values()),
+                    checks=checks,
+                    metrics={"coverage_count": len(advertised)},
+                )
+            except (OSError, ValueError) as exc:
+                return ValidationResult(
+                    passed=False,
+                    checks={"capabilities_xml": False, "coverage_ids": False},
+                    messages=(str(exc),),
+                )
         return validate_raster(
             path,
             RasterExpectation(dtypes=("int16",), crs=self._setting("output_crs"), resolution_range=None, aoi=_WORLD),
@@ -264,7 +335,13 @@ class SoilGridsAdapter(SourceAdapter):
             for depth in self._strings("depths")
             for statistic in self._strings("statistics")
         }
-        raw_assets = [asset for asset in assets if asset.source_id == self.spec.source_id and asset.kind is AssetKind.RAW]
+        raw_assets = [
+            asset
+            for asset in assets
+            if asset.source_id == self.spec.source_id
+            and asset.kind is AssetKind.RAW
+            and Path(asset.storage_path).suffix.lower() in {".tif", ".tiff"}
+        ]
         indexed = {self._raw_parts(context, asset): asset for asset in raw_assets}
         missing = sorted(expected - indexed.keys())
         if missing:

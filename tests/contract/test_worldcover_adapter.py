@@ -138,3 +138,12 @@ def test_select_worldcover_tiles_rejects_missing_tile_identifier(tmp_path: Path,
 
     with pytest.raises(ValueError, match="ll_tile"):
         select_worldcover_tiles(grid, environmental_aoi)
+
+
+def test_validate_raw_accepts_retained_worldcover_grid(
+    grid_fixture: Path, spec: SourceSpec
+) -> None:
+    result = WorldCoverAdapter(spec).validate_raw(grid_fixture)
+
+    assert result.passed
+    assert result.checks["grid_schema"]

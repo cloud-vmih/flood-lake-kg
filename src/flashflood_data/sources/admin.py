@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import zipfile
@@ -52,9 +53,17 @@ def classify_unit(name: str) -> str:
     raise ValueError(f"unexpected current unit type: {name}")
 
 
+def _read_text(path: Path, *, errors: str = "strict") -> str:
+    with path.open("rb") as raw:
+        gzip_encoded = raw.read(2) == b"\x1f\x8b"
+    if gzip_encoded:
+        with gzip.open(path, mode="rt", encoding="utf-8-sig", errors=errors) as stream:
+            return stream.read()
+    return path.read_text(encoding="utf-8-sig", errors=errors)
+
+
 def _load_json(path: Path) -> object:
-    with path.open(encoding="utf-8-sig") as stream:
-        return json.load(stream)
+    return json.loads(_read_text(path))
 
 
 def _index_rows(path: Path) -> list[dict[str, object]]:
@@ -112,9 +121,20 @@ def _number(value: object, field: str) -> float:
 
 def normalize_current_admin(index_path: Path, geometry_paths: Sequence[Path]) -> gpd.GeoDataFrame:
     """Normalize immutable one-feature raw responses into a current-admin layer."""
-    index_codes = {
-        str(row["ma"]).zfill(5) for row in _index_rows(index_path) if row.get("ma") is not None
-    }
+    index_identifiers: dict[str, str] = {}
+    for row in _index_rows(index_path):
+        if row.get("ma") is None:
+            continue
+        code = str(row["ma"]).zfill(5)
+        identifiers = (code, row.get("malk"))
+        for identifier in identifiers:
+            if identifier is None:
+                continue
+            key = str(identifier)
+            existing = index_identifiers.get(key)
+            if existing is not None and existing != code:
+                raise ValueError(f"admin index identifier maps to multiple codes: {key}")
+            index_identifiers[key] = code
     rows: list[dict[str, object]] = []
     geometries: list[object] = []
     for geometry_path in geometry_paths:
@@ -124,9 +144,12 @@ def normalize_current_admin(index_path: Path, geometry_paths: Sequence[Path]) ->
             if raw_field not in properties:
                 raise ValueError(f"admin geometry is missing {raw_field}: {geometry_path.name}")
             values[target_field] = properties[raw_field]
-        code = str(values["current_commune_code"]).zfill(5)
-        if code not in index_codes:
-            raise ValueError(f"geometry code is absent from admin index: {code}")
+        raw_identifier = str(values["current_commune_code"])
+        code = index_identifiers.get(raw_identifier) or index_identifiers.get(
+            raw_identifier.zfill(5)
+        )
+        if code is None:
+            raise ValueError(f"geometry identifier is absent from admin index: {raw_identifier}")
         name = str(values["current_commune_name"])
         values.update(
             {
@@ -288,6 +311,14 @@ class CurrentAdminAdapter(SourceAdapter):
             raise SourceConfigurationError(f"admin source setting {key!r} must be a string")
         return value
 
+    def _budget_setting(self, key: str) -> int:
+        value = self.spec.settings.get(key)
+        if type(value) is not int or value <= 0:
+            raise SourceConfigurationError(
+                f"admin source setting {key!r} must be a positive integer"
+            )
+        return value
+
     def _index_remote(self) -> RemoteAsset:
         form = self.spec.settings.get("index_form")
         if not isinstance(form, dict) or not all(
@@ -303,6 +334,7 @@ class CurrentAdminAdapter(SourceAdapter):
             media_type="application/json",
             license_id=self.spec.license_id,
             source_valid_time=self.spec.version,
+            budget_size_bytes=self._budget_setting("index_budget_size_bytes"),
             request_method="POST",
             request_form=form,
         )
@@ -317,6 +349,7 @@ class CurrentAdminAdapter(SourceAdapter):
             media_type="text/html",
             license_id=self.spec.license_id,
             source_valid_time=self.spec.version,
+            budget_size_bytes=self._budget_setting("resolution_page_budget_size_bytes"),
         )
 
     def _geometry_remotes(self, index: AssetRecord) -> list[RemoteAsset]:
@@ -339,6 +372,7 @@ class CurrentAdminAdapter(SourceAdapter):
                     media_type="application/geo+json",
                     license_id=self.spec.license_id,
                     source_valid_time=self.spec.version,
+                    budget_size_bytes=self._budget_setting("geometry_budget_size_bytes"),
                     request_method="POST",
                     request_form={"id": lookup},
                 )
@@ -346,9 +380,7 @@ class CurrentAdminAdapter(SourceAdapter):
         return sorted(remotes, key=lambda remote: remote.asset_id)
 
     def _resolution_pdf_remote(self, page: AssetRecord) -> RemoteAsset | None:
-        match = _PDF_LINK.search(
-            Path(page.storage_path).read_text(encoding="utf-8", errors="replace")
-        )
+        match = _PDF_LINK.search(_read_text(Path(page.storage_path), errors="replace"))
         if match is None:
             raise ValueError("Resolution 1681 page does not link to a PDF")
         return RemoteAsset(
@@ -360,6 +392,7 @@ class CurrentAdminAdapter(SourceAdapter):
             media_type="application/pdf",
             license_id=self.spec.license_id,
             source_valid_time=self.spec.version,
+            budget_size_bytes=self._budget_setting("resolution_pdf_budget_size_bytes"),
         )
 
     def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
@@ -390,11 +423,7 @@ class CurrentAdminAdapter(SourceAdapter):
                 valid = isinstance(payload, (dict, list))
                 checks = {"json_readable": valid}
             elif suffix == ".html":
-                checks = {
-                    "html_non_empty": bool(
-                        path.read_text(encoding="utf-8", errors="replace").strip()
-                    )
-                }
+                checks = {"html_non_empty": bool(_read_text(path, errors="replace").strip())}
             elif suffix == ".pdf":
                 checks = {"pdf_signature": path.read_bytes()[:5] == b"%PDF-"}
             else:
@@ -498,6 +527,14 @@ class GadmAdminAdapter(SourceAdapter):
             raise SourceConfigurationError(f"GADM source setting {key!r} must be a string")
         return value
 
+    def _budget_setting(self, key: str) -> int:
+        value = self.spec.settings.get(key)
+        if type(value) is not int or value <= 0:
+            raise SourceConfigurationError(
+                f"GADM source setting {key!r} must be a positive integer"
+            )
+        return value
+
     def _archive_remote(self) -> RemoteAsset:
         return RemoteAsset(
             asset_id=GADM_ARCHIVE_ASSET_ID,
@@ -508,6 +545,7 @@ class GadmAdminAdapter(SourceAdapter):
             media_type="application/zip",
             license_id=self.spec.license_id,
             source_valid_time=self._setting("historical_valid_to"),
+            budget_size_bytes=self._budget_setting("archive_budget_size_bytes"),
         )
 
     def resolve(

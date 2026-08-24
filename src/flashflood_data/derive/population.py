@@ -27,6 +27,29 @@ def _pixel_points(dataset: rasterio.io.DatasetReader, window: Window) -> tuple[n
     )
 
 
+def _assign_points_to_zones(
+    points: np.ndarray, zones: dict[int, BaseGeometry]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assign point centers in one vectorized STRtree query; lowest ID wins ties."""
+    winners = np.full(len(points), -1, dtype="int64")
+    match_counts = np.zeros(len(points), dtype="int32")
+    usable = [(identifier, geometry) for identifier, geometry in zones.items() if not geometry.is_empty]
+    if not usable or not len(points):
+        return winners, match_counts
+    identifiers = np.asarray([item[0] for item in usable], dtype="int64")
+    tree = shapely.STRtree([item[1] for item in usable])
+    pairs = tree.query(points, predicate="covered_by")
+    if pairs.size == 0:
+        return winners, match_counts
+    point_indexes, zone_indexes = pairs
+    np.add.at(match_counts, point_indexes, 1)
+    candidates = np.full(len(points), np.iinfo(np.int64).max, dtype="int64")
+    np.minimum.at(candidates, point_indexes, identifiers[zone_indexes])
+    matched = match_counts > 0
+    winners[matched] = candidates[matched]
+    return winners, match_counts
+
+
 def aggregate_population_by_basin(
     worldpop: Path, basins: gpd.GeoDataFrame, core: BaseGeometry
 ) -> pd.DataFrame:
@@ -61,21 +84,20 @@ def aggregate_population_by_basin(
                 continue
             flattened = values.ravel()
             flattened_valid = valid_mask.ravel() & np.isfinite(flattened)
-            for offset in np.flatnonzero(in_core):
-                point = points[offset]
-                candidates = [identifier for identifier, zone in zones.items() if not zone.is_empty and zone.covers(point)]
-                if not candidates:
+            core_offsets = np.flatnonzero(in_core)
+            winners, match_counts = _assign_points_to_zones(points[core_offsets], zones)
+            for identifier, record in totals.items():
+                assigned = winners == identifier
+                assigned_count = int(assigned.sum())
+                if not assigned_count:
                     continue
-                winner = min(candidates)
-                record = totals[winner]
-                record["aoi"] += 1
-                if len(candidates) > 1:
-                    record["ties"] += 1
-                if flattened_valid[offset]:
-                    record["sum"] += float(flattened[offset])
-                    record["valid"] += 1
-                else:
-                    record["nodata"] += 1
+                offsets = core_offsets[assigned]
+                assigned_valid = flattened_valid[offsets]
+                record["aoi"] += assigned_count
+                record["ties"] += int((match_counts[assigned] > 1).sum())
+                record["sum"] += float(flattened[offsets[assigned_valid]].sum())
+                record["valid"] += int(assigned_valid.sum())
+                record["nodata"] += int((~assigned_valid).sum())
         resolution_x = float(np.hypot(dataset.transform.a, dataset.transform.d))
         resolution_y = float(np.hypot(dataset.transform.b, dataset.transform.e))
         resolution_unit = "degree" if dataset.crs.is_geographic else str(dataset.crs.linear_units)
@@ -89,7 +111,7 @@ def aggregate_population_by_basin(
             {
                 "HYBAS_ID": int(identifier),
                 "population_sum": float(record["sum"]),
-                "population_mean": float(record["sum"]) / valid if valid else float("nan"),
+                "population_mean": float(record["sum"]) / aoi if aoi else float("nan"),
                 "contributing_pixel_count": valid,
                 "nodata_pixel_count": int(record["nodata"]),
                 "aoi_pixel_count": aoi,
@@ -101,7 +123,11 @@ def aggregate_population_by_basin(
                 "population_scope": "core_aoi_only",
                 "boundary_center_tie_pixel_count": int(record["ties"]),
                 "quality_flags_json": json.dumps(
-                    {"boundary_center_tie_pixel_count": int(record["ties"])}, sort_keys=True
+                    {
+                        "boundary_center_tie_pixel_count": int(record["ties"]),
+                        "constrained_nodata_population_policy": "zero_during_aggregation",
+                    },
+                    sort_keys=True,
                 ),
                 "source_asset_ids_json": "[]",
             }

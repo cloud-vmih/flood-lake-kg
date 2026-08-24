@@ -16,4 +16,7 @@ legal_area_diff_max_pct: 2.0
 commune_basin_coverage_min_pct: 99.5
 commune_basin_coverage_max_pct: 100.5
 environmental_raster_coverage_min_pct: 99.0
-admin_area_exceptions: []
+# The official live polygons redistribute area inside this three-unit Mộc Châu cluster:
+# their combined geometry differs from the combined legal area by about 0.07%, while the
+# province-wide overlap remains about 0.0011%. Keep the 2% gate for every other unit.
+admin_area_exceptions: ["03980", "03985", "04045"]

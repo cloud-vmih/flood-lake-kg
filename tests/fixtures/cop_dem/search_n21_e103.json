@@ -4,6 +4,7 @@
       "Id": "8b2a0b20-23ab-4d31-9a00-000000000001",
       "Name": "COP-DEM_GLO-30-DGED__2024_1_N21_E103",
       "ContentLength": 4096,
+      "Online": true,
       "ModificationDate": "2025-01-01T00:00:00Z",
       "Attributes": [
         {"Name": "gridId", "Value": "N21_E103"},

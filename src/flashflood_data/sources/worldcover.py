@@ -199,7 +199,27 @@ class WorldCoverAdapter(SourceAdapter):
         return remotes
 
     def validate_raw(self, path: Path) -> ValidationResult:
-        """Validate one byte COG tile and its categorical class vocabulary."""
+        """Validate either the retained selection grid or one categorical COG tile."""
+        if path.suffix.lower() in {".geojson", ".json"}:
+            try:
+                layer = gpd.read_file(path)
+                tiles = select_worldcover_tiles(layer, box(-180, -90, 180, 90))
+                checks = {
+                    "readable": True,
+                    "grid_schema": bool(tiles),
+                    "unique_tiles": len(tiles) == len({tile.tile_id for tile in tiles}),
+                }
+                return ValidationResult(
+                    passed=all(checks.values()),
+                    checks=checks,
+                    metrics={"tile_count": len(tiles)},
+                )
+            except (OSError, ValueError) as exc:
+                return ValidationResult(
+                    passed=False,
+                    checks={"readable": False, "grid_schema": False},
+                    messages=(str(exc),),
+                )
         try:
             expectation = RasterExpectation(
                 dtypes=("uint8",), crs="EPSG:4326", resolution_range=None, aoi=self._tile_bounds(path)

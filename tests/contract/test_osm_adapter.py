@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+from configparser import ConfigParser
 from datetime import UTC, datetime
 from pathlib import Path
 
 import geopandas as gpd
 import httpx
+from shapely.geometry import box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.osm import GeofabrikOsmAdapter, parse_geofabrik_metadata
+from flashflood_data.sources.osm import GeofabrikOsmAdapter, _read_layers, parse_geofabrik_metadata
 
 
 def _spec() -> SourceSpec:
@@ -104,3 +106,63 @@ def test_resolve_downloads_sidecar_before_exposing_timestamped_pbf(tmp_path: Pat
     assert pbf[0].target_relative_path == Path("raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf")
     assert pbf[0].expected_size == 4096
     assert pbf[0].source_valid_time == "2026-08-20T03:04:05+00:00"
+
+
+def test_validate_raw_accepts_md5_sidecar(tmp_path: Path) -> None:
+    sidecar = tmp_path / "vietnam-20260820.osm.pbf.md5"
+    sidecar.write_text(
+        "b1946ac92492d2347c6235b4d2611184  vietnam-latest.osm.pbf\n",
+        encoding="ascii",
+    )
+
+    result = GeofabrikOsmAdapter(_spec()).validate_raw(sidecar)
+
+    assert result.passed
+    assert result.checks["md5_sidecar"]
+
+
+def test_osm_driver_config_preserves_source_ids_for_every_read_layer() -> None:
+    config = ConfigParser()
+    config.read_string(
+        "[global]\n"
+        + (Path(__file__).parents[2] / "config" / "osmconf.ini").read_text(encoding="utf-8")
+    )
+
+    for layer in ("points", "lines", "multilinestrings", "multipolygons"):
+        attributes = {
+            value.strip() for value in config[layer]["attributes"].split(",")
+        }
+        assert config[layer].getboolean("osm_id")
+        assert "osm_id" not in attributes
+        assert "other_tags" not in attributes
+        assert config[layer].getboolean("other_tags")
+
+
+def test_osm_driver_classifies_closed_amenity_way_as_polygon(tmp_path: Path) -> None:
+    osm = tmp_path / "closed-school.osm"
+    osm.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="flashflood-test">
+  <node id="1" lat="20.0" lon="103.0" />
+  <node id="2" lat="20.0" lon="103.1" />
+  <node id="3" lat="20.1" lon="103.1" />
+  <node id="4" lat="20.1" lon="103.0" />
+  <way id="10">
+    <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="1"/>
+    <tag k="amenity" v="school"/>
+    <tag k="name" v="Fixture School"/>
+  </way>
+</osm>
+""",
+        encoding="utf-8",
+    )
+
+    layers = _read_layers(
+        osm,
+        box(102.9, 19.9, 103.2, 20.2),
+        Path(__file__).parents[2] / "config" / "osmconf.ini",
+    )
+
+    polygons = layers["multipolygons"]
+    assert polygons["amenity"].tolist() == ["school"]
+    assert polygons["osm_way_id"].tolist() == ["10"]

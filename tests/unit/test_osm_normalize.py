@@ -8,7 +8,7 @@ from pathlib import Path
 import geopandas as gpd
 from shapely.geometry import box
 
-from flashflood_data.sources.osm import extract_osm_layers, normalize_roads
+from flashflood_data.sources.osm import _with_id, extract_osm_layers, normalize_roads
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "osm"
 
@@ -18,6 +18,18 @@ def test_osm_segments_have_stable_source_identity() -> None:
 
     assert roads.segment_id.tolist() == ["way/42:000", "way/42:001"]
     assert roads.osm_id.tolist() == ["way/42", "way/42"]
+
+
+def test_closed_way_polygon_uses_osm_way_id_when_relation_id_is_null() -> None:
+    layer = gpd.GeoDataFrame(
+        {"osm_id": [None], "osm_way_id": [42]},
+        geometry=[box(103, 20, 104, 21)],
+        crs="EPSG:4326",
+    )
+
+    normalized = _with_id(layer, "relation")
+
+    assert normalized.osm_id.tolist() == ["way/42"]
 
 
 def test_fixture_extraction_clips_and_preserves_unapproved_source_tags(

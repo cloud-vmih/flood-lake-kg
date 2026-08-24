@@ -319,8 +319,10 @@ def map_subbasin_lines(
             "source line columns collide with reserved output names: " + ", ".join(collisions)
         )
     rows: list[dict[str, object]] = []
+    spatial_index = metric_lines.sindex
     for basin in metric_basins.itertuples(index=False):
-        for _, line in metric_lines.iterrows():
+        candidate_indexes = spatial_index.query(basin.geometry, predicate="intersects")
+        for _, line in metric_lines.iloc[candidate_indexes].iterrows():
             intersection = basin.geometry.intersection(line.geometry)
             length = float(intersection.length)
             if intersection.is_empty or length <= 0:
@@ -361,18 +363,23 @@ def map_subbasin_lines(
 def map_subbasin_points(
     basins: gpd.GeoDataFrame, points: gpd.GeoDataFrame, entity_id: str
 ) -> pd.DataFrame:
-    """Map points to all containing/touching basins, preserving exact boundary ties."""
+    """Map point-like entities by an interior point, preserving exact boundary ties."""
     metric_basins, metric_points = _metric_layers(basins, points, entity_id)
     rows: list[dict[str, object]] = []
     tag_columns = [column for column in points.columns if column not in {"geometry", entity_id}]
     for _, point in metric_points.iterrows():
-        matches = metric_basins.loc[metric_basins.geometry.covers(point.geometry)]
+        location = (
+            point.geometry
+            if point.geometry.geom_type == "Point"
+            else point.geometry.representative_point()
+        )
+        matches = metric_basins.loc[metric_basins.geometry.covers(location)]
         tie = len(matches) > 1 and any(
-            geometry.touches(point.geometry) for geometry in matches.geometry
+            geometry.touches(location) for geometry in matches.geometry
         )
         for basin in matches.itertuples(index=False):
-            touches = bool(basin.geometry.touches(point.geometry))
-            relationship = "within" if point.geometry.within(basin.geometry) else "touches"
+            touches = bool(basin.geometry.touches(location))
+            relationship = "within" if location.within(basin.geometry) else "touches"
             if tie and touches:
                 relationship = "nearest_boundary_tie"
             tags = {column: point[column] for column in tag_columns if pd.notna(point[column])}

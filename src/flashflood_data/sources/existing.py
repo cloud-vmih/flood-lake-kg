@@ -13,6 +13,7 @@ from typing import Final
 import geopandas as gpd
 import pandas as pd
 import rasterio
+from shapely.geometry import box
 
 from flashflood_data.catalog import sha256_bundle, sha256_file
 from flashflood_data.harmonize.exposure import (
@@ -142,7 +143,7 @@ _LICENSES: Final[dict[str, str]] = {
 
 _REUSABLE_STATUSES = frozenset({AssetStatus.VALIDATED, AssetStatus.HARMONIZED, AssetStatus.DERIVED})
 _RECOVERABLE_STATUSES = frozenset(
-    {AssetStatus.DISCOVERED, AssetStatus.FETCHING, AssetStatus.FETCHED}
+    {AssetStatus.DISCOVERED, AssetStatus.FETCHING, AssetStatus.FETCHED, AssetStatus.STALE}
 )
 
 
@@ -371,13 +372,12 @@ class ExistingAdapter(SourceAdapter):
         return validate_known_format(path, media_type, (path,))
 
     def harmonize(self, context: SourceContext, assets: list[AssetRecord]) -> list[AssetRecord]:
-        """Harmonize the two registered exposure sources and leave unrelated inventory untouched."""
-        outputs: list[AssetRecord] = []
-        if any(asset.source_id == "worldpop_vnm_2025" for asset in assets):
-            outputs.append(self._harmonize_worldpop(context, assets))
-        if any(asset.source_id == "historical_flood_evidence_2020_2026" for asset in assets):
-            outputs.append(self._harmonize_historical_events(context, assets))
-        return outputs or list(assets)
+        """Dispatch only the source represented by this adapter instance."""
+        if self.spec.source_id == "worldpop_vnm_2025":
+            return [self._harmonize_worldpop(context, assets)]
+        if self.spec.source_id == "historical_flood_evidence_2020_2026":
+            return [self._harmonize_historical_events(context, assets)]
+        return [asset for asset in assets if asset.source_id == self.spec.source_id]
 
     @staticmethod
     def _canonical_raw(assets: list[AssetRecord], source_id: str, suffix: str) -> AssetRecord:
@@ -412,20 +412,33 @@ class ExistingAdapter(SourceAdapter):
         core = core_layer.geometry.union_all()
         output_path = context.paths.harmonized / "rasters" / "worldpop_2025.tif"
         harmonize_worldpop(raw_path, core, output_path)
-        coverage = raster_coverage_ratio(output_path, core)
-        if coverage < 1.0:
-            raise ValueError(f"WorldPop Core AOI coverage is incomplete: {coverage:.2%}")
+        valid_pixel_ratio = raster_coverage_ratio(output_path, core)
         with rasterio.open(raw_path) as source, rasterio.open(output_path) as output:
             if source.crs != output.crs:
                 raise ValueError("WorldPop harmonization changed the source CRS")
+            core_in_output = gpd.GeoSeries([core], crs=core_layer.crs).to_crs(output.crs).iloc[0]
+            footprint = box(*output.bounds)
+            footprint_coverage = (
+                footprint.intersection(core_in_output).area / core_in_output.area
+                if core_in_output.area
+                else 0.0
+            )
+            if footprint_coverage < 1.0 - 1e-9:
+                raise ValueError(
+                    "WorldPop Core AOI footprint coverage is incomplete: "
+                    f"{footprint_coverage:.2%}"
+                )
             metadata = {
                 "grid_policy": "native WorldPop grid; no reprojection or value redistribution",
                 "pixel_inclusion_policy": "pixel-center inclusion in Core AOI",
+                "constrained_nodata_population_policy": "zero_during_aggregation",
                 "source_resolution": [abs(source.transform.a), abs(source.transform.e)],
                 "source_transform": list(source.transform)[:6],
                 "source_nodata": source.nodata,
                 "output_resolution": [abs(output.transform.a), abs(output.transform.e)],
-                "coverage_ratio_core_aoi": coverage,
+                "coverage_ratio_core_aoi": footprint_coverage,
+                "footprint_coverage_ratio_core_aoi": footprint_coverage,
+                "valid_pixel_ratio_core_aoi": valid_pixel_ratio,
             }
         record = AssetRecord(
             asset_id="worldpop-vnm-2025-harmonized",

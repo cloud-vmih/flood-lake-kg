@@ -8,3 +8,4 @@ sources:
       license_url: https://gadm.org/license.html
       province_name: Sơn La
       historical_valid_to: "2025-06-30"
+      archive_budget_size_bytes: 536870912

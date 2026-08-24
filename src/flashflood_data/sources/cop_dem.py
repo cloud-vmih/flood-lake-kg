@@ -60,6 +60,7 @@ class CdseProduct(BaseModel):
     dataset: str
     product_type: str
     modification_date: datetime
+    online: bool
     content_length: int | None = Field(default=None, ge=0)
     checksum: str | None = None
 
@@ -125,6 +126,9 @@ def _product_from_odata(item: object) -> CdseProduct:
     raw_checksum = item.get("Checksum")
     if isinstance(raw_checksum, str) and raw_checksum:
         checksum = raw_checksum
+    online = item.get("Online")
+    if not isinstance(online, bool):
+        raise TypeError("CDSE product Online status is malformed")
     return CdseProduct(
         product_id=product_id,
         name=name,
@@ -132,6 +136,7 @@ def _product_from_odata(item: object) -> CdseProduct:
         dataset=dataset,
         product_type=product_type,
         modification_date=datetime.fromisoformat(modification_date),
+        online=online,
         content_length=content_length,
         checksum=checksum,
     )
@@ -143,7 +148,9 @@ def select_dem_product(response: Mapping[str, object], dataset: str, grid_id: st
     if not isinstance(raw_products, list):
         raise TypeError("CDSE OData response is missing a product list")
     products = sorted((_product_from_odata(item) for item in raw_products), key=lambda item: item.modification_date, reverse=True)
-    grid_products = [product for product in products if product.grid_id == grid_id]
+    grid_products = [
+        product for product in products if product.grid_id == grid_id and product.online
+    ]
     if not grid_products:
         raise ValueError(f"CDSE has no active product for grid {grid_id}")
     datasets = {product.dataset for product in grid_products}
@@ -267,6 +274,7 @@ class CopDemAdapter(SourceAdapter):
     ) -> Mapping[str, object]:
         dataset = self._setting("dataset")
         string_filter = (
+            "Online eq true and "
             "Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'gridId' "
             f"and att/OData.CSC.StringAttribute/Value eq '{grid_id}') and "
             "Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'dataset' "

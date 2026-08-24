@@ -90,6 +90,66 @@ def test_product_selection_requires_fixed_dataset(search_fixture: dict[str, obje
     assert product.product_type == "SAR_DGE_30_A4AD"
     assert product.dataset == "COP-DEM_GLO-30-DGED/2024_1"
     assert product.content_length == 4096
+    assert product.online is True
+
+
+def test_product_selection_ignores_offline_product() -> None:
+    base = {
+        "Name": "COP-DEM_GLO-30-DGED__2024_1_N21_E103",
+        "ContentLength": 4096,
+        "Attributes": [
+            {"Name": "gridId", "Value": "N21_E103"},
+            {"Name": "dataset", "Value": "COP-DEM_GLO-30-DGED/2024_1"},
+            {"Name": "productType", "Value": "SAR_DGE_30_A4AD"},
+        ],
+    }
+    response = {
+        "value": [
+            {
+                **base,
+                "Id": "offline-newer",
+                "Online": False,
+                "ModificationDate": "2026-01-01T00:00:00Z",
+            },
+            {
+                **base,
+                "Id": "online-older",
+                "Online": True,
+                "ModificationDate": "2025-01-01T00:00:00Z",
+            },
+        ]
+    }
+
+    product = select_dem_product(
+        response, "COP-DEM_GLO-30-DGED/2024_1", "N21_E103"
+    )
+
+    assert product.product_id == "online-older"
+
+
+def test_catalogue_query_requests_only_online_products(spec: SourceSpec) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "identity.example.test":
+            return httpx.Response(200, json={"access_token": "fixture-token"})
+        return httpx.Response(200, json={"value": []})
+
+    environment = EnvironmentSettings(
+        _env_file=None,
+        cdse_username=SecretStr("fixture-user"),
+        cdse_password=SecretStr("fixture-password"),
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = CopDemAdapter(spec, client=client)
+
+    adapter._catalogue_response(
+        adapter._token_client(type("Context", (), {"environment": environment})()),
+        "N21_E103",
+    )
+
+    assert "Online eq true" in seen[-1].url.params["$filter"]
 
 
 @pytest.mark.parametrize(
@@ -102,6 +162,7 @@ def test_product_selection_requires_fixed_dataset(search_fixture: dict[str, obje
                     {
                         "Id": "wrong-dataset",
                         "Name": "wrong-dataset",
+                        "Online": True,
                         "ModificationDate": "2025-01-01T00:00:00Z",
                         "Attributes": [
                             {"Name": "gridId", "Value": "N21_E103"},

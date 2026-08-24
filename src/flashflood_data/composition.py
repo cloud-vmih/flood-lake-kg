@@ -19,7 +19,7 @@ from flashflood_data.qa.checks import task17_qa_handler
 from flashflood_data.qa.map import QA_MAP_BUNDLE_RELATIVE_PATHS
 
 _PREFERRED_OWNER = "worldpop_vnm_2025"
-_COMPOSITION_VERSION = "task19-v1"
+_COMPOSITION_VERSION = "task19-v2"
 _TASK15_OUTPUTS = {
     f"task15-{name}-features": f"{name}_features.parquet"
     for name in ("terrain", "soil", "landcover", "hydrology")
