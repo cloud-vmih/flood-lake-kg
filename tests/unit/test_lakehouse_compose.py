@@ -38,3 +38,26 @@ def test_storage_services_have_health_and_memory_bounds() -> None:
 
 def test_forbidden_heavy_services_are_absent() -> None:
     assert not ({"redis", "spark", "kafka", "flink", "airflow-worker"} & services().keys())
+
+
+def test_polaris_is_rest_persistent_and_resource_bounded() -> None:
+    items = services()
+    polaris = items["polaris"]
+    assert polaris["image"] == "apache/polaris:1.7.0"
+    assert polaris["mem_limit"] == "1g"
+    assert polaris["ports"] == ["127.0.0.1:8181:8181", "127.0.0.1:8182:8182"]
+    assert polaris["environment"]["POLARIS_PERSISTENCE_TYPE"] == "relational-jdbc"
+    assert "jdbc:postgresql://postgres:5432/polaris" in polaris["environment"]["QUARKUS_DATASOURCE_JDBC_URL"]
+    assert polaris["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert polaris["depends_on"]["minio-bootstrap"]["condition"] == "service_completed_successfully"
+    assert polaris["healthcheck"]
+
+
+def test_polaris_bootstrap_is_idempotent_and_private() -> None:
+    text = (ROOT / "infra/polaris/bootstrap.sh").read_text()
+    assert "flood_lakehouse" in text
+    assert "s3://warehouse/" in text
+    assert '"pathStyleAccess": true' in text
+    assert '"endpoint": "http://minio:9000"' in text
+    assert "GET" in text and "POST" in text
+    assert "CLIENT_SECRET" not in "\n".join(line for line in text.splitlines() if line.startswith("echo"))
