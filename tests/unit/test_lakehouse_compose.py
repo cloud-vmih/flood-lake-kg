@@ -61,3 +61,42 @@ def test_polaris_bootstrap_is_idempotent_and_private() -> None:
     assert '"endpoint": "http://minio:9000"' in text
     assert "GET" in text and "POST" in text
     assert "CLIENT_SECRET" not in "\n".join(line for line in text.splitlines() if line.startswith("echo"))
+
+
+def test_airflow_uses_basic_v3_local_executor_topology() -> None:
+    items = services()
+    assert {"airflow-init", "airflow-api-server", "airflow-scheduler", "airflow-dag-processor"} <= items.keys()
+    for name in ("airflow-api-server", "airflow-scheduler", "airflow-dag-processor"):
+        assert items[name]["image"] == "apache/airflow:3.3.1-python3.11"
+        assert items[name]["depends_on"]["airflow-init"]["condition"] == "service_completed_successfully"
+        assert items[name]["healthcheck"]
+    env = items["airflow-scheduler"]["environment"]
+    assert env["AIRFLOW__CORE__EXECUTOR"] == "LocalExecutor"
+    assert env["AIRFLOW__CORE__PARALLELISM"] == "2"
+    assert env["AIRFLOW__CORE__LOAD_EXAMPLES"] == "false"
+    assert items["airflow-api-server"]["ports"] == ["127.0.0.1:8080:8080"]
+
+
+def test_airflow_mounts_code_read_only_and_state_under_dataset() -> None:
+    for name in ("airflow-api-server", "airflow-scheduler", "airflow-dag-processor"):
+        volumes = services()[name]["volumes"]
+        assert "./airflow/dags:/opt/airflow/dags:ro,Z" in volumes
+        assert "./airflow/plugins:/opt/airflow/plugins:ro,Z" in volumes
+        assert "./dataset/lakehouse/airflow/logs:/opt/airflow/logs:Z" in volumes
+
+
+def test_long_running_services_fit_memory_budget() -> None:
+    items = services()
+    names = {
+        "postgres",
+        "minio",
+        "polaris",
+        "airflow-api-server",
+        "airflow-scheduler",
+        "airflow-dag-processor",
+    }
+
+    def mib(value: str) -> int:
+        return int(value[:-1]) * (1024 if value.endswith("g") else 1)
+
+    assert sum(mib(items[name]["mem_limit"]) for name in names) <= 4608
