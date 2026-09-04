@@ -2,7 +2,6 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).parents[2]
 COMPOSE = ROOT / "compose.yaml"
 
@@ -43,14 +42,19 @@ def test_forbidden_heavy_services_are_absent() -> None:
 def test_polaris_is_rest_persistent_and_resource_bounded() -> None:
     items = services()
     polaris = items["polaris"]
+    database_bootstrap = items["polaris-db-bootstrap"]
+    assert database_bootstrap["image"] == "apache/polaris-admin-tool:1.7.0"
+    assert database_bootstrap["depends_on"]["postgres"]["condition"] == "service_healthy"
     assert polaris["image"] == "apache/polaris:1.7.0"
     assert polaris["mem_limit"] == "1g"
     assert polaris["ports"] == ["127.0.0.1:8181:8181", "127.0.0.1:8182:8182"]
     assert polaris["environment"]["POLARIS_PERSISTENCE_TYPE"] == "relational-jdbc"
     assert "jdbc:postgresql://postgres:5432/polaris" in polaris["environment"]["QUARKUS_DATASOURCE_JDBC_URL"]
     assert polaris["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert polaris["depends_on"]["polaris-db-bootstrap"]["condition"] == "service_completed_successfully"
     assert polaris["depends_on"]["minio-bootstrap"]["condition"] == "service_completed_successfully"
     assert polaris["healthcheck"]
+    assert polaris["environment"]['polaris.readiness.ignore-severe-issues'] == "true"
 
 
 def test_polaris_bootstrap_is_idempotent_and_private() -> None:
@@ -75,6 +79,8 @@ def test_airflow_uses_basic_v3_local_executor_topology() -> None:
     assert env["AIRFLOW__CORE__PARALLELISM"] == "2"
     assert env["AIRFLOW__CORE__LOAD_EXAMPLES"] == "false"
     assert items["airflow-api-server"]["ports"] == ["127.0.0.1:8080:8080"]
+    assert "entrypoint" not in items["airflow-init"]
+    assert items["airflow-init"]["command"][:2] == ["bash", "-c"]
 
 
 def test_airflow_mounts_code_read_only_and_state_under_dataset() -> None:

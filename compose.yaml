@@ -85,12 +85,33 @@ services:
     restart: "no"
     networks: [lakehouse]
 
+  polaris-db-bootstrap:
+    image: apache/polaris-admin-tool:1.7.0
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POLARIS_PERSISTENCE_TYPE: relational-jdbc
+      POLARIS_PERSISTENCE_RELATIONAL_JDBC_DATABASE_TYPE: postgresql
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres:5432/polaris
+      QUARKUS_DATASOURCE_USERNAME: polaris
+      QUARKUS_DATASOURCE_PASSWORD: ${POLARIS_DB_PASSWORD:?run make lakehouse-init}
+    command:
+      - bootstrap
+      - --realm=POLARIS
+      - --credential=POLARIS,${POLARIS_CLIENT_ID:?run make lakehouse-init},${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
+    restart: "no"
+    networks: [lakehouse]
+
   polaris:
     image: apache/polaris:1.7.0
     mem_limit: 1g
     depends_on:
       postgres:
         condition: service_healthy
+      polaris-db-bootstrap:
+        condition: service_completed_successfully
       minio-bootstrap:
         condition: service_completed_successfully
     environment:
@@ -103,6 +124,7 @@ services:
       POLARIS_REALM_CONTEXT_REALMS: POLARIS
       POLARIS_BOOTSTRAP_CREDENTIALS: POLARIS,${POLARIS_CLIENT_ID:?run make lakehouse-init},${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
       QUARKUS_OTEL_SDK_DISABLED: "true"
+      'polaris.readiness.ignore-severe-issues': "true"
       'polaris.features."ALLOW_INSECURE_STORAGE_TYPES"': "true"
       'polaris.features."ALLOW_SETTING_S3_ENDPOINTS"': "true"
       'polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES"': '["S3"]'
@@ -146,8 +168,8 @@ services:
       <<: *airflow-environment
       AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:?run make lakehouse-init}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?run make lakehouse-init}
-    entrypoint: /bin/bash
     command:
+      - bash
       - -c
       - |
         set -euo pipefail

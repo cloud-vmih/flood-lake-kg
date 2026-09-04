@@ -5,7 +5,6 @@ import stat
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[2]
 SCRIPT = ROOT / "infra/scripts/init-lakehouse-env.sh"
 REQUIRED = {

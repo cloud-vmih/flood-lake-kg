@@ -1,4 +1,4 @@
-.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map
+.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down
 
 setup:
 	/home/cloud/.pyenv/shims/python3.11 -m venv .venv
@@ -29,3 +29,23 @@ live:
 
 qa-map:
 	.venv/bin/python -m http.server 8000 --directory dataset/qa/map
+
+lakehouse-init:
+	infra/scripts/init-lakehouse-env.sh
+	docker compose config --quiet
+
+lakehouse-up: lakehouse-init
+	infra/scripts/check-docker-access.sh
+	docker compose up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor
+
+lakehouse-status:
+	infra/scripts/check-docker-access.sh
+	docker compose ps
+
+lakehouse-smoke:
+	infra/scripts/check-docker-access.sh
+	infra/scripts/smoke-lakehouse.sh
+
+lakehouse-down:
+	infra/scripts/check-docker-access.sh
+	docker compose down

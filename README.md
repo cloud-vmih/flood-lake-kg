@@ -245,6 +245,51 @@ geofabrik_vietnam_snapshot
 historical_flood_evidence_2020_2026
 ```
 
+## Hạ tầng Lakehouse cục bộ
+
+Phase 2 hiện cung cấp một Docker Compose stack cố định gồm PostgreSQL, MinIO, Apache Polaris và Airflow 3. Đây mới là nền tảng lưu trữ/catalog/orchestration: **chưa có Spark và chưa ingest dữ liệu thời tiết**. Pipeline static cùng toàn bộ raw data hiện hữu vẫn giữ nguyên.
+
+Yêu cầu Docker Engine và Docker Compose v2. Nếu lệnh báo không có quyền truy cập Docker socket, tự thêm tài khoản hiện tại vào nhóm `docker`, sau đó đăng xuất và đăng nhập lại:
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+Lưu ý: thành viên nhóm `docker` có quyền tương đương root trên máy. Các script của project không tự gọi `sudo`.
+
+Khởi tạo secrets và thư mục persistent, sau đó khởi động stack:
+
+```bash
+make lakehouse-init
+make lakehouse-up
+make lakehouse-smoke
+```
+
+`make lakehouse-init` tạo hoặc bổ sung `.env` nhưng không thay credential đã có. Không commit hay chia sẻ `.env`. Có thể xem trạng thái và dừng stack bằng:
+
+```bash
+make lakehouse-status
+make lakehouse-down
+```
+
+`make lakehouse-down` chỉ dừng/xóa container và network Compose; không xóa dữ liệu persistent. Toàn bộ state nằm dưới `dataset/lakehouse/`, tách biệt với raw data:
+
+```text
+dataset/lakehouse/postgres/     # database Airflow và Polaris
+dataset/lakehouse/minio/        # bucket private raw và warehouse
+dataset/lakehouse/airflow/logs/ # log Airflow
+```
+
+Các địa chỉ chỉ bind vào localhost:
+
+- MinIO S3 API: <http://127.0.0.1:9000>
+- MinIO Console: <http://127.0.0.1:9001>
+- Polaris REST API: <http://127.0.0.1:8181>
+- Airflow UI/API: <http://127.0.0.1:8080>
+- PostgreSQL: `127.0.0.1:5432`
+
+Tài khoản MinIO và Airflow local nằm trong `.env`. Catalog Polaris mặc định là `flood_lakehouse`, dùng bucket `s3://warehouse/`; bucket `raw` được giữ private cho dữ liệu nguồn. Các service chạy lâu có tổng giới hạn RAM 4.25 GiB. Lần chạy đầu cần tải image Docker nên sẽ lâu hơn; những lần sau tái sử dụng image và state hiện có.
+
 ## Trạng thái hiện tại
 
 - Task 1–17: hoàn thành.
