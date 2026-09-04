@@ -17,6 +17,7 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+.worktrees/
 
 # Packaging artifacts
 build/
