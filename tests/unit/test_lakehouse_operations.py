@@ -20,6 +20,7 @@ def test_makefile_exposes_safe_lakehouse_commands() -> None:
         "docker compose up -d --wait postgres minio polaris "
         "airflow-api-server airflow-scheduler airflow-dag-processor"
     ) in text
+    assert "docker compose run --no-deps --rm polaris-bootstrap" in text
 
 
 def test_smoke_check_is_non_destructive_and_covers_every_service() -> None:

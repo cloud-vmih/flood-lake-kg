@@ -6,10 +6,10 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).parents[2]
 MANIFEST = ROOT / "requirements/lakehouse.txt"
 SETUP_SCRIPT = ROOT / "infra/scripts/setup-lakehouse-python.sh"
+SMOKE_SCRIPT = ROOT / "infra/scripts/smoke-lakehouse-python.sh"
 
 EXPECTED_REQUIREMENTS = {
     "xarray==2026.7.0",
@@ -123,3 +123,73 @@ def test_make_exposes_the_airflow_image_build() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[-1] == "docker compose build airflow-api-server"
+
+
+def test_python_runtime_smoke_runs_read_only_checks_in_both_environments(
+    tmp_path: Path,
+) -> None:
+    assert SMOKE_SCRIPT.is_file()
+    invocation_log = tmp_path / "invocations"
+    container_program = tmp_path / "container-program.py"
+
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "printf 'python:%s\\n' \"$*\" >>\"$INVOCATION_LOG\"\n"
+        "if [ \"${1:-}\" = - ]; then cat >/dev/null; fi\n"
+    )
+    fake_python.chmod(0o755)
+
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        "printf 'docker:%s\\n' \"$*\" >>\"$INVOCATION_LOG\"\n"
+        "case \"$*\" in *' python -') cat >\"$CONTAINER_PROGRAM\" ;; esac\n"
+    )
+    fake_docker.chmod(0o755)
+
+    result = subprocess.run(
+        [SMOKE_SCRIPT],
+        cwd=ROOT,
+        env=os.environ
+        | {
+            "VENV_PYTHON": str(fake_python),
+            "DOCKER_BIN": str(fake_docker),
+            "INVOCATION_LOG": str(invocation_log),
+            "CONTAINER_PROGRAM": str(container_program),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert invocation_log.read_text().splitlines() == [
+        "python:-m pip check",
+        "python:-m cfgrib selfcheck",
+        "python:-",
+        "docker:compose exec -T airflow-api-server python -m pip check",
+        "docker:compose exec -T airflow-api-server python -m cfgrib selfcheck",
+        "docker:compose exec -T airflow-api-server python -",
+    ]
+    program = container_program.read_text()
+    assert "load_catalog" in program
+    assert "list_namespaces()" in program
+    for mutation in ("create_namespace", "create_table", "drop_namespace", "drop_table"):
+        assert mutation not in program
+
+
+def test_make_exposes_the_python_runtime_smoke() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "lakehouse-python-smoke"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "infra/scripts/check-docker-access.sh",
+        "infra/scripts/smoke-lakehouse-python.sh",
+    ]

@@ -265,6 +265,19 @@ make lakehouse-up
 make lakehouse-smoke
 ```
 
+Cài cùng runtime forecast/Iceberg vào `.venv` và image Airflow, rồi kiểm tra kết nối đọc với
+Polaris:
+
+```bash
+make lakehouse-python-setup
+make lakehouse-airflow-build
+make lakehouse-python-smoke
+```
+
+Runtime hiện khóa Xarray, PyIceberg, cfgrib và ecCodes. Lệnh smoke cuối cần stack đang chạy;
+nó chỉ kiểm tra version, bộ giải mã GRIB và gọi `list_namespaces()` qua Polaris, không tải dữ
+liệu, không tạo bảng và không ghi vào MinIO.
+
 `make lakehouse-init` tạo hoặc bổ sung `.env` nhưng không thay credential đã có. Không commit hay chia sẻ `.env`. Có thể xem trạng thái và dừng stack bằng:
 
 ```bash
