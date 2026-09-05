@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).parents[2]
 MANIFEST = ROOT / "requirements/lakehouse.txt"
@@ -11,7 +13,7 @@ SETUP_SCRIPT = ROOT / "infra/scripts/setup-lakehouse-python.sh"
 
 EXPECTED_REQUIREMENTS = {
     "xarray==2026.7.0",
-    "pyiceberg[pyarrow]==0.12.0",
+    "pyiceberg[pyarrow]==0.11.1",
     "cfgrib==0.9.15.1",
     "eccodes==2.48.0",
 }
@@ -87,3 +89,37 @@ def test_make_exposes_the_host_setup_entrypoint() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ["infra/scripts/setup-lakehouse-python.sh"]
+
+
+def test_compose_builds_every_airflow_service_from_one_local_image() -> None:
+    data = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    expected_build = {
+        "context": ".",
+        "dockerfile": "infra/airflow/Dockerfile",
+        "args": {"AIRFLOW_VERSION": "3.3.1"},
+    }
+
+    for name in (
+        "airflow-init",
+        "airflow-api-server",
+        "airflow-scheduler",
+        "airflow-dag-processor",
+    ):
+        service = data["services"][name]
+        assert service["image"] == "flood-lakehouse-airflow:3.3.1-python3.11"
+        assert service["build"] == expected_build
+        dockerfile = ROOT / service["build"]["dockerfile"]
+        assert dockerfile.is_file()
+
+
+def test_make_exposes_the_airflow_image_build() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "lakehouse-airflow-build"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == "docker compose build airflow-api-server"

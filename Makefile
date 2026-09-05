@@ -1,4 +1,4 @@
-.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down
+.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-airflow-build lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down
 
 setup:
 	/home/cloud/.pyenv/shims/python3.11 -m venv .venv
@@ -32,6 +32,9 @@ qa-map:
 
 lakehouse-python-setup:
 	infra/scripts/setup-lakehouse-python.sh
+
+lakehouse-airflow-build: lakehouse-init
+	docker compose build airflow-api-server
 
 lakehouse-init:
 	infra/scripts/init-lakehouse-env.sh

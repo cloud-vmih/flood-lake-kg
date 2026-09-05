@@ -4,6 +4,10 @@
 **Status:** Approved for implementation planning  
 **Scope:** Phase 2B Python ingest runtime only
 
+**Compatibility amendment:** PyIceberg was changed from 0.12.0 to 0.11.1 during implementation
+because the official Airflow 3.3.1/Python 3.11 constraints pin 0.11.1. The user approved keeping
+the Airflow constraint authoritative and using the same version on the host.
+
 ## 1. Goal
 
 Install one consistent set of Python libraries for forecast decoding and Iceberg access in
@@ -33,7 +37,7 @@ The repository owns one small, exact direct-dependency manifest:
 ```text
 requirements/lakehouse.txt
   xarray==2026.7.0
-  pyiceberg[pyarrow]==0.12.0
+  pyiceberg[pyarrow]==0.11.1
   cfgrib==0.9.15.1
   eccodes==2.48.0
         |                         |
@@ -56,7 +60,7 @@ keeping all directly selected forecast and Iceberg versions identical.
 | Package | Exact version | Responsibility |
 |---|---:|---|
 | Xarray | 2026.7.0 | Labeled multidimensional forecast arrays |
-| PyIceberg with PyArrow FileIO | 0.12.0 | JVM-free Iceberg REST client and Parquet/FileIO support |
+| PyIceberg with PyArrow FileIO | 0.11.1 | JVM-free Iceberg REST client and Parquet/FileIO support |
 | cfgrib | 0.9.15.1 | Xarray GRIB engine |
 | eccodes | 2.48.0 | GRIB decoder Python bindings and bundled Linux binary library |
 

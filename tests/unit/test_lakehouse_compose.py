@@ -71,7 +71,7 @@ def test_airflow_uses_basic_v3_local_executor_topology() -> None:
     items = services()
     assert {"airflow-init", "airflow-api-server", "airflow-scheduler", "airflow-dag-processor"} <= items.keys()
     for name in ("airflow-api-server", "airflow-scheduler", "airflow-dag-processor"):
-        assert items[name]["image"] == "apache/airflow:3.3.1-python3.11"
+        assert items[name]["image"] == "flood-lakehouse-airflow:3.3.1-python3.11"
         assert items[name]["depends_on"]["airflow-init"]["condition"] == "service_completed_successfully"
         assert items[name]["healthcheck"]
     env = items["airflow-scheduler"]["environment"]

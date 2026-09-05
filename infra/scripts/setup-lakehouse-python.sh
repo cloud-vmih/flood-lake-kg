@@ -26,7 +26,7 @@ import xarray
 
 expected = {
     "xarray": "2026.7.0",
-    "pyiceberg": "0.12.0",
+    "pyiceberg": "0.11.1",
     "cfgrib": "0.9.15.1",
     "eccodes": "2.48.0",
 }

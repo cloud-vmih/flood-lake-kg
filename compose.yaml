@@ -1,7 +1,12 @@
 name: flood-lakehouse
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:3.3.1-python3.11
+  image: flood-lakehouse-airflow:3.3.1-python3.11
+  build:
+    context: .
+    dockerfile: infra/airflow/Dockerfile
+    args:
+      AIRFLOW_VERSION: "3.3.1"
   user: "${AIRFLOW_UID:?run make lakehouse-init}:0"
   environment: &airflow-environment
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -16,6 +21,10 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW__API__DAG_CACHE_SIZE: "16"
     AIRFLOW__API__DAG_CACHE_TTL: "1800"
+    POLARIS_URI: http://polaris:8181/api/catalog
+    POLARIS_CATALOG: flood_lakehouse
+    POLARIS_CLIENT_ID: ${POLARIS_CLIENT_ID:?run make lakehouse-init}
+    POLARIS_CLIENT_SECRET: ${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
   volumes:
     - ./airflow/dags:/opt/airflow/dags:ro,Z
     - ./airflow/plugins:/opt/airflow/plugins:ro,Z

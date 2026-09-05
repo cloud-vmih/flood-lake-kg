@@ -6,7 +6,7 @@
 
 **Architecture:** A single exact top-level manifest is installed additively over the existing host lock and into an Airflow image extended from the pinned project base. Host checks prove GRIB decoding is available; container checks additionally authenticate through PyIceberg to the existing Polaris REST catalog without creating data.
 
-**Tech Stack:** Python 3.11, Xarray 2026.7.0, PyIceberg 0.12.0 with PyArrow FileIO, cfgrib 0.9.15.1, eccodes 2.48.0, Apache Airflow 3.3.1, Docker Compose, Bash, Pytest.
+**Tech Stack:** Python 3.11, Xarray 2026.7.0, PyIceberg 0.11.1 with PyArrow FileIO, cfgrib 0.9.15.1, eccodes 2.48.0, Apache Airflow 3.3.1, Docker Compose, Bash, Pytest.
 
 **Spec:** `docs/superpowers/specs/2026-09-05-python-lakehouse-runtime-design.md`
 
@@ -49,7 +49,7 @@ MANIFEST = ROOT / "requirements/lakehouse.txt"
 
 EXPECTED = {
     "xarray==2026.7.0",
-    "pyiceberg[pyarrow]==0.12.0",
+    "pyiceberg[pyarrow]==0.11.1",
     "cfgrib==0.9.15.1",
     "eccodes==2.48.0",
 }
@@ -102,7 +102,7 @@ Create `requirements/lakehouse.txt` with exactly:
 ```text
 # Shared host/Airflow ingest runtime. Keep direct versions exact.
 xarray==2026.7.0
-pyiceberg[pyarrow]==0.12.0
+pyiceberg[pyarrow]==0.11.1
 cfgrib==0.9.15.1
 eccodes==2.48.0
 ```
@@ -129,7 +129,7 @@ import xarray
 
 expected = {
     "xarray": "2026.7.0",
-    "pyiceberg": "0.12.0",
+    "pyiceberg": "0.11.1",
     "cfgrib": "0.9.15.1",
     "eccodes": "2.48.0",
 }
@@ -251,7 +251,7 @@ RUN python -m pip install --no-cache-dir \
       --requirement /tmp/requirements-lakehouse.txt \
     && python -m pip check \
     && python -m cfgrib selfcheck \
-    && python -c 'from importlib.metadata import version; expected={"xarray":"2026.7.0","pyiceberg":"0.12.0","cfgrib":"0.9.15.1","eccodes":"2.48.0","apache-airflow":"3.3.1"}; actual={name:version(name) for name in expected}; assert actual == expected, actual'
+    && python -c 'from importlib.metadata import version; expected={"xarray":"2026.7.0","pyiceberg":"0.11.1","cfgrib":"0.9.15.1","eccodes":"2.48.0","apache-airflow":"3.3.1"}; actual={name:version(name) for name in expected}; assert actual == expected, actual'
 ```
 
 Do not switch to root and do not add OS packages: `eccodes>=2.43` supplies `eccodeslib` through
@@ -310,7 +310,7 @@ docker run --rm flood-lakehouse-airflow:3.3.1-python3.11 python -m pip check
 docker run --rm flood-lakehouse-airflow:3.3.1-python3.11 python -m cfgrib selfcheck
 ```
 
-Expected versions, in order: `3.3.1`, `2026.7.0`, `0.12.0`, `0.9.15.1`, `2.48.0`; pip and
+Expected versions, in order: `3.3.1`, `2026.7.0`, `0.11.1`, `0.9.15.1`, `2.48.0`; pip and
 cfgrib checks succeed.
 
 - [ ] **Step 7: Commit Task 2**
