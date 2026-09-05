@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).parents[2]
 DOCKERFILE = ROOT / "infra/spark/Dockerfile"
@@ -43,3 +45,85 @@ def test_make_exposes_the_spark_image_build() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[-1] == "docker compose --profile spark build spark-master"
+
+
+def spark_services() -> dict:
+    return yaml.safe_load((ROOT / "compose.yaml").read_text())["services"]
+
+
+def test_spark_master_and_worker_are_optional_private_and_bounded() -> None:
+    services = spark_services()
+    master = services["spark-master"]
+    worker = services["spark-worker"]
+    expected_image = "flood-lakehouse-spark:4.1.3-iceberg1.11.0"
+
+    assert master["image"] == worker["image"] == expected_image
+    assert master["profiles"] == worker["profiles"] == ["spark"]
+    assert master["ports"] == ["127.0.0.1:7077:7077", "127.0.0.1:8081:8080"]
+    assert worker["ports"] == ["127.0.0.1:8082:8081"]
+    assert master["mem_limit"] == "768m"
+    assert worker["mem_limit"] == "2560m"
+    assert worker["depends_on"]["spark-master"]["condition"] == "service_healthy"
+    assert master["healthcheck"]
+    assert worker["healthcheck"]
+    assert "spark-master" in master["healthcheck"]["test"][-1]
+
+
+def test_spark_submit_is_one_shot_and_receives_runtime_secrets() -> None:
+    submit = spark_services()["spark-submit"]
+
+    assert submit["profiles"] == ["spark"]
+    assert submit["mem_limit"] == "1536m"
+    assert submit["entrypoint"] == ["/opt/spark/bin/spark-submit"]
+    assert submit["restart"] == "no"
+    assert submit.get("ports") is None
+    assert "${POLARIS_CLIENT_SECRET:?run make lakehouse-init}" == submit["environment"][
+        "POLARIS_CLIENT_SECRET"
+    ]
+    assert "${MINIO_ROOT_PASSWORD:?run make lakehouse-init}" == submit["environment"][
+        "AWS_SECRET_ACCESS_KEY"
+    ]
+
+
+def test_base_lakehouse_up_does_not_start_spark() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "lakehouse-up"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "spark-master" not in result.stdout
+    assert "spark-worker" not in result.stdout
+
+
+def test_make_exposes_isolated_spark_lifecycle() -> None:
+    expected = {
+        "spark-up": "docker compose --profile spark up -d --wait spark-master spark-worker",
+        "spark-status": "docker compose --profile spark ps spark-master spark-worker",
+        "spark-down": "docker compose --profile spark stop spark-worker spark-master",
+    }
+
+    for target, command in expected.items():
+        result = subprocess.run(
+            ["make", "--dry-run", target],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert command in result.stdout
+
+    down = subprocess.run(
+        ["make", "--dry-run", "spark-down"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert "docker compose down" not in down
+    assert "--volumes" not in down
+    assert "docker compose --profile spark rm -f spark-worker spark-master" in down

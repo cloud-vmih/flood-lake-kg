@@ -31,6 +31,15 @@ x-airflow-common: &airflow-common
     - ./dataset/lakehouse/airflow/logs:/opt/airflow/logs:Z
   networks: [lakehouse]
 
+x-spark-image: &spark-image
+  image: flood-lakehouse-spark:4.1.3-iceberg1.11.0
+  build:
+    context: .
+    dockerfile: infra/spark/Dockerfile
+    args:
+      SPARK_VERSION: "4.1.3"
+      ICEBERG_VERSION: "1.11.0"
+
 services:
   postgres:
     image: postgres:17.11-bookworm
@@ -240,6 +249,90 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+
+  spark-master:
+    <<: *spark-image
+    profiles: [spark]
+    mem_limit: 768m
+    entrypoint: [/opt/spark/bin/spark-class]
+    command:
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    ports:
+      - "127.0.0.1:7077:7077"
+      - "127.0.0.1:8081:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import socket; socket.create_connection(("spark-master", 7077), 2).close()
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    networks: [lakehouse]
+
+  spark-worker:
+    <<: *spark-image
+    profiles: [spark]
+    mem_limit: 2560m
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    entrypoint: [/opt/spark/bin/spark-class]
+    command:
+      - org.apache.spark.deploy.worker.Worker
+      - --cores
+      - "2"
+      - --memory
+      - 2g
+      - --webui-port
+      - "8081"
+      - spark://spark-master:7077
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+      AWS_REGION: us-east-1
+    ports:
+      - "127.0.0.1:8082:8081"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8081", timeout=2).close()
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    networks: [lakehouse]
+
+  spark-submit:
+    <<: *spark-image
+    profiles: [spark]
+    mem_limit: 1536m
+    entrypoint: [/opt/spark/bin/spark-submit]
+    environment:
+      POLARIS_URI: http://polaris:8181/api/catalog
+      POLARIS_CATALOG: flood_lakehouse
+      POLARIS_CLIENT_ID: ${POLARIS_CLIENT_ID:?run make lakehouse-init}
+      POLARIS_CLIENT_SECRET: ${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+      AWS_REGION: us-east-1
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro,Z
+    restart: "no"
+    networks: [lakehouse]
 
 networks:
   lakehouse:

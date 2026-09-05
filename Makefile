@@ -1,4 +1,4 @@
-.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-airflow-build lakehouse-python-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down spark-build
+.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-airflow-build lakehouse-python-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down spark-build spark-up spark-status spark-down
 
 setup:
 	/home/cloud/.pyenv/shims/python3.11 -m venv .venv
@@ -63,3 +63,16 @@ lakehouse-down:
 
 spark-build: lakehouse-init
 	docker compose --profile spark build spark-master
+
+spark-up: lakehouse-up
+	infra/scripts/check-docker-access.sh
+	docker compose --profile spark up -d --wait spark-master spark-worker
+
+spark-status:
+	infra/scripts/check-docker-access.sh
+	docker compose --profile spark ps spark-master spark-worker
+
+spark-down:
+	infra/scripts/check-docker-access.sh
+	docker compose --profile spark stop spark-worker spark-master
+	docker compose --profile spark rm -f spark-worker spark-master
