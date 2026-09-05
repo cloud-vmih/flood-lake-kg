@@ -1,4 +1,4 @@
-.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down
+.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down
 
 setup:
 	/home/cloud/.pyenv/shims/python3.11 -m venv .venv
@@ -29,6 +29,9 @@ live:
 
 qa-map:
 	.venv/bin/python -m http.server 8000 --directory dataset/qa/map
+
+lakehouse-python-setup:
+	infra/scripts/setup-lakehouse-python.sh
 
 lakehouse-init:
 	infra/scripts/init-lakehouse-env.sh
