@@ -247,7 +247,10 @@ historical_flood_evidence_2020_2026
 
 ## Hạ tầng Lakehouse cục bộ
 
-Phase 2 hiện cung cấp một Docker Compose stack cố định gồm PostgreSQL, MinIO, Apache Polaris và Airflow 3. Đây mới là nền tảng lưu trữ/catalog/orchestration: **chưa có Spark và chưa ingest dữ liệu thời tiết**. Pipeline static cùng toàn bộ raw data hiện hữu vẫn giữ nguyên.
+Phase 2 hiện cung cấp một Docker Compose stack cố định gồm PostgreSQL, MinIO, Apache Polaris,
+Airflow 3 và một cụm Spark standalone tùy chọn. Đây mới là nền tảng
+lưu trữ/catalog/orchestration: **chưa ingest dữ liệu thời tiết**. Pipeline static cùng toàn bộ
+raw data hiện hữu vẫn giữ nguyên.
 
 Yêu cầu Docker Engine và Docker Compose v2. Nếu lệnh báo không có quyền truy cập Docker socket, tự thêm tài khoản hiện tại vào nhóm `docker`, sau đó đăng xuất và đăng nhập lại:
 
@@ -278,6 +281,32 @@ Runtime hiện khóa Xarray, PyIceberg, cfgrib và ecCodes. Lệnh smoke cuối 
 nó chỉ kiểm tra version, bộ giải mã GRIB và gọi `list_namespaces()` qua Polaris, không tải dữ
 liệu, không tạo bảng và không ghi vào MinIO.
 
+### Spark và Iceberg
+
+Spark không tự khởi động cùng stack cơ sở. Build image đã khóa Spark 4.1.3, Scala 2.13 và
+Iceberg 1.11.0, sau đó bật một master cùng một worker bằng:
+
+```bash
+make spark-build
+make spark-up
+make spark-status
+make spark-smoke
+make spark-down
+```
+
+`make spark-smoke` kiểm tra master thấy đúng một worker, tạo namespace riêng có tên ngẫu
+nhiên, ghi và đọc lại ba dòng qua Iceberg REST catalog/MinIO rồi xóa đúng bảng và namespace
+vừa tạo. Có thể chạy lặp lại; lệnh không đụng đến bảng dữ liệu khác. `make spark-down` chỉ xóa
+container Spark, không dừng PostgreSQL, MinIO, Polaris hay Airflow.
+
+Hai giao diện Spark chỉ bind vào localhost:
+
+- Spark master UI: <http://127.0.0.1:8081>
+- Spark worker UI: <http://127.0.0.1:8082>
+
+Master và worker có tổng giới hạn RAM 3.25 GiB; job smoke dùng thêm tối đa 1.5 GiB trong thời
+gian chạy. Vì vậy chỉ bật profile Spark khi cần xử lý dữ liệu.
+
 `make lakehouse-init` tạo hoặc bổ sung `.env` nhưng không thay credential đã có. Không commit hay chia sẻ `.env`. Có thể xem trạng thái và dừng stack bằng:
 
 ```bash
@@ -301,7 +330,7 @@ Các địa chỉ chỉ bind vào localhost:
 - Airflow UI/API: <http://127.0.0.1:8080>
 - PostgreSQL: `127.0.0.1:5432`
 
-Tài khoản MinIO và Airflow local nằm trong `.env`. Catalog Polaris mặc định là `flood_lakehouse`, dùng bucket `s3://warehouse/`; bucket `raw` được giữ private cho dữ liệu nguồn. Các service chạy lâu có tổng giới hạn RAM 4.25 GiB. Lần chạy đầu cần tải image Docker nên sẽ lâu hơn; những lần sau tái sử dụng image và state hiện có.
+Tài khoản MinIO và Airflow local nằm trong `.env`. Catalog Polaris mặc định là `flood_lakehouse`, dùng bucket `s3://warehouse/`; bucket `raw` được giữ private cho dữ liệu nguồn. Các service nền chạy lâu có tổng giới hạn RAM 4.25 GiB, chưa tính profile Spark tùy chọn. Lần chạy đầu cần tải image Docker nên sẽ lâu hơn; những lần sau tái sử dụng image và state hiện có.
 
 ## Trạng thái hiện tại
 

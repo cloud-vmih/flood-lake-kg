@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).parents[2]
 DOCKERFILE = ROOT / "infra/spark/Dockerfile"
+SMOKE_SCRIPT = ROOT / "infra/scripts/smoke-spark.sh"
 
 
 def dockerfile_args() -> dict[str, str]:
@@ -127,3 +128,50 @@ def test_make_exposes_isolated_spark_lifecycle() -> None:
     assert "docker compose down" not in down
     assert "--volumes" not in down
     assert "docker compose --profile spark rm -f spark-worker spark-master" in down
+
+
+def test_spark_smoke_checks_one_worker_then_submits_one_shot(tmp_path: Path) -> None:
+    assert SMOKE_SCRIPT.is_file()
+    invocation_log = tmp_path / "invocations"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >>\"$INVOCATION_LOG\"\n"
+        "if [ \"${2:-}\" = exec ]; then printf '1\\n'; fi\n"
+    )
+    fake_docker.chmod(0o755)
+
+    result = subprocess.run(
+        [SMOKE_SCRIPT],
+        cwd=ROOT,
+        env=os.environ
+        | {"DOCKER_BIN": str(fake_docker), "INVOCATION_LOG": str(invocation_log)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    invocations = invocation_log.read_text().splitlines()
+    assert len(invocations) == 2
+    assert invocations[0].startswith("compose exec -T spark-master python3 -c ")
+    assert "http://localhost:8080/json/" in invocations[0]
+    assert "aliveworkers" in invocations[0]
+    assert invocations[1] == (
+        "compose --profile spark run --no-deps --rm spark-submit "
+        "--master spark://spark-master:7077 --deploy-mode client "
+        "/opt/spark/jobs/smoke_iceberg.py"
+    )
+
+
+def test_make_exposes_spark_smoke() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "spark-smoke"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "infra/scripts/smoke-spark.sh" in result.stdout.splitlines()
