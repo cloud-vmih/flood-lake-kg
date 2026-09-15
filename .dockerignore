@@ -1,0 +1,28 @@
+# Local datasets and persistent service state
+dataset/
+
+# VCS, worktrees, environments, caches and build output
+.git/
+.worktrees/
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local secrets and editor state
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+
+# Large research documents are not image inputs
+docs/*.pdf
+docs/*.docx
+docs/*.pptx
+docs/*.xlsx
