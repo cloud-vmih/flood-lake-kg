@@ -16,12 +16,7 @@ import rasterio
 from shapely.geometry import box
 
 from flashflood_data.catalog import sha256_bundle, sha256_file
-from flashflood_data.harmonize.exposure import (
-    harmonize_worldpop,
-    read_historical_events,
-    resolve_event_administration,
-)
-from flashflood_data.inventory import (
+from flashflood_data.catalog.inventory import (
     InventoryConflict,
     InventoryRule,
     bundle_member,
@@ -33,14 +28,19 @@ from flashflood_data.inventory import (
     validate_known_format,
     write_json_atomic,
 )
-from flashflood_data.io_atomic import atomic_target
-from flashflood_data.models import (
+from flashflood_data.catalog.models import (
     AssetKind,
     AssetRecord,
     AssetStatus,
     RemoteAsset,
     ValidationResult,
 )
+from flashflood_data.harmonize.exposure import (
+    harmonize_worldpop,
+    read_historical_events,
+    resolve_event_administration,
+)
+from flashflood_data.io_atomic import atomic_target
 from flashflood_data.raster import raster_coverage_ratio
 from flashflood_data.sources.base import SourceAdapter, SourceContext
 

@@ -8,8 +8,8 @@ from pathlib import Path
 import geopandas as gpd
 from shapely import make_valid
 
+from flashflood_data.catalog.models import ValidationResult
 from flashflood_data.io_atomic import atomic_target
-from flashflood_data.models import ValidationResult
 
 
 def repair_geometries(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:

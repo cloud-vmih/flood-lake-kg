@@ -14,13 +14,13 @@ import numpy as np
 import pandas as pd
 
 from flashflood_data.catalog import sha256_file
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.derive.features import load_feature_config
 from flashflood_data.derive.hydrology import derive_hydrology_features
 from flashflood_data.derive.landcover import derive_landcover_fractions
 from flashflood_data.derive.soil import depth_weighted_soil
 from flashflood_data.derive.terrain import derive_terrain_features
 from flashflood_data.io_atomic import atomic_target
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 
 
 @dataclass(frozen=True)

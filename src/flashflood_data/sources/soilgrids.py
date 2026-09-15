@@ -19,7 +19,7 @@ from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
 from flashflood_data.catalog import sha256_file
-from flashflood_data.models import (
+from flashflood_data.catalog.models import (
     AssetKind,
     AssetRecord,
     AssetStatus,

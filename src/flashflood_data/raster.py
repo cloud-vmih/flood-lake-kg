@@ -20,8 +20,8 @@ from rasterio.windows import Window
 from shapely.geometry import box, mapping, shape
 from shapely.geometry.base import BaseGeometry
 
+from flashflood_data.catalog.models import ValidationResult
 from flashflood_data.io_atomic import atomic_target
-from flashflood_data.models import ValidationResult
 
 COG_PROFILE = {
     "driver": "GTiff",

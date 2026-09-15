@@ -21,14 +21,14 @@ from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
 from flashflood_data.catalog import sha256_bundle, sha256_file
-from flashflood_data.http import DownloadFailed, HttpFetcher
-from flashflood_data.models import (
+from flashflood_data.catalog.models import (
     AssetKind,
     AssetRecord,
     AssetStatus,
     RemoteAsset,
     ValidationResult,
 )
+from flashflood_data.http import DownloadFailed, HttpFetcher
 from flashflood_data.raster import (
     COG_PROFILE,
     RasterExpectation,

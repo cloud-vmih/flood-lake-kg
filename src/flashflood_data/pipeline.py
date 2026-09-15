@@ -15,10 +15,8 @@ from pydantic import BaseModel, Field
 
 from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog, sha256_file
-from flashflood_data.config import EnvironmentSettings, StudyAreaConfig, load_study_area
-from flashflood_data.http import BudgetRejected, HttpFetcher
-from flashflood_data.inventory import compound_checksum
-from flashflood_data.models import (
+from flashflood_data.catalog.inventory import compound_checksum
+from flashflood_data.catalog.models import (
     AssetKind,
     AssetRecord,
     AssetStatus,
@@ -26,7 +24,9 @@ from flashflood_data.models import (
     RunRecord,
     SourceSpec,
 )
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig, load_study_area
+from flashflood_data.core.paths import ProjectPaths
+from flashflood_data.http import BudgetRejected, HttpFetcher
 from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
 from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.sources.cop_dem import MissingCredentials

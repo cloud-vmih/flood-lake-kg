@@ -5,9 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from flashflood_data.catalog import AssetCatalog
-from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
-from flashflood_data.models import AssetRecord, RemoteAsset, SourceSpec, ValidationResult
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.catalog.models import (
+    AssetRecord,
+    RemoteAsset,
+    SourceSpec,
+    ValidationResult,
+)
+from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
+from flashflood_data.core.paths import ProjectPaths
 
 
 @dataclass(frozen=True)

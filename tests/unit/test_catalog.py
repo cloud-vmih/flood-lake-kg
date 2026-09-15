@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from flashflood_data.catalog import IllegalTransition, sha256_bundle, sha256_file
-from flashflood_data.models import (
+from flashflood_data.catalog.models import (
     AssetStatus,
     RemoteAsset,
     RunRecord,

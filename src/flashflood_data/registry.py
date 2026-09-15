@@ -6,7 +6,7 @@ from typing import Final
 
 import yaml
 
-from flashflood_data.models import SourceFile, SourceSpec
+from flashflood_data.catalog.models import SourceFile, SourceSpec
 from flashflood_data.sources.base import SourceAdapter
 
 _ADAPTER_TARGETS: Final[dict[str, tuple[str, str]]] = {

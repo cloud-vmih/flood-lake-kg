@@ -8,7 +8,7 @@ from pathlib import Path
 import geopandas as gpd
 from shapely.geometry.base import BaseGeometry
 
-from flashflood_data.config import StudyAreaConfig
+from flashflood_data.core.config import StudyAreaConfig
 from flashflood_data.vector import write_geoparquet
 
 

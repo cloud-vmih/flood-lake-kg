@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from flashflood_data.catalog.models import AssetRecord, AssetStatus, RunRecord
+from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.io_atomic import atomic_target
-from flashflood_data.models import AssetRecord, AssetStatus, RunRecord
-from flashflood_data.paths import ProjectPaths
 
 LEGAL_TRANSITIONS: dict[AssetStatus, set[AssetStatus]] = {
     AssetStatus.DISCOVERED: {AssetStatus.FETCHING, AssetStatus.VALIDATED, AssetStatus.FAILED},

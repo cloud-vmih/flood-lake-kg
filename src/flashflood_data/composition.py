@@ -11,10 +11,10 @@ import geopandas as gpd
 import pandas as pd
 
 from flashflood_data.catalog import sha256_file
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.derive.features import load_feature_config
 from flashflood_data.derive.profile import Task16MapInputs, task16_map_handler
 from flashflood_data.derive.static import StaticPredictorInputs, task15_derive_handler
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.qa.checks import task17_qa_handler
 from flashflood_data.qa.map import QA_MAP_BUNDLE_RELATIVE_PATHS
 

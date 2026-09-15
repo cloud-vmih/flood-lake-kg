@@ -19,9 +19,9 @@ from rasterio.features import geometry_mask
 from shapely.geometry import box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
-from flashflood_data.config import StudyAreaConfig
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
+from flashflood_data.core.config import StudyAreaConfig
+from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.raster import raster_coverage_ratio
 from flashflood_data.vector import validate_vector
 

@@ -16,14 +16,14 @@ import geopandas as gpd
 from shapely.geometry import shape
 
 from flashflood_data.catalog import sha256_file
-from flashflood_data.config import StudyAreaConfig
-from flashflood_data.models import (
+from flashflood_data.catalog.models import (
     AssetKind,
     AssetRecord,
     AssetStatus,
     RemoteAsset,
     ValidationResult,
 )
+from flashflood_data.core.config import StudyAreaConfig
 from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.vector import repair_geometries, validate_vector, write_geoparquet
 

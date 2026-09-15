@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from flashflood_data.catalog import sha256_file
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.derive._spatial import checked_basins
 from flashflood_data.derive.mappings import (
     map_subbasin_commune,
@@ -23,7 +24,6 @@ from flashflood_data.derive.mappings import (
 )
 from flashflood_data.derive.population import map_subbasin_population
 from flashflood_data.io_atomic import atomic_target
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 
 _REQUIRED_TASK15_GROUPS = frozenset({"terrain", "soil", "landcover", "hydrology"})
 _ALLOWED_PROFILE_GROUPS = _REQUIRED_TASK15_GROUPS | {"population"}

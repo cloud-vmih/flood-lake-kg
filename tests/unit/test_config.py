@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from flashflood_data.config import load_study_area
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.core.config import load_study_area
+from flashflood_data.core.paths import ProjectPaths
 
 
 def test_study_area_has_approved_scopes(tmp_path: Path) -> None:

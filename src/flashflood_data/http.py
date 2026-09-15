@@ -24,15 +24,15 @@ import httpx
 
 from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog, sha256_file
-from flashflood_data.config import EnvironmentSettings
-from flashflood_data.models import (
+from flashflood_data.catalog.models import (
     AssetKind,
     AssetRecord,
     AssetStatus,
     RemoteAsset,
     _is_sensitive_key,
 )
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.core.config import EnvironmentSettings
+from flashflood_data.core.paths import ProjectPaths
 
 _CONTENT_RANGE: Final = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
 _STRONG_ETAG: Final = re.compile(r'^"[\x21\x23-\x7e\x80-\xff]*"$')

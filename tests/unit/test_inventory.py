@@ -9,10 +9,10 @@ import pytest
 from openpyxl import Workbook
 
 from flashflood_data.catalog import AssetCatalog
-from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
-from flashflood_data.inventory import InventoryRule, validate_known_format
-from flashflood_data.models import AssetKind, AssetStatus
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.catalog.inventory import InventoryRule, validate_known_format
+from flashflood_data.catalog.models import AssetKind, AssetStatus
+from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
+from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.sources.base import SourceContext
 from flashflood_data.sources.existing import inventory_existing
 
@@ -79,7 +79,7 @@ def test_inventory_cache_uses_path_size_mtime_and_rehash_bypasses_it(
     payload = context.paths.dataset / "legacy" / "cached.bin"
     payload.parent.mkdir(parents=True)
     payload.write_bytes(b"cache-me")
-    from flashflood_data import inventory
+    from flashflood_data.catalog import inventory
 
     real_hash = inventory.sha256_file
     hashed: list[Path] = []
@@ -243,7 +243,7 @@ def test_inventory_rejects_primary_symlink_escape_before_hash_or_catalog(
     link = context.paths.dataset / "legacy" / "escape.bin"
     link.parent.mkdir(parents=True)
     link.symlink_to(outside)
-    from flashflood_data import inventory
+    from flashflood_data.catalog import inventory
 
     hashed: list[Path] = []
     opened: list[Path] = []
@@ -281,7 +281,7 @@ def test_inventory_rejects_bundle_member_symlink_escape_before_any_hash(
     outside = tmp_path / "outside.dbf"
     outside.write_bytes(b"external-sidecar")
     primary.with_suffix(".dbf").symlink_to(outside)
-    from flashflood_data import inventory
+    from flashflood_data.catalog import inventory
 
     hashed: list[Path] = []
     opened: list[Path] = []
