@@ -13,8 +13,8 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.admin import CurrentAdminAdapter, normalize_current_admin
-from flashflood_data.sources.base import SourceConfigurationError, SourceContext
+from flashflood_data.static.sources.admin import CurrentAdminAdapter, normalize_current_admin
+from flashflood_data.static.sources.base import SourceConfigurationError, SourceContext
 
 
 @pytest.fixture

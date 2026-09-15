@@ -16,8 +16,11 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.worldcover import WorldCoverAdapter, select_worldcover_tiles
+from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.worldcover import (
+    WorldCoverAdapter,
+    select_worldcover_tiles,
+)
 
 
 @pytest.fixture

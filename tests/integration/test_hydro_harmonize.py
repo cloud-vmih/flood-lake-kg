@@ -9,15 +9,15 @@ import geopandas as gpd
 from shapely.geometry import LineString, box
 from typer.testing import CliRunner
 
-from flashflood_data.aoi import build_study_areas
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.cli import app
 from flashflood_data.config import StudyAreaConfig
-from flashflood_data.harmonize.hydro import HydroInputPaths, harmonize_hydro
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.paths import ProjectPaths
 from flashflood_data.pipeline import Stage, StaticPipeline
-from flashflood_data.registry import load_source_specs
+from flashflood_data.static.harmonize.aoi import build_study_areas
+from flashflood_data.static.harmonize.hydro import HydroInputPaths, harmonize_hydro
+from flashflood_data.static.sources.registry import load_source_specs
 
 
 def test_harmonize_hydro_writes_deterministic_scope_and_hydro_products(

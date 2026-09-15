@@ -15,8 +15,8 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceConfigurationError, SourceContext
-from flashflood_data.sources.soilgrids import SoilGridsAdapter, parse_coverages
+from flashflood_data.static.sources.base import SourceConfigurationError, SourceContext
+from flashflood_data.static.sources.soilgrids import SoilGridsAdapter, parse_coverages
 
 PROPERTIES = ("clay", "sand", "silt", "bdod", "cfvo", "wv0010", "wv0033", "wv1500")
 DEPTHS = ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")

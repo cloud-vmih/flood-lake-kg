@@ -1,1 +1,1 @@
-"""Source-specific transformations into reproducible harmonized datasets."""
+"""Compatibility namespace for static harmonization modules."""

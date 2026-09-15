@@ -13,14 +13,14 @@ from shapely.geometry import Polygon
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
-from flashflood_data.harmonize.exposure import (
+from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
+from flashflood_data.paths import ProjectPaths
+from flashflood_data.static.harmonize.exposure import (
     read_historical_events,
     resolve_event_administration,
 )
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
-from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.existing import ExistingAdapter
+from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.existing import ExistingAdapter
 
 
 @pytest.fixture

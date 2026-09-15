@@ -7,8 +7,12 @@ import pytest
 from shapely.geometry import Polygon
 
 from flashflood_data.config import StudyAreaConfig
-from flashflood_data.sources.admin import validate_current_admin
-from flashflood_data.vector import repair_geometries, validate_vector, write_geoparquet
+from flashflood_data.static.sources.admin import validate_current_admin
+from flashflood_data.static.spatial.vector import (
+    repair_geometries,
+    validate_vector,
+    write_geoparquet,
+)
 
 
 def test_repair_geometries_marks_repaired_bow_tie() -> None:

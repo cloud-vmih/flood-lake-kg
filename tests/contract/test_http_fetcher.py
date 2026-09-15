@@ -15,9 +15,9 @@ import httpx
 import pytest
 import respx
 
-from flashflood_data.budget import StorageBudget
 from flashflood_data.config import EnvironmentSettings
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, RemoteAsset
+from flashflood_data.static.sources.budget import StorageBudget
 from flashflood_data.storage.http import (
     BudgetRejected,
     DownloadFailed,

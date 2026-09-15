@@ -9,9 +9,12 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from flashflood_data.aoi import build_study_areas
 from flashflood_data.config import StudyAreaConfig
-from flashflood_data.harmonize.hydro import build_basin_hierarchy, select_l10_with_upstream
+from flashflood_data.static.harmonize.aoi import build_study_areas
+from flashflood_data.static.harmonize.hydro import (
+    build_basin_hierarchy,
+    select_l10_with_upstream,
+)
 
 
 @pytest.fixture

@@ -13,7 +13,6 @@ from typing import Final
 
 import httpx
 
-from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.models import (
     AssetKind,
@@ -23,6 +22,7 @@ from flashflood_data.catalog.models import (
 )
 from flashflood_data.core.config import EnvironmentSettings
 from flashflood_data.core.paths import ProjectPaths
+from flashflood_data.static.sources.budget import StorageBudget
 from flashflood_data.storage.http.errors import (
     BoundExceeded as _BoundExceeded,
 )

@@ -12,8 +12,8 @@ from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.inventory import InventoryRule
 from flashflood_data.models import AssetKind, AssetStatus
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceAdapter, SourceContext
-from flashflood_data.sources.existing import ExistingAdapter, inventory_existing
+from flashflood_data.static.sources.base import SourceAdapter, SourceContext
+from flashflood_data.static.sources.existing import ExistingAdapter, inventory_existing
 
 SHAPEFILE_SUFFIXES = (".shp", ".shx", ".dbf", ".prj", ".sbn", ".sbx", ".shp.xml")
 

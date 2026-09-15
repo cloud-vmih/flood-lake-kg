@@ -7,8 +7,8 @@ from typer.testing import CliRunner
 from flashflood_data.cli import app
 from flashflood_data.http import BudgetRejected
 from flashflood_data.pipeline import RunSummary, Stage
-from flashflood_data.sources.base import SourceConfigurationError
-from flashflood_data.sources.cop_dem import MissingCredentials
+from flashflood_data.static.sources.base import SourceConfigurationError
+from flashflood_data.static.sources.cop_dem import MissingCredentials
 
 
 def test_cli_lists_static_stages() -> None:

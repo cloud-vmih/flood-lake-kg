@@ -22,8 +22,8 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.core.config import StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.raster import raster_coverage_ratio
-from flashflood_data.vector import validate_vector
+from flashflood_data.static.spatial.raster import raster_coverage_ratio
+from flashflood_data.static.spatial.vector import validate_vector
 
 Severity = Literal["info", "warning", "fatal"]
 _GIB = 2**30
@@ -290,7 +290,7 @@ def _hydro_checks(paths: ProjectPaths) -> list[CheckResult]:
     try:
         l10 = gpd.read_parquet(l10_path)
         hierarchy = pd.read_parquet(hierarchy_path)
-        from flashflood_data.harmonize.hydro import default_hydro_inputs
+        from flashflood_data.static.harmonize.hydro import default_hydro_inputs
 
         inputs = default_hydro_inputs(paths)
         l9 = gpd.read_file(inputs.l9)

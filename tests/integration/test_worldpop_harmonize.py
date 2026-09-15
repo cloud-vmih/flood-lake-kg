@@ -15,11 +15,11 @@ from shapely.geometry import box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
-from flashflood_data.harmonize.exposure import harmonize_worldpop
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.existing import ExistingAdapter
+from flashflood_data.static.harmonize.exposure import harmonize_worldpop
+from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.existing import ExistingAdapter
 
 
 def test_worldpop_clip_preserves_included_native_pixel_counts(tmp_path: Path) -> None:

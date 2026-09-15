@@ -13,7 +13,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.inventory import compound_checksum
 from flashflood_data.catalog.models import (
@@ -26,10 +25,19 @@ from flashflood_data.catalog.models import (
 )
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
-from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
-from flashflood_data.sources.cop_dem import MissingCredentials
-from flashflood_data.sources.existing import inventory_existing
+from flashflood_data.static.sources.base import (
+    SourceAdapter,
+    SourceConfigurationError,
+    SourceContext,
+)
+from flashflood_data.static.sources.budget import StorageBudget
+from flashflood_data.static.sources.cop_dem import MissingCredentials
+from flashflood_data.static.sources.existing import inventory_existing
+from flashflood_data.static.sources.registry import (
+    UnsupportedAdapter,
+    build_adapter,
+    load_source_specs,
+)
 from flashflood_data.storage.http import BudgetRejected, HttpFetcher
 
 
@@ -241,8 +249,11 @@ class StaticPipeline:
         """Compose the approved AOIs after administration is available and before downloads resolve."""
         import geopandas as gpd
 
-        from flashflood_data.aoi import build_study_areas, write_study_areas
-        from flashflood_data.harmonize.hydro import default_hydro_inputs, select_l10_with_upstream
+        from flashflood_data.static.harmonize.aoi import build_study_areas, write_study_areas
+        from flashflood_data.static.harmonize.hydro import (
+            default_hydro_inputs,
+            select_l10_with_upstream,
+        )
 
         core_path = self.paths.harmonized / "aoi" / "core_aoi.geoparquet"
         vietnam_path = self.paths.harmonized / "admin" / "vietnam_boundary.geoparquet"
@@ -537,8 +548,8 @@ class StaticPipeline:
         """Compose the legacy hydro implementation without duplicating its lifecycle."""
         import geopandas as gpd
 
-        from flashflood_data.aoi import build_study_areas
-        from flashflood_data.harmonize.hydro import (
+        from flashflood_data.static.harmonize.aoi import build_study_areas
+        from flashflood_data.static.harmonize.hydro import (
             default_hydro_inputs,
             harmonize_hydro,
             select_l10_with_upstream,

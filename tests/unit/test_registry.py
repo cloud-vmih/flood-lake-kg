@@ -4,10 +4,14 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from flashflood_data import registry
-from flashflood_data.models import SourceSpec
-from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
-from flashflood_data.sources.base import SourceAdapter
+from flashflood_data.catalog.models import SourceSpec
+from flashflood_data.static.sources import registry
+from flashflood_data.static.sources.base import SourceAdapter
+from flashflood_data.static.sources.registry import (
+    UnsupportedAdapter,
+    build_adapter,
+    load_source_specs,
+)
 
 
 class NotAnAdapter:
@@ -127,13 +131,13 @@ def test_registry_resolves_allowed_adapter_through_fixed_lazy_target(
         requested_modules.append(name)
         return SimpleNamespace(ExistingAdapter=FixtureAdapter)
 
-    monkeypatch.setattr("flashflood_data.registry.import_module", import_module)
+    monkeypatch.setattr("flashflood_data.static.sources.registry.import_module", import_module)
 
     adapter = build_adapter(spec)
 
     assert isinstance(adapter, FixtureAdapter)
     assert adapter.spec is spec
-    assert requested_modules == ["flashflood_data.sources.existing"]
+    assert requested_modules == ["flashflood_data.static.sources.existing"]
 
 
 def test_registry_rejects_imported_class_outside_source_adapter_contract(
@@ -144,7 +148,7 @@ def test_registry_rejects_imported_class_outside_source_adapter_contract(
     monkeypatch.setitem(
         registry._ADAPTER_TARGETS,
         "fixture",
-        ("flashflood_data.registry", "NotAnAdapter"),
+        ("flashflood_data.static.sources.registry", "NotAnAdapter"),
     )
 
     with pytest.raises(UnsupportedAdapter, match="SourceAdapter"):

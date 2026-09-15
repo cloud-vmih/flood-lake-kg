@@ -11,7 +11,7 @@ import rasterio
 from rasterio.enums import Resampling
 from shapely.geometry import box
 
-from flashflood_data.raster import mosaic_clip_to_cog, raster_coverage_ratio
+from flashflood_data.static.spatial.raster import mosaic_clip_to_cog, raster_coverage_ratio
 
 
 @pytest.fixture

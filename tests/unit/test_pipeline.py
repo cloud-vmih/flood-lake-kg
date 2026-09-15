@@ -20,8 +20,12 @@ from flashflood_data.models import (
     ValidationResult,
 )
 from flashflood_data.pipeline import STATIC_ORDER, Stage, StaticPipeline, dependency_fingerprint
-from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
-from flashflood_data.sources.cop_dem import MissingCredentials
+from flashflood_data.static.sources.base import (
+    SourceAdapter,
+    SourceConfigurationError,
+    SourceContext,
+)
+from flashflood_data.static.sources.cop_dem import MissingCredentials
 
 
 class FixtureAdapter(SourceAdapter):

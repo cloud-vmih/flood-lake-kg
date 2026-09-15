@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 from shapely.geometry import box
 
-from flashflood_data.raster import RasterExpectation, inspect_raster, validate_raster
+from flashflood_data.static.spatial.raster import (
+    RasterExpectation,
+    inspect_raster,
+    validate_raster,
+)
 
 
 @pytest.fixture

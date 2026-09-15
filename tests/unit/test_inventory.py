@@ -13,8 +13,8 @@ from flashflood_data.catalog.inventory import InventoryRule, validate_known_form
 from flashflood_data.catalog.models import AssetKind, AssetStatus
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.existing import inventory_existing
+from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.existing import inventory_existing
 
 
 def _context(tmp_path: Path) -> SourceContext:

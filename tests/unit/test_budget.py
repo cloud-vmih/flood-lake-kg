@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from flashflood_data.budget import StorageBudget
 from flashflood_data.config import StudyAreaConfig
+from flashflood_data.static.sources.budget import StorageBudget
 
 
 def test_budget_rejects_soft_cap_even_with_free_disk(fake_disk_usage) -> None:

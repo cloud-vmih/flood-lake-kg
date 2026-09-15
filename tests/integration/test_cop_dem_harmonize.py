@@ -15,8 +15,8 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.cop_dem import CopDemAdapter
+from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.cop_dem import CopDemAdapter
 
 
 def _context(tmp_path: Path) -> SourceContext:

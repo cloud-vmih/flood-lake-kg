@@ -11,14 +11,14 @@ from pydantic import SecretStr
 from shapely.geometry import box
 from shapely.ops import unary_union
 
-from flashflood_data.budget import StorageBudget
 from flashflood_data.catalog import AssetCatalog
 from flashflood_data.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.http import HttpFetcher
 from flashflood_data.models import AssetStatus, RemoteAsset, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.sources.base import SourceContext
-from flashflood_data.sources.cop_dem import (
+from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.budget import StorageBudget
+from flashflood_data.static.sources.cop_dem import (
     CdseTokenClient,
     CopDemAdapter,
     MissingCredentials,

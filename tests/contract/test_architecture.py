@@ -31,3 +31,16 @@ def test_package_does_not_import_host_tools() -> None:
         )
     }
     assert offenders == {}
+
+
+def test_static_domain_does_not_import_cli_or_top_level_orchestration() -> None:
+    static_dir = PACKAGE / "static"
+    forbidden = ("flashflood_data.cli", "flashflood_data.orchestration")
+    offenders = {
+        str(path.relative_to(ROOT)): sorted(
+            name for name in imports(path) if name.startswith(forbidden)
+        )
+        for path in static_dir.rglob("*.py")
+        if any(name.startswith(forbidden) for name in imports(path))
+    }
+    assert offenders == {}

@@ -8,7 +8,7 @@ from pathlib import Path
 import geopandas as gpd
 from shapely.geometry import box
 
-from flashflood_data.sources.osm import _with_id, extract_osm_layers, normalize_roads
+from flashflood_data.static.sources.osm import _with_id, extract_osm_layers, normalize_roads
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "osm"
 

@@ -15,7 +15,7 @@ from flashflood_data.derive.mappings import (
     normalize_admin_name,
     parse_predecessors,
 )
-from flashflood_data.sources.admin import normalize_historical_admin
+from flashflood_data.static.sources.admin import normalize_historical_admin
 
 
 @pytest.fixture

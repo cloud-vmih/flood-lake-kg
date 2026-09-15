@@ -9,12 +9,12 @@ import geopandas as gpd
 import pytest
 
 from flashflood_data.models import SourceSpec
-from flashflood_data.sources.admin import (
+from flashflood_data.static.sources.admin import (
     GadmAdminAdapter,
     build_sonla_reference_boundary,
     normalize_historical_admin,
 )
-from flashflood_data.sources.base import SourceConfigurationError
+from flashflood_data.static.sources.base import SourceConfigurationError
 
 
 def _adapter() -> GadmAdminAdapter:

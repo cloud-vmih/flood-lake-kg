@@ -13,7 +13,7 @@ from flashflood_data.models import (
     ValidationResult,
 )
 from flashflood_data.pipeline import Stage, StaticPipeline
-from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.static.sources.base import SourceAdapter, SourceContext
 
 
 class RecoveryAdapter(SourceAdapter):
