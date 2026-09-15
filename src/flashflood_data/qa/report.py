@@ -9,8 +9,8 @@ from pathlib import Path
 import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from flashflood_data.io_atomic import atomic_target
 from flashflood_data.qa.checks import QAReport
+from flashflood_data.storage.atomic import atomic_target
 
 _BEARER = re.compile(r"(?i)\bbearer\s+[^\s<,;]+")
 _USERINFO = re.compile(r"(?i)(https?://)[^/\s@]+@")

@@ -606,7 +606,7 @@ class GadmAdminAdapter(SourceAdapter):
     def harmonize(self, context: SourceContext, assets: list[AssetRecord]) -> list[AssetRecord]:
         """Publish historical communes, national clipping boundary, and conservative crosswalk."""
         from flashflood_data.derive.mappings import build_admin_crosswalk
-        from flashflood_data.io_atomic import atomic_target
+        from flashflood_data.storage.atomic import atomic_target
 
         by_id = {asset.asset_id: asset for asset in assets}
         try:

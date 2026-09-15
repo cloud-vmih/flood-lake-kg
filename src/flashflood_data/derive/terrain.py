@@ -16,7 +16,7 @@ from shapely.geometry import mapping
 
 from flashflood_data.derive._spatial import checked_basins, geometry_in_dataset_crs
 from flashflood_data.derive.features import load_feature_config
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 
 def _finite_summary(values: np.ndarray) -> tuple[float, float, float, float]:

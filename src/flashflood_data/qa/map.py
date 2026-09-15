@@ -16,7 +16,7 @@ from rasterio.warp import transform_bounds
 from shapely.geometry import mapping
 
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 _VECTOR_LAYERS: dict[str, tuple[tuple[str, ...], float]] = {
     "communes": (("harmonized/admin/admin_commune_2025.geoparquet",), 20.0),

@@ -26,11 +26,11 @@ from flashflood_data.catalog.models import (
 )
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.http import BudgetRejected, HttpFetcher
 from flashflood_data.registry import UnsupportedAdapter, build_adapter, load_source_specs
 from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
 from flashflood_data.sources.cop_dem import MissingCredentials
 from flashflood_data.sources.existing import inventory_existing
+from flashflood_data.storage.http import BudgetRejected, HttpFetcher
 
 
 class Stage(StrEnum):

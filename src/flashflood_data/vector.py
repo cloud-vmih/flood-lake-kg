@@ -9,7 +9,7 @@ import geopandas as gpd
 from shapely import make_valid
 
 from flashflood_data.catalog.models import ValidationResult
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 
 def repair_geometries(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:

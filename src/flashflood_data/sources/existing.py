@@ -40,9 +40,9 @@ from flashflood_data.harmonize.exposure import (
     read_historical_events,
     resolve_event_administration,
 )
-from flashflood_data.io_atomic import atomic_target
 from flashflood_data.raster import raster_coverage_ratio
 from flashflood_data.sources.base import SourceAdapter, SourceContext
+from flashflood_data.storage.atomic import atomic_target
 
 _SHAPEFILE_SUFFIXES = (".shp", ".shx", ".dbf", ".prj", ".sbn", ".sbx", ".shp.xml")
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 
 def test_atomic_target_publishes_complete_write(tmp_path: Path) -> None:

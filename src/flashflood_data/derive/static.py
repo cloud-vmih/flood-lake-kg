@@ -20,7 +20,7 @@ from flashflood_data.derive.hydrology import derive_hydrology_features
 from flashflood_data.derive.landcover import derive_landcover_fractions
 from flashflood_data.derive.soil import depth_weighted_soil
 from flashflood_data.derive.terrain import derive_terrain_features
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 
 @dataclass(frozen=True)

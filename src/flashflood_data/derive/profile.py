@@ -23,7 +23,7 @@ from flashflood_data.derive.mappings import (
     map_subbasin_points,
 )
 from flashflood_data.derive.population import map_subbasin_population
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 _REQUIRED_TASK15_GROUPS = frozenset({"terrain", "soil", "landcover", "hydrology"})
 _ALLOWED_PROFILE_GROUPS = _REQUIRED_TASK15_GROUPS | {"population"}

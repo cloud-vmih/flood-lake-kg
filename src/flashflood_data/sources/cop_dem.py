@@ -28,7 +28,6 @@ from flashflood_data.catalog.models import (
     RemoteAsset,
     ValidationResult,
 )
-from flashflood_data.http import DownloadFailed, HttpFetcher
 from flashflood_data.raster import (
     COG_PROFILE,
     RasterExpectation,
@@ -37,6 +36,7 @@ from flashflood_data.raster import (
     validate_raster,
 )
 from flashflood_data.sources.base import SourceAdapter, SourceConfigurationError, SourceContext
+from flashflood_data.storage.http import DownloadFailed, HttpFetcher
 
 _DEM_DTYPES = ("int16", "uint16", "float32", "float64")
 _GRID_LATITUDE_LIMIT = 90

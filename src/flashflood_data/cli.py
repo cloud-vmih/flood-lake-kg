@@ -15,11 +15,11 @@ from flashflood_data.catalog import AssetCatalog
 from flashflood_data.catalog.models import AssetStatus, RunRecord
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.http import BudgetRejected
 from flashflood_data.pipeline import STATIC_ORDER, RunSummary, Stage, StaticPipeline
 from flashflood_data.sources.base import SourceConfigurationError, SourceContext
 from flashflood_data.sources.cop_dem import MissingCredentials
 from flashflood_data.sources.existing import inventory_existing
+from flashflood_data.storage.http import BudgetRejected
 
 app = typer.Typer(no_args_is_help=True)
 

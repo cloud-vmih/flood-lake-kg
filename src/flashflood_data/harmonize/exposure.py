@@ -19,8 +19,8 @@ from rasterio.windows import Window
 from shapely.geometry import mapping
 from shapely.geometry.base import BaseGeometry
 
-from flashflood_data.io_atomic import atomic_target
 from flashflood_data.raster import COG_PROFILE
+from flashflood_data.storage.atomic import atomic_target
 
 EVENT_COLUMNS: Final[dict[str, str]] = {
     "STT": "source_row_number",

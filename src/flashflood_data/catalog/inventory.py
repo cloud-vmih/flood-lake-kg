@@ -17,7 +17,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from flashflood_data.catalog import sha256_file
 from flashflood_data.catalog.models import AssetKind, AssetRecord, ValidationResult
-from flashflood_data.io_atomic import atomic_target
+from flashflood_data.storage.atomic import atomic_target
 
 MAX_PYTHON_BYTES = 1024 * 1024
 MAX_CSV_RECORD_BYTES = 1024 * 1024

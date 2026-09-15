@@ -17,7 +17,8 @@ import respx
 
 from flashflood_data.budget import StorageBudget
 from flashflood_data.config import EnvironmentSettings
-from flashflood_data.http import (
+from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, RemoteAsset
+from flashflood_data.storage.http import (
     BudgetRejected,
     DownloadFailed,
     DownloadLocked,
@@ -26,7 +27,6 @@ from flashflood_data.http import (
     PayloadMismatch,
     SecretRedactionFilter,
 )
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, RemoteAsset
 
 
 class ChunkStream(httpx.SyncByteStream):
@@ -1067,7 +1067,7 @@ def test_quarantine_collision_never_overwrites_existing_evidence(
     collision = quarantine_dir / "payload.bin.partial.collision"
     collision.write_bytes(b"prior-evidence")
     names = iter([SimpleNamespace(hex="collision"), SimpleNamespace(hex="fresh")])
-    monkeypatch.setattr("flashflood_data.http.uuid4", lambda: next(names))
+    monkeypatch.setattr("flashflood_data.storage.http.fetcher.uuid4", lambda: next(names))
     respx.get(remote.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     with pytest.raises(PayloadMismatch):
@@ -1394,7 +1394,7 @@ def test_cross_filesystem_quarantine_collision_retries_without_overwrite(
             raise FileExistsError(destination)
         raise OSError(errno.EXDEV, "fixture cross-device link", destination)
 
-    monkeypatch.setattr("flashflood_data.http.uuid4", lambda: next(names))
+    monkeypatch.setattr("flashflood_data.storage.http.fetcher.uuid4", lambda: next(names))
     monkeypatch.setattr(os, "link", collision_then_cross_device)
     respx.get(remote.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
@@ -1458,7 +1458,7 @@ def test_target_appearing_during_publication_is_preserved(
         Path(destination).write_bytes(b"concurrent-valid-final")
         raise FileExistsError(destination)
 
-    monkeypatch.setattr("flashflood_data.http.os.link", competing_publication)
+    monkeypatch.setattr("flashflood_data.storage.http.fetcher.os.link", competing_publication)
     respx.get(remote_asset.uri).mock(
         return_value=httpx.Response(200, content=b"valid-payload")
     )
