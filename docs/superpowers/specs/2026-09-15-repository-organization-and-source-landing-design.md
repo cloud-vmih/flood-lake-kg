@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-15
 
-**Status:** Draft for written review
+**Status:** Approved for implementation planning
 
 **Scope:** Repository refactor plus the boundary for the next static and dynamic source-landing work
 
