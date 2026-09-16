@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from flashflood_data.catalog.models import AssetRecord, AssetStatus, RunRecord
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, RunRecord
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.storage.atomic import atomic_target
 
@@ -109,6 +109,28 @@ class AssetCatalog:
             if record.asset_id == asset_id:
                 return record
         raise KeyError(asset_id)
+
+    def raw_assets(self, source_id: str) -> list[AssetRecord]:
+        """Return every raw lifecycle record for a source in stable asset-ID order."""
+        return sorted(
+            (
+                record
+                for record in self._read_assets()
+                if record.source_id == source_id and record.kind is AssetKind.RAW
+            ),
+            key=lambda record: record.asset_id,
+        )
+
+    @staticmethod
+    def has_verified_content(record: AssetRecord) -> bool:
+        """Return whether a catalog record still matches its local immutable payload."""
+        path = Path(record.storage_path)
+        return (
+            path.is_file()
+            and record.checksum_algorithm == "sha256"
+            and path.stat().st_size == record.size_bytes
+            and sha256_file(path) == record.checksum
+        )
 
     def transition(
         self, record_id: str | None = None, target: AssetStatus | None = None, **updates: object

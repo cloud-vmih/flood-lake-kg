@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from flashflood_data.catalog import IllegalTransition, sha256_bundle, sha256_file
 from flashflood_data.catalog.models import (
+    AssetKind,
     AssetStatus,
     RemoteAsset,
     RunRecord,
@@ -44,6 +45,28 @@ def test_catalog_round_trips_and_replaces_asset_by_id(catalog, raw_asset) -> Non
     assert catalog.assets_path.exists()
     assert catalog.get(raw_asset.asset_id) == replaced
     assert catalog.get(raw_asset.asset_id).media_type == "application/x-fixture"
+
+
+def test_raw_assets_filters_kind_and_source_and_sorts(catalog, raw_asset) -> None:
+    second = raw_asset.model_copy(update={"asset_id": "a-second"})
+    other_source = raw_asset.model_copy(update={"asset_id": "other", "source_id": "other"})
+    derived = raw_asset.model_copy(update={"asset_id": "derived", "kind": AssetKind.DERIVED})
+    for record in (raw_asset, second, other_source, derived):
+        catalog.upsert(record)
+
+    assert [item.asset_id for item in catalog.raw_assets(raw_asset.source_id)] == [
+        "a-second",
+        "fixture-asset",
+    ]
+
+
+def test_has_verified_content_detects_missing_or_changed_payload(catalog, raw_asset) -> None:
+    catalog.upsert(raw_asset)
+    assert catalog.has_verified_content(raw_asset)
+    Path(raw_asset.storage_path).write_bytes(b"changed")
+    assert not catalog.has_verified_content(raw_asset)
+    Path(raw_asset.storage_path).unlink()
+    assert not catalog.has_verified_content(raw_asset)
 
 
 def test_catalog_rejects_illegal_transition(catalog, raw_asset) -> None:
