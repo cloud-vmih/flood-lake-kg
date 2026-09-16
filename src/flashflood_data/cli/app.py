@@ -15,10 +15,10 @@ from flashflood_data.catalog import AssetCatalog
 from flashflood_data.catalog.models import AssetStatus, RunRecord
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.pipeline import STATIC_ORDER, RunSummary, Stage, StaticPipeline
 from flashflood_data.static.sources.base import SourceConfigurationError, SourceContext
 from flashflood_data.static.sources.cop_dem import MissingCredentials
 from flashflood_data.static.sources.existing import inventory_existing
+from flashflood_data.static.workflow import STATIC_ORDER, RunSummary, Stage
 from flashflood_data.storage.http import BudgetRejected
 
 app = typer.Typer(no_args_is_help=True)
@@ -49,7 +49,9 @@ def _run_stage(
     if profile not in {"smoke", "live"}:
         raise typer.BadParameter("profile must be 'smoke' or 'live'", param_hint="--profile")
     try:
-        summary = StaticPipeline(ProjectPaths.discover(root), profile=profile).run(
+        from flashflood_data import cli as cli_package
+
+        summary = cli_package.StaticPipeline(ProjectPaths.discover(root), profile=profile).run(
             stages, source, resolve_only=resolve_only, command=command
         )
     except (BudgetRejected, SourceConfigurationError, TypeError, ValueError, MissingCredentials) as exc:
