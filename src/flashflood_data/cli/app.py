@@ -28,6 +28,61 @@ SourcesOption = Annotated[list[str] | None, typer.Option("--source")]
 ResolveOnlyOption = Annotated[bool, typer.Option("--resolve-only")]
 JsonSummaryOption = Annotated[bool, typer.Option("--json-summary")]
 ProfileOption = Annotated[str, typer.Option("--profile")]
+RunIdOption = Annotated[str | None, typer.Option("--run-id")]
+
+STATIC_LANDING_SOURCE_IDS = (
+    "hydrobasins_v1c",
+    "basinatlas_v10",
+    "hydrorivers_v10",
+    "cop_dem_glo30_2024_1",
+    "soilgrids_2_0",
+)
+
+
+def build_static_landing_service(root: Path | None = None):
+    """Compose the production landing service from validated project configuration."""
+    import os
+
+    from flashflood_data.core.lakehouse import LakehouseSettings
+    from flashflood_data.orchestration.landing.config import load_static_landing_config
+    from flashflood_data.orchestration.landing.service import StaticSourceLandingService
+    from flashflood_data.static.sources.budget import StorageBudget
+    from flashflood_data.static.sources.registry import load_source_specs
+    from flashflood_data.storage.http import HttpFetcher
+    from flashflood_data.storage.iceberg import SourceObjectInventory, load_polaris_catalog
+    from flashflood_data.storage.object_store import ObjectPublisher, PyArrowS3ObjectStore
+
+    paths = ProjectPaths.discover(root)
+    paths.ensure_output_dirs()
+    study_area = load_study_area(paths.root / "config" / "study_area.yaml")
+    environment = EnvironmentSettings(_env_file=paths.root / ".env")
+    settings_values: dict[str, object] = {"project_root": paths.root}
+    if "FLASHFLOOD_STAGING_ROOT" not in os.environ:
+        settings_values["staging_root"] = paths.dataset / "lakehouse" / "staging"
+    settings = LakehouseSettings(_env_file=paths.root / ".env", **settings_values)
+    config = load_static_landing_config(paths.root / "config" / "landing" / "static.yaml")
+    source_specs = load_source_specs(paths.root / "config" / "sources")
+    catalog = AssetCatalog(paths)
+    fetcher = HttpFetcher(
+        paths,
+        catalog,
+        StorageBudget.from_config(paths.dataset, study_area),
+        environment=environment,
+    )
+    object_store = PyArrowS3ObjectStore.from_settings(settings)
+    iceberg = SourceObjectInventory(load_polaris_catalog(settings))
+    return StaticSourceLandingService(
+        config=config,
+        publisher=ObjectPublisher(object_store, settings.raw_bucket),
+        inventory=iceberg,
+        staging_root=settings.staging_root,
+        source_specs=source_specs,
+        paths=paths,
+        catalog=catalog,
+        fetcher=fetcher,
+        study_area=study_area,
+        environment=environment,
+    )
 
 
 def stage_unavailable(stage: str) -> NoReturn:
@@ -250,6 +305,32 @@ def run_static(
         profile=profile,
         command="run-static",
     )
+
+
+@app.command(name="land-static")
+def land_static(
+    root: RootOption = None,
+    source: SourcesOption = None,
+    run_id: RunIdOption = None,
+    json_summary: JsonSummaryOption = False,
+) -> None:
+    """Land validated static source objects in MinIO and register their Iceberg inventory."""
+    del json_summary
+    requested = source or list(STATIC_LANDING_SOURCE_IDS)
+    unknown = sorted(set(requested) - set(STATIC_LANDING_SOURCE_IDS))
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown static landing source: {', '.join(unknown)}", param_hint="--source"
+        )
+    try:
+        service = build_static_landing_service(root)
+    except (OSError, TypeError, ValueError) as exc:
+        typer.echo(json.dumps({"error_code": "configuration_error", "status": "failed"}), err=True)
+        raise typer.Exit(code=2) from exc
+    summary = service.run(requested, run_id)
+    typer.echo(json.dumps(summary.model_dump(mode="json"), sort_keys=True))
+    if summary.status != "completed":
+        raise typer.Exit(code=1)
 
 
 @app.command()

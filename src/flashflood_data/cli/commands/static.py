@@ -5,9 +5,20 @@ from flashflood_data.cli.app import (
     fetch,
     harmonize,
     inventory,
+    land_static,
     map_stage,
     run_static,
     validate,
 )
 
-__all__ = ["cleanup", "derive", "fetch", "harmonize", "inventory", "map_stage", "run_static", "validate"]
+__all__ = [
+    "cleanup",
+    "derive",
+    "fetch",
+    "harmonize",
+    "inventory",
+    "land_static",
+    "map_stage",
+    "run_static",
+    "validate",
+]

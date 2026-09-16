@@ -1,3 +1,4 @@
+import importlib
 import json
 from pathlib import Path
 from typing import ClassVar
@@ -9,6 +10,8 @@ from flashflood_data.static.sources.base import SourceConfigurationError
 from flashflood_data.static.sources.cop_dem import MissingCredentials
 from flashflood_data.static.workflow import RunSummary, Stage
 from flashflood_data.storage.http import BudgetRejected
+
+CLI_MODULE = importlib.import_module("flashflood_data.cli.app")
 
 
 def test_cli_lists_static_stages() -> None:
@@ -22,6 +25,7 @@ def test_cli_lists_static_stages() -> None:
         "derive",
         "map",
         "run-static",
+        "land-static",
         "cleanup",
     ):
         assert command in result.stdout
@@ -133,3 +137,101 @@ def test_run_static_rejects_unknown_profile(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 2
+
+
+class RecordingLandingService:
+    calls: ClassVar[list[tuple[list[str], str | None]]] = []
+
+    def run(self, source_ids, run_id=None):
+        from flashflood_data.orchestration.landing.models import LandingRunSummary
+
+        self.calls.append((list(source_ids), run_id))
+        return LandingRunSummary(
+            run_id=run_id or "generated",
+            status="completed",
+            completed_sources=tuple(source_ids),
+        )
+
+
+def test_land_static_routes_sources_and_run_id(monkeypatch, tmp_path: Path) -> None:
+    RecordingLandingService.calls = []
+    monkeypatch.setattr(
+        CLI_MODULE,
+        "build_static_landing_service",
+        lambda root=None: RecordingLandingService(),
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "land-static",
+            "--root",
+            str(tmp_path),
+            "--source",
+            "hydrobasins_v1c",
+            "--run-id",
+            "manual-1",
+            "--json-summary",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert RecordingLandingService.calls == [(["hydrobasins_v1c"], "manual-1")]
+    assert json.loads(result.stdout)["status"] == "completed"
+
+
+def test_land_static_uses_all_configured_sources_by_default(monkeypatch, tmp_path: Path) -> None:
+    RecordingLandingService.calls = []
+    monkeypatch.setattr(
+        CLI_MODULE,
+        "build_static_landing_service",
+        lambda root=None: RecordingLandingService(),
+    )
+
+    result = CliRunner().invoke(app, ["land-static", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert RecordingLandingService.calls == [
+        (
+            [
+                "hydrobasins_v1c",
+                "basinatlas_v10",
+                "hydrorivers_v10",
+                "cop_dem_glo30_2024_1",
+                "soilgrids_2_0",
+            ],
+            None,
+        )
+    ]
+
+
+def test_land_static_returns_nonzero_for_incomplete_run(monkeypatch, tmp_path: Path) -> None:
+    from flashflood_data.orchestration.landing.models import LandingRunSummary
+
+    class IncompleteService:
+        def run(self, source_ids, run_id=None):
+            return LandingRunSummary(
+                run_id=run_id or "generated",
+                status="partial_failure",
+                completed_sources=(source_ids[0],),
+                failed_sources=(source_ids[-1],),
+            )
+
+    monkeypatch.setattr(
+        CLI_MODULE, "build_static_landing_service", lambda root=None: IncompleteService()
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "land-static",
+            "--root",
+            str(tmp_path),
+            "--source",
+            "hydrobasins_v1c",
+            "--source",
+            "basinatlas_v10",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["status"] == "partial_failure"
