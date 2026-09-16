@@ -24,7 +24,7 @@ def test_makefile_exposes_safe_lakehouse_commands() -> None:
 
 
 def test_smoke_check_is_non_destructive_and_covers_every_service() -> None:
-    text = (ROOT / "infra/scripts/smoke-lakehouse.sh").read_text()
+    text = (ROOT / "tools/smoke/lakehouse.sh").read_text()
     for evidence in (
         "pg_isready",
         "raw",

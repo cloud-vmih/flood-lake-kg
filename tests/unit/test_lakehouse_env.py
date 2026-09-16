@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
-SCRIPT = ROOT / "infra/scripts/init-lakehouse-env.sh"
+SCRIPT = ROOT / "tools/bootstrap/init_lakehouse_env.sh"
 REQUIRED = {
     "LAKEHOUSE_POSTGRES_PASSWORD",
     "AIRFLOW_DB_PASSWORD",

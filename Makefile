@@ -31,52 +31,52 @@ qa-map:
 	.venv/bin/python -m http.server 8000 --directory dataset/qa/map
 
 lakehouse-python-setup:
-	infra/scripts/setup-lakehouse-python.sh
+	tools/bootstrap/setup_python_runtime.sh
 
 lakehouse-airflow-build: lakehouse-init
 	docker compose build airflow-api-server
 
 lakehouse-init:
-	infra/scripts/init-lakehouse-env.sh
+	tools/bootstrap/init_lakehouse_env.sh
 	docker compose config --quiet
 
 lakehouse-up: lakehouse-init
-	infra/scripts/check-docker-access.sh
+	tools/bootstrap/check_docker_access.sh
 	docker compose up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor
 	docker compose run --no-deps --rm polaris-bootstrap
 
 lakehouse-status:
-	infra/scripts/check-docker-access.sh
+	tools/bootstrap/check_docker_access.sh
 	docker compose ps
 
 lakehouse-smoke:
-	infra/scripts/check-docker-access.sh
-	infra/scripts/smoke-lakehouse.sh
+	tools/bootstrap/check_docker_access.sh
+	tools/smoke/lakehouse.sh
 
 lakehouse-python-smoke:
-	infra/scripts/check-docker-access.sh
-	infra/scripts/smoke-lakehouse-python.sh
+	tools/bootstrap/check_docker_access.sh
+	tools/smoke/python_runtime.sh
 
 lakehouse-down:
-	infra/scripts/check-docker-access.sh
+	tools/bootstrap/check_docker_access.sh
 	docker compose down
 
 spark-build: lakehouse-init
 	docker compose --profile spark build spark-master
 
 spark-up: lakehouse-up
-	infra/scripts/check-docker-access.sh
+	tools/bootstrap/check_docker_access.sh
 	docker compose --profile spark up -d --wait spark-master spark-worker
 
 spark-status:
-	infra/scripts/check-docker-access.sh
+	tools/bootstrap/check_docker_access.sh
 	docker compose --profile spark ps spark-master spark-worker
 
 spark-smoke: spark-up
-	infra/scripts/check-docker-access.sh
-	infra/scripts/smoke-spark.sh
+	tools/bootstrap/check_docker_access.sh
+	tools/smoke/spark_iceberg.sh
 
 spark-down:
-	infra/scripts/check-docker-access.sh
+	tools/bootstrap/check_docker_access.sh
 	docker compose --profile spark stop spark-worker spark-master
 	docker compose --profile spark rm -f spark-worker spark-master

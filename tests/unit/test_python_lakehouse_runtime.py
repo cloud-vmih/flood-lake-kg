@@ -8,8 +8,8 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 MANIFEST = ROOT / "requirements/lakehouse.txt"
-SETUP_SCRIPT = ROOT / "infra/scripts/setup-lakehouse-python.sh"
-SMOKE_SCRIPT = ROOT / "infra/scripts/smoke-lakehouse-python.sh"
+SETUP_SCRIPT = ROOT / "tools/bootstrap/setup_python_runtime.sh"
+SMOKE_SCRIPT = ROOT / "tools/smoke/python_runtime.sh"
 
 EXPECTED_REQUIREMENTS = {
     "xarray==2026.7.0",
@@ -88,14 +88,14 @@ def test_make_exposes_the_host_setup_entrypoint() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == ["infra/scripts/setup-lakehouse-python.sh"]
+    assert result.stdout.splitlines() == ["tools/bootstrap/setup_python_runtime.sh"]
 
 
 def test_compose_builds_every_airflow_service_from_one_local_image() -> None:
     data = yaml.safe_load((ROOT / "compose.yaml").read_text())
     expected_build = {
         "context": ".",
-        "dockerfile": "infra/airflow/Dockerfile",
+        "dockerfile": "infra/docker/airflow/Dockerfile",
         "args": {"AIRFLOW_VERSION": "3.3.1"},
     }
 
@@ -190,6 +190,6 @@ def test_make_exposes_the_python_runtime_smoke() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
-        "infra/scripts/check-docker-access.sh",
-        "infra/scripts/smoke-lakehouse-python.sh",
+        "tools/bootstrap/check_docker_access.sh",
+        "tools/smoke/python_runtime.sh",
     ]

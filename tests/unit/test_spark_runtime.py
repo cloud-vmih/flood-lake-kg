@@ -7,8 +7,8 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).parents[2]
-DOCKERFILE = ROOT / "infra/spark/Dockerfile"
-SMOKE_SCRIPT = ROOT / "infra/scripts/smoke-spark.sh"
+DOCKERFILE = ROOT / "infra/docker/spark/Dockerfile"
+SMOKE_SCRIPT = ROOT / "tools/smoke/spark_iceberg.sh"
 
 
 def dockerfile_args() -> dict[str, str]:
@@ -174,4 +174,4 @@ def test_make_exposes_spark_smoke() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "infra/scripts/smoke-spark.sh" in result.stdout.splitlines()
+    assert "tools/smoke/spark_iceberg.sh" in result.stdout.splitlines()

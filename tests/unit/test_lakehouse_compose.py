@@ -17,8 +17,8 @@ def test_storage_services_are_pinned_private_and_persistent() -> None:
     assert items["minio-bootstrap"]["image"] == "minio/mc:RELEASE.2025-08-13T08-35-41Z"
     assert items["postgres"]["ports"] == ["127.0.0.1:5432:5432"]
     assert items["minio"]["ports"] == ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
-    assert "./dataset/lakehouse/postgres:/var/lib/postgresql/data:Z" in items["postgres"]["volumes"]
-    assert "./dataset/lakehouse/minio:/data:Z" in items["minio"]["volumes"]
+    assert "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/postgres:/var/lib/postgresql/data:Z" in items["postgres"]["volumes"]
+    assert "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/minio:/data:Z" in items["minio"]["volumes"]
     command = " ".join(items["minio-bootstrap"]["entrypoint"])
     assert "mb --ignore-existing local/raw" in command
     assert "mb --ignore-existing local/warehouse" in command
@@ -58,7 +58,7 @@ def test_polaris_is_rest_persistent_and_resource_bounded() -> None:
 
 
 def test_polaris_bootstrap_is_idempotent_and_private() -> None:
-    text = (ROOT / "infra/polaris/bootstrap.sh").read_text()
+    text = (ROOT / "infra/services/polaris/bootstrap.sh").read_text()
     assert "flood_lakehouse" in text
     assert "s3://warehouse/" in text
     assert '"pathStyleAccess": true' in text
@@ -88,7 +88,7 @@ def test_airflow_mounts_code_read_only_and_state_under_dataset() -> None:
         volumes = services()[name]["volumes"]
         assert "./airflow/dags:/opt/airflow/dags:ro,Z" in volumes
         assert "./airflow/plugins:/opt/airflow/plugins:ro,Z" in volumes
-        assert "./dataset/lakehouse/airflow/logs:/opt/airflow/logs:Z" in volumes
+        assert "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/airflow/logs:/opt/airflow/logs:Z" in volumes
 
 
 def test_long_running_services_fit_memory_budget() -> None:
