@@ -16,9 +16,9 @@ from flashflood_data.catalog import AssetCatalog
 from flashflood_data.config import StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.qa.checks import run_quality_gates
 from flashflood_data.static.features.profile import assemble_static_profile
 from flashflood_data.static.mappings.builder import Task16MapInputs, task16_map_handler
+from flashflood_data.static.qa import run_quality_gates
 
 
 def _basins() -> gpd.GeoDataFrame:

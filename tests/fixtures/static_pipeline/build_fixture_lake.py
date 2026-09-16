@@ -33,7 +33,7 @@ def isolate_external_boundaries(monkeypatch) -> None:
     disk_usage = namedtuple("disk_usage", "total used free")
     monkeypatch.setattr(socket.socket, "connect", blocked_connect)
     monkeypatch.setattr(
-        "flashflood_data.qa.checks.shutil.disk_usage",
+        "flashflood_data.static.qa.provenance.shutil.disk_usage",
         lambda _: disk_usage(40 * 2**30, 10 * 2**30, 30 * 2**30),
     )
 

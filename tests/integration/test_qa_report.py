@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from flashflood_data.qa.checks import CheckResult, QAReport
-from flashflood_data.qa.report import publish_report, redact
+from flashflood_data.static.qa import CheckResult, QAReport
+from flashflood_data.static.qa.report import publish_report, redact
 
 
 def test_report_publishes_sorted_redacted_json_parquet_and_html(tmp_path: Path) -> None:

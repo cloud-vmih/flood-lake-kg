@@ -15,8 +15,8 @@ from flashflood_data.catalog import AssetCatalog
 from flashflood_data.config import StudyAreaConfig
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.qa import checks
-from flashflood_data.qa.checks import run_quality_gates, task17_qa_handler
+from flashflood_data.static.qa import QualityGateFailure, run_quality_gates, task17_qa_handler
+from flashflood_data.static.qa import runner as checks
 
 
 def _admin(path: Path, count: int) -> None:
@@ -271,7 +271,7 @@ def test_qa_handler_publishes_before_raising_for_fatal_gates(qa_paths: ProjectPa
         study_area = StudyAreaConfig()
         run_id = "qa-fixture"
 
-    with pytest.raises(checks.QualityGateFailure):
+    with pytest.raises(QualityGateFailure):
         task17_qa_handler(owner_source_id="owner")(Pipeline(), "qa", "owner", Context())
 
     assert (qa_paths.qa / "report.json").is_file()

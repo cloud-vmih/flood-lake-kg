@@ -8,7 +8,7 @@ import pandas as pd
 from shapely.geometry import LineString, Point, box
 
 from flashflood_data.paths import ProjectPaths
-from flashflood_data.qa.map import publish_qa_map
+from flashflood_data.static.qa.map import publish_qa_map
 
 
 def _vector(path: Path, name: str, geometry) -> None:
