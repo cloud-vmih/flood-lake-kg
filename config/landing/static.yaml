@@ -1,0 +1,27 @@
+basin_level: 12
+sources:
+  - source_id: hydrobasins_v1c
+    mode: shapefile_bundle
+    filename_contains: hybas_as_lev12_v1c.shp
+    output_name: hydrobasins_l12.zip
+    selection: {basin_level: 12}
+  - source_id: basinatlas_v10
+    mode: shapefile_bundle
+    filename_contains: BasinATLAS_v10_lev12.shp
+    output_name: basinatlas_l12.zip
+    selection: {basin_level: 12}
+  - source_id: hydrorivers_v10
+    mode: shapefile_bundle
+    filename_contains: HydroRIVERS_v10_as.shp
+    output_name: hydrorivers_asia.zip
+    selection: {region: asia}
+  - source_id: cop_dem_glo30_2024_1
+    mode: individual
+    selection: {coverage: environmental_aoi}
+  - source_id: soilgrids_2_0
+    mode: individual
+    selection: {depth_interval_cm: [0, 30]}
+    settings_override:
+      properties: [clay, sand, silt, bdod, cfvo, soc, wv0033, wv1500]
+      depths: [0-5cm, 5-15cm, 15-30cm]
+      statistics: [mean, Q0.05, Q0.5, Q0.95]
