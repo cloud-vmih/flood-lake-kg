@@ -9,7 +9,7 @@ import pytest
 from geopandas.sindex import SpatialIndex
 from shapely.geometry import LineString, Point, box
 
-from flashflood_data.derive.mappings import (
+from flashflood_data.static.mappings.spatial import (
     map_subbasin_commune,
     map_subbasin_lines,
     map_subbasin_points,

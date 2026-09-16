@@ -11,7 +11,7 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from flashflood_data.derive.terrain import derive_terrain_features
+from flashflood_data.static.features.terrain import derive_terrain_features
 
 
 @pytest.fixture

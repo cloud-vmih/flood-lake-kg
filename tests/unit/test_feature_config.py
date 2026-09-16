@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from flashflood_data.derive.features import load_feature_config
+from flashflood_data.static.features.config import load_feature_config
 
 
 def test_feature_config_declares_the_authoritative_task15_semantics() -> None:

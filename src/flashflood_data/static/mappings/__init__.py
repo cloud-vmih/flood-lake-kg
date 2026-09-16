@@ -1,5 +1,4 @@
 from flashflood_data.static.mappings.admin import (
-    ParsedAdminName,
     build_admin_crosswalk,
     normalize_admin_name,
     parse_predecessors,
@@ -11,7 +10,6 @@ from flashflood_data.static.mappings.spatial import (
 )
 
 __all__ = [
-    "ParsedAdminName",
     "build_admin_crosswalk",
     "map_subbasin_commune",
     "map_subbasin_lines",

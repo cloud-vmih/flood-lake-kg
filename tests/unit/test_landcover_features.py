@@ -11,7 +11,7 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from flashflood_data.derive.landcover import derive_landcover_fractions
+from flashflood_data.static.features.landcover import derive_landcover_fractions
 
 
 @pytest.fixture

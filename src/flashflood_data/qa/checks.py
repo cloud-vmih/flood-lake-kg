@@ -726,7 +726,7 @@ def _raster_checks(paths: ProjectPaths, config: StudyAreaConfig) -> list[CheckRe
                     "raster coverage could not be evaluated",
                 )
             )
-    from flashflood_data.derive.features import load_feature_config
+    from flashflood_data.static.features.config import load_feature_config
 
     semantics = load_feature_config()
     for property_id in semantics.soil_properties:
@@ -915,7 +915,7 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
     worldpop = paths.harmonized / "rasters" / "worldpop_2025.tif"
     if core is not None and not core.empty and worldpop.is_file():
         try:
-            from flashflood_data.derive._spatial import geometry_in_dataset_crs
+            from flashflood_data.static.features.spatial import geometry_in_dataset_crs
 
             with rasterio.open(worldpop) as dataset:
                 core_geometry = geometry_in_dataset_crs(
@@ -937,7 +937,9 @@ def _population_checks(paths: ProjectPaths) -> list[CheckResult]:
                 and int(values["nodata_pixel_count"].sum()) == nodata_total
                 and int(values["aoi_pixel_count"].sum()) == valid_total + nodata_total
             )
-            from flashflood_data.derive.population import aggregate_population_by_basin
+            from flashflood_data.static.features.population import (
+                aggregate_population_by_basin,
+            )
 
             expected = aggregate_population_by_basin(
                 worldpop, gpd.read_parquet(l10_path), core.geometry.union_all()

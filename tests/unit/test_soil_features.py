@@ -11,7 +11,7 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from flashflood_data.derive.soil import depth_weighted_soil, weighted_depth_value
+from flashflood_data.static.features.soil import depth_weighted_soil, weighted_depth_value
 
 
 def _complete_soil_paths(depth_paths: dict[str, Path]) -> dict[tuple[str, str, str], Path]:

@@ -15,9 +15,9 @@ from rasterio.transform import from_origin
 from shapely.geometry import LineString, Point, box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
-from flashflood_data.derive.features import load_feature_config
 from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
 from flashflood_data.paths import ProjectPaths
+from flashflood_data.static.features.config import load_feature_config
 
 _NOW = datetime(2026, 8, 21, tzinfo=UTC)
 _TRANSFORM = from_origin(104.0, 20.01, 0.001, 0.001)

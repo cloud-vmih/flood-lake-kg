@@ -12,7 +12,10 @@ import shapely
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from flashflood_data.derive.population import _assign_points_to_zones, aggregate_population_by_basin
+from flashflood_data.static.features.population import (
+    _assign_points_to_zones,
+    aggregate_population_by_basin,
+)
 
 
 def _worldpop(path: Path, values: list[list[float]], transform, *, crs: str = "EPSG:32648") -> Path:

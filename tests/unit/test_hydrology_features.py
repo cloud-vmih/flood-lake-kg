@@ -6,7 +6,7 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import LineString, box
 
-from flashflood_data.derive.hydrology import derive_hydrology_features
+from flashflood_data.static.features.hydrology import derive_hydrology_features
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def test_hydrology_rejects_nonfinite_basinatlas_values(
     rivers: gpd.GeoDataFrame, basin: gpd.GeoDataFrame
 ) -> None:
     """Infinite baseline fields must be rejected before any Parquet writer runs."""
-    from flashflood_data.derive.features import load_feature_config
+    from flashflood_data.static.features.config import load_feature_config
 
     atlas = basin.copy()
     for field in load_feature_config().basinatlas_fields:

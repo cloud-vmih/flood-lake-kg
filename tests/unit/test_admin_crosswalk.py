@@ -10,7 +10,7 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import Polygon
 
-from flashflood_data.derive.mappings import (
+from flashflood_data.static.mappings.admin import (
     build_admin_crosswalk,
     normalize_admin_name,
     parse_predecessors,

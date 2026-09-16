@@ -11,12 +11,12 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import LineString, box
 
-from flashflood_data.derive.static import (
+from flashflood_data.models import SourceSpec
+from flashflood_data.static.features.builder import (
     StaticPredictorInputs,
     derive_static_predictor_tables,
     task15_derive_handler,
 )
-from flashflood_data.models import SourceSpec
 
 
 def _raster(path: Path, value: float, dtype: str) -> Path:

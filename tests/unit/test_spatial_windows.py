@@ -8,7 +8,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from flashflood_data.derive._spatial import raster_windows
+from flashflood_data.static.features.spatial import raster_windows
 
 
 def test_raster_windows_cover_non_square_final_residuals(tmp_path: Path) -> None:

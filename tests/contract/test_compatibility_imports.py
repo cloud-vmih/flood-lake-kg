@@ -39,3 +39,13 @@ def test_static_source_and_spatial_exports_are_identical() -> None:
 
     assert LegacyDem is CopDemAdapter
     assert legacy_validate is validate_raster
+
+
+def test_static_feature_and_mapping_exports_are_identical() -> None:
+    from flashflood_data.derive.mappings import map_subbasin_commune as legacy_map
+    from flashflood_data.derive.terrain import derive_terrain_features as legacy_terrain
+    from flashflood_data.static.features.terrain import derive_terrain_features
+    from flashflood_data.static.mappings.spatial import map_subbasin_commune
+
+    assert legacy_terrain is derive_terrain_features
+    assert legacy_map is map_subbasin_commune
