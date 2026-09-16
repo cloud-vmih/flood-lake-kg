@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
-from flashflood_data.models import AssetKind, AssetRecord, AssetStatus
-from flashflood_data.paths import ProjectPaths
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
+from flashflood_data.core.paths import ProjectPaths
 
 
 def make_test_asset(path: Path, *, status: AssetStatus) -> AssetRecord:
@@ -50,6 +50,6 @@ def raw_asset(tmp_path: Path) -> AssetRecord:
 def fake_disk_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     disk_usage = namedtuple("disk_usage", "total used free")
     monkeypatch.setattr(
-        "flashflood_data.budget.shutil.disk_usage",
+        "flashflood_data.static.sources.budget.shutil.disk_usage",
         lambda _: disk_usage(40 * 2**30, 10 * 2**30, 30 * 2**30),
     )
