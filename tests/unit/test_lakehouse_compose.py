@@ -91,6 +91,39 @@ def test_airflow_mounts_code_read_only_and_state_under_dataset() -> None:
         assert "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/airflow/logs:/opt/airflow/logs:Z" in volumes
 
 
+def test_airflow_has_project_data_config_and_staging_mounts() -> None:
+    for name in ("airflow-api-server", "airflow-scheduler", "airflow-dag-processor"):
+        volumes = services()[name]["volumes"]
+        assert "./dataset:/opt/flashflood/dataset:Z" in volumes
+        assert "./config:/opt/flashflood/config:ro,Z" in volumes
+        assert (
+            "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/staging:/opt/airflow/staging:Z"
+            in volumes
+        )
+
+
+def test_airflow_receives_landing_endpoints_credentials_and_writer_pool() -> None:
+    items = services()
+    env = items["airflow-scheduler"]["environment"]
+    assert env["FLASHFLOOD_PROJECT_ROOT"] == "/opt/flashflood"
+    assert env["FLASHFLOOD_STAGING_ROOT"] == "/opt/airflow/staging"
+    assert env["MINIO_ENDPOINT"] == "http://minio:9000"
+    assert "MINIO_ROOT_USER" in env and "MINIO_ROOT_PASSWORD" in env
+    assert env["AWS_REGION"] == "us-east-1"
+    init_command = " ".join(items["airflow-init"]["command"])
+    assert "airflow pools set source_landing_writer 1" in init_command
+
+
+def test_airflow_image_installs_local_application_with_existing_constraints() -> None:
+    dockerfile = (ROOT / "infra/docker/airflow/Dockerfile").read_text()
+    assert "COPY --chown=airflow:root pyproject.toml" in dockerfile
+    assert "COPY --chown=airflow:root src/" in dockerfile
+    assert "/opt/flashflood-build" in dockerfile
+    assert '${HOME}/constraints.txt' in dockerfile
+    for module in ("flashflood_data", "geopandas", "pyarrow", "pyiceberg", "rasterio"):
+        assert module in dockerfile
+
+
 def test_long_running_services_fit_memory_budget() -> None:
     items = services()
     names = {

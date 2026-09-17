@@ -71,6 +71,7 @@ set_if_blank AIRFLOW_UID "$(id -u)"
 chmod 600 "$ENV_FILE"
 mkdir -p \
     "$LAKEHOUSE_DATA_ROOT/airflow/logs" \
+    "$LAKEHOUSE_DATA_ROOT/staging" \
     "$LAKEHOUSE_DATA_ROOT/minio" \
     "$LAKEHOUSE_DATA_ROOT/postgres"
 

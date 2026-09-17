@@ -25,9 +25,20 @@ x-airflow-common: &airflow-common
     POLARIS_CATALOG: flood_lakehouse
     POLARIS_CLIENT_ID: ${POLARIS_CLIENT_ID:?run make lakehouse-init}
     POLARIS_CLIENT_SECRET: ${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
+    FLASHFLOOD_PROJECT_ROOT: /opt/flashflood
+    FLASHFLOOD_STAGING_ROOT: /opt/airflow/staging
+    MINIO_ENDPOINT: http://minio:9000
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:?run make lakehouse-init}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+    AWS_REGION: us-east-1
   volumes:
     - ./airflow/dags:/opt/airflow/dags:ro,Z
     - ./airflow/plugins:/opt/airflow/plugins:ro,Z
+    - ./dataset:/opt/flashflood/dataset:Z
+    - ./config:/opt/flashflood/config:ro,Z
+    - ${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/staging:/opt/airflow/staging:Z
     - ${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/airflow/logs:/opt/airflow/logs:Z
   networks: [lakehouse]
 
@@ -201,6 +212,7 @@ services:
             --role Admin \
             --email admin@localhost
         fi
+        airflow pools set source_landing_writer 1 "Serializes local catalog and Iceberg writers"
     restart: "no"
 
   airflow-api-server:

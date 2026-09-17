@@ -56,6 +56,7 @@ def test_initializer_preserves_values_and_is_idempotent(tmp_path: Path) -> None:
     assert {p.relative_to(data_root).as_posix() for p in data_root.rglob("*") if p.is_dir()} >= {
         "airflow",
         "airflow/logs",
+        "staging",
         "minio",
         "postgres",
     }
