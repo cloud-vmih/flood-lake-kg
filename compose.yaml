@@ -156,6 +156,7 @@ services:
       'polaris.readiness.ignore-severe-issues': "true"
       'polaris.features."ALLOW_INSECURE_STORAGE_TYPES"': "true"
       'polaris.features."ALLOW_SETTING_S3_ENDPOINTS"': "true"
+      'polaris.features."DROP_WITH_PURGE_ENABLED"': "true"
       'polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES"': '["S3"]'
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}

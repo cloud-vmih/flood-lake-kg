@@ -15,22 +15,18 @@ catalogs=$(curl --fail-with-body --silent --show-error \
     --request GET "$POLARIS_URL/api/management/v1/catalogs" \
     --header "Authorization: Bearer $access_token")
 
-if printf '%s' "$catalogs" | jq -e --arg name "$CATALOG_NAME" \
+if ! printf '%s' "$catalogs" | jq -e --arg name "$CATALOG_NAME" \
     '.catalogs[]? | select(.name == $name)' >/dev/null; then
-    printf '%s\n' "Polaris catalog $CATALOG_NAME is ready."
-    exit 0
-fi
+    response_file=$(mktemp)
+    trap 'rm -f "$response_file"' EXIT HUP INT TERM
 
-response_file=$(mktemp)
-trap 'rm -f "$response_file"' EXIT HUP INT TERM
-
-if status_code=$(curl --fail-with-body --silent --show-error \
-    --output "$response_file" \
-    --write-out '%{http_code}' \
-    --request POST "$POLARIS_URL/api/management/v1/catalogs" \
-    --header "Authorization: Bearer $access_token" \
-    --header 'Content-Type: application/json' \
-    --data-binary @- <<'JSON'
+    if status_code=$(curl --fail-with-body --silent --show-error \
+        --output "$response_file" \
+        --write-out '%{http_code}' \
+        --request POST "$POLARIS_URL/api/management/v1/catalogs" \
+        --header "Authorization: Bearer $access_token" \
+        --header 'Content-Type: application/json' \
+        --data-binary @- <<'JSON'
 {
   "catalog": {
     "name": "flood_lakehouse",
@@ -48,15 +44,29 @@ if status_code=$(curl --fail-with-body --silent --show-error \
   }
 }
 JSON
-); then
-    :
-elif [ "$status_code" = 409 ]; then
-    printf '%s\n' "Polaris catalog $CATALOG_NAME is ready."
-    exit 0
-else
-    printf '%s\n' "Unable to create Polaris catalog (HTTP $status_code)." >&2
-    exit 1
+    ); then
+        jq -e '.catalog.name == "flood_lakehouse" or .name == "flood_lakehouse"' \
+            "$response_file" >/dev/null
+    elif [ "$status_code" != 409 ]; then
+        printf '%s\n' "Unable to create Polaris catalog (HTTP $status_code)." >&2
+        exit 1
+    fi
 fi
 
-jq -e '.catalog.name == "flood_lakehouse" or .name == "flood_lakehouse"' "$response_file" >/dev/null
+grants_url="$POLARIS_URL/api/management/v1/catalogs/$CATALOG_NAME/catalog-roles/catalog_admin/grants"
+grants=$(curl --fail-with-body --silent --show-error \
+    --request GET "$grants_url" \
+    --header "Authorization: Bearer $access_token")
+
+if ! printf '%s' "$grants" | jq -e \
+    '.grants[]? | select(.type == "catalog" and .privilege == "CATALOG_MANAGE_CONTENT")' \
+    >/dev/null; then
+    curl --fail-with-body --silent --show-error \
+        --request PUT "$grants_url" \
+        --header "Authorization: Bearer $access_token" \
+        --header 'Content-Type: application/json' \
+        --data-binary '{"grant":{"type":"catalog","privilege":"CATALOG_MANAGE_CONTENT"}}' \
+        >/dev/null
+fi
+
 printf '%s\n' "Polaris catalog $CATALOG_NAME is ready."

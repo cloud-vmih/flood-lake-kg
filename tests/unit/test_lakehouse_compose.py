@@ -55,6 +55,7 @@ def test_polaris_is_rest_persistent_and_resource_bounded() -> None:
     assert polaris["depends_on"]["minio-bootstrap"]["condition"] == "service_completed_successfully"
     assert polaris["healthcheck"]
     assert polaris["environment"]['polaris.readiness.ignore-severe-issues'] == "true"
+    assert polaris["environment"]['polaris.features."DROP_WITH_PURGE_ENABLED"'] == "true"
 
 
 def test_polaris_bootstrap_is_idempotent_and_private() -> None:
@@ -64,6 +65,8 @@ def test_polaris_bootstrap_is_idempotent_and_private() -> None:
     assert '"pathStyleAccess": true' in text
     assert '"endpoint": "http://minio:9000"' in text
     assert "GET" in text and "POST" in text
+    assert "CATALOG_MANAGE_CONTENT" in text
+    assert "/catalog-roles/catalog_admin/grants" in text
     assert "CLIENT_SECRET" not in "\n".join(line for line in text.splitlines() if line.startswith("echo"))
 
 

@@ -14,7 +14,7 @@ from flashflood_data.core.lakehouse import LakehouseSettings
 from flashflood_data.orchestration.landing.models import PublishedObject
 
 _CHUNK_SIZE = 8 * 1024 * 1024
-_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._=@+-]*$")
+_SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._=@+-]*$")
 
 
 def _sha256_file(path: Path) -> str:

@@ -71,6 +71,22 @@ def test_publish_uses_run_staging_and_reuses_verified_final(tmp_path: Path) -> N
     assert store.keys() == {"raw/static/source/1/asset/asset.bin"}
 
 
+def test_publish_accepts_private_prefix_segment(tmp_path: Path) -> None:
+    payload = tmp_path / "fixture.bin"
+    payload.write_bytes(b"smoke-fixture")
+    store = MemoryObjectStore()
+
+    result = ObjectPublisher(store, "raw").publish_file(
+        payload,
+        final_key="_smoke/run-1/fixture.bin",
+        run_id="run-1",
+        media_type="application/octet-stream",
+    )
+
+    assert result.object_uri == "s3://raw/_smoke/run-1/fixture.bin"
+    assert store.keys() == {"raw/_smoke/run-1/fixture.bin"}
+
+
 def test_publish_fails_closed_on_final_checksum_conflict(tmp_path: Path) -> None:
     store = MemoryObjectStore({"raw/static/source/1/asset.bin": b"old"})
     payload = tmp_path / "asset.bin"
