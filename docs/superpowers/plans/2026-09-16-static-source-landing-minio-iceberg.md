@@ -10,10 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-16-l12-source-landing-and-static-feature-design.md`
 
-**Execution checkpoint (2026-09-17):** Tasks 1-7 are complete on branch
-`feature/static-source-landing` in `.worktrees/static-source-landing`. Task 8 implementation and
-final verification are complete; its final commit is pending. The latest committed implementation
-is `e8b33a8`.
+**Execution checkpoint (2026-09-17):** Tasks 1-8 are complete on branch
+`feature/static-source-landing` in `.worktrees/static-source-landing`. Final verification passed
+with 456 tests, Ruff, Compose validation, all lakehouse smoke checks, and an import-clean Airflow
+DAG. The final integration and workflow commits are `297571a` and `fd4df08`.
 
 ## Global Constraints
 
@@ -926,7 +926,7 @@ git grep -nE '(fixture-password|fixture-secret|MINIO_ROOT_PASSWORD=.+|POLARIS_CL
 
 Expected: no whitespace errors, no generated data files, and no populated secret assignment.
 
-- [ ] **Step 7: Commit the verified feature**
+- [x] **Step 7: Commit the verified feature**
 
 ```bash
 git add tools/smoke/source_landing.sh tests/integration/lakehouse/test_source_landing_smoke.py Makefile README.md
