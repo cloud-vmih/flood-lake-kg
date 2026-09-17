@@ -1,6 +1,10 @@
 # Pipeline dữ liệu địa không gian tĩnh phục vụ cảnh báo lũ quét Sơn La
 
-Repository này xây dựng **data lake dạng file** cho đồ án về lũ quét tại Sơn La. Đơn vị phân tích chính là lưu vực **HydroBASINS level 10 (L10)**; L8 và L9 chỉ được giữ làm quan hệ cha. Pipeline thu thập, kiểm tra, chuẩn hóa và liên kết dữ liệu thủy văn, địa hình, đất, lớp phủ, dân số, giao thông và địa giới hành chính.
+Repository này xây dựng data platform cho đồ án về lũ quét tại Sơn La. Pipeline file hiện hữu
+đang chuẩn hóa feature theo **HydroBASINS level 10 (L10)**; pipeline source landing mới chọn
+**level 12 (L12) ngay từ đầu** cho HydroBASINS và BasinATLAS, lưu byte nguồn vào MinIO rồi đăng
+ký inventory trong Iceberg. Các bước parse, harmonize và feature L12 sẽ được xây tiếp trên lớp
+raw này.
 
 Toàn bộ dữ liệu nguồn được lưu dưới `dataset/`. Pipeline **không xóa hoặc ghi đè raw data hợp lệ**. Chạy lại cùng cấu hình sẽ tái sử dụng artifact có fingerprint/checksum phù hợp; nếu lần chạy trước bị gián đoạn, có thể chạy lại chính lệnh đó để tiếp tục.
 
@@ -25,7 +29,9 @@ Toàn bộ dữ liệu nguồn được lưu dưới `dataset/`. Pipeline **khô
 - Sinh feature theo từng lưu vực L10: địa hình, đất, lớp phủ và thủy văn.
 - Sinh các bảng mapping lưu vực–xã, lưu vực–sông, lưu vực–đường/công trình, dân số và static profile cuối cùng.
 - Xây dựng quality gates, báo cáo JSON/Parquet/HTML và bản đồ QA MapLibre.
-- Hoàn thành workflow hermetic end-to-end, kiểm tra idempotence và recovery. Hiện có **347 test pass**.
+- Hoàn thành workflow hermetic end-to-end, kiểm tra idempotence và recovery bằng bộ test tự động.
+- Hoàn thành source landing L12 cho năm nhóm nguồn tĩnh, gồm immutable object/manifest trong
+  MinIO, inventory `meta.source_objects` trong Iceberg và DAG Airflow chạy thủ công.
 
 Task 18 về báo cáo dọn các level BasinATLAS không dùng đã được chủ động bỏ để giảm phạm vi. Vì vậy pipeline không cung cấp thao tác xóa tự động và không xóa dữ liệu hiện có.
 
@@ -281,6 +287,53 @@ Runtime hiện khóa Xarray, PyIceberg, cfgrib và ecCodes. Lệnh smoke cuối 
 nó chỉ kiểm tra version, bộ giải mã GRIB và gọi `list_namespaces()` qua Polaris, không tải dữ
 liệu, không tạo bảng và không ghi vào MinIO.
 
+### Landing nguồn tĩnh vào MinIO và Iceberg
+
+DAG thủ công `static_source_landing` thực hiện đúng lớp source landing: acquire hoặc tái sử dụng
+payload đã validate, chọn HydroBASINS/BasinATLAS L12, đóng gói Shapefile thành ZIP xác định byte,
+đưa object cùng manifest vào bucket MinIO `raw`, rồi đăng ký một row cho mỗi object trong
+`meta.source_objects` qua Polaris. DAG dừng tại đó; parse sang `bronze.*`, harmonize, mapping,
+feature và B0–B3 thuộc các pipeline sau.
+
+Năm nhóm nguồn ban đầu chạy độc lập:
+
+- `hydrobasins_v1c`: bundle L12;
+- `basinatlas_v10`: bundle L12;
+- `hydrorivers_v10`: bundle Asia;
+- `cop_dem_glo30_2024_1`: từng source tile của Environmental AOI;
+- `soilgrids_2_0`: 8 capabilities và 96 GeoTIFF thuộc 8 property, 3 depth 0–30 cm và 4 statistic.
+
+Object có layout bất biến:
+
+```text
+s3://raw/static/<source_id>/<source_version>/<selection>/<asset_id>/<filename>
+s3://raw/static/<source_id>/<source_version>/<selection>/<asset_id>/manifest.json
+```
+
+MinIO giữ byte nguồn; Iceberg chỉ giữ inventory URI/checksum/lineage. File ZIP, Shapefile và
+GeoTIFF không được đăng ký trực tiếp làm data file của bảng Iceberg. Chạy smoke round-trip trước
+khi bật DAG:
+
+```bash
+make lakehouse-up
+make lakehouse-source-landing-smoke
+docker compose exec airflow-api-server airflow dags unpause static_source_landing
+```
+
+Sau khi unpause, trigger DAG trong Airflow UI/API. DAG không có schedule và được tạo ở trạng thái
+pause để tránh tự tải dữ liệu. Nếu một source lỗi, các source khác vẫn hoàn thành và run được đánh
+dấu `partial_failure`. Sau khi sửa nguyên nhân, clear ba task trong TaskGroup bị lỗi hoặc chạy lại
+riêng source đó trong container:
+
+```bash
+docker compose exec -T airflow-scheduler \
+  flashflood-data land-static --root /opt/flashflood \
+  --source soilgrids_2_0 --run-id <run-id> --json-summary
+```
+
+Retry dùng checksum và `object_id` xác định để khôi phục object, manifest hoặc Iceberg row còn
+thiếu mà không tạo bản sao. Staging chỉ được xóa sau khi Iceberg commit thành công.
+
 ### Spark và Iceberg
 
 Spark không tự khởi động cùng stack cơ sở. Build image đã khóa Spark 4.1.3, Scala 2.13 và
@@ -320,6 +373,7 @@ make lakehouse-down
 dataset/lakehouse/postgres/     # database Airflow và Polaris
 dataset/lakehouse/minio/        # bucket private raw và warehouse
 dataset/lakehouse/airflow/logs/ # log Airflow
+dataset/lakehouse/staging/      # staging theo run, xóa sau Iceberg commit
 ```
 
 Các địa chỉ chỉ bind vào localhost:
@@ -337,6 +391,8 @@ Tài khoản MinIO và Airflow local nằm trong `.env`. Catalog Polaris mặc �
 - Task 1–17: hoàn thành.
 - Task 18: bỏ theo quyết định phạm vi; không có cleanup tự động.
 - Task 19: phần code, smoke workflow, recovery và idempotence đã hoàn thành.
+- Source landing L12 đã có CLI, DAG Airflow, MinIO publication, manifest và Iceberg
+  `meta.source_objects`; dữ liệu chỉ được upload khi operator trigger DAG/lệnh `land-static`.
 - Live crawl đã hoàn tất đủ 11 nguồn: HydroBASINS/BasinATLAS/HydroRIVERS, địa giới 2025, lịch sử 2020–2026, WorldCover, WorldPop, OSM, SoilGrids và COP DEM. SoilGrids có 96 raw GeoTIFF và 96 COG harmonized; OSM có 5 bảng exposure harmonized; 10 product container COP DEM được giữ nguyên trong raw.
 - Các bước derive, map và QA đã chạy hoàn tất cho 168 basin L10. Lần chạy live xác nhận gần nhất có trạng thái `completed`, không có source lỗi và reuse 331 asset đã catalog hóa.
 - Commit hoàn thiện core workflow gần nhất: `9544449`.

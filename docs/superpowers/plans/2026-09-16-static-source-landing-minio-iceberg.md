@@ -10,7 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-16-l12-source-landing-and-static-feature-design.md`
 
-**Execution checkpoint (2026-09-16):** Tasks 1-6 complete on branch `feature/static-source-landing` in `.worktrees/static-source-landing`. Task 7 is the next task; Tasks 7-8 have not started. The latest implementation commit is `59aff3e`.
+**Execution checkpoint (2026-09-17):** Tasks 1-7 are complete on branch
+`feature/static-source-landing` in `.worktrees/static-source-landing`. Task 8 implementation and
+final verification are complete; its final commit is pending. The latest committed implementation
+is `e8b33a8`.
 
 ## Global Constraints
 
@@ -55,7 +58,7 @@ New tests:
 tests/unit/core/test_lakehouse_config.py
 tests/unit/storage/test_object_store.py
 tests/unit/storage/test_iceberg_source_objects.py
-tests/unit/orchestration/landing/test_config.py
+tests/unit/orchestration/landing/test_landing_config.py
 tests/unit/orchestration/landing/test_bundle.py
 tests/unit/orchestration/landing/test_sources.py
 tests/unit/orchestration/landing/test_service.py
@@ -92,7 +95,7 @@ README.md
 - Create: `src/flashflood_data/orchestration/landing/config.py`
 - Create: `src/flashflood_data/orchestration/landing/models.py`
 - Create: `tests/unit/core/test_lakehouse_config.py`
-- Create: `tests/unit/orchestration/landing/test_config.py`
+- Create: `tests/unit/orchestration/landing/test_landing_config.py`
 
 **Interfaces:**
 - Consumes: existing `.env` names `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `POLARIS_CLIENT_ID`, and `POLARIS_CLIENT_SECRET`.
@@ -130,7 +133,7 @@ def test_static_landing_config_is_l12_and_has_exact_soil_scope():
 
 - [x] **Step 2: Run the focused tests and verify the missing imports**
 
-Run: `pytest tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_config.py -q`
+Run: `pytest tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_landing_config.py -q`
 
 Expected: FAIL because `core.lakehouse` and `orchestration.landing` do not exist.
 
@@ -209,14 +212,14 @@ must round-trip through `model_dump(mode="json")` and `model_validate`.
 
 - [x] **Step 5: Run focused tests and lint**
 
-Run: `pytest tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_config.py -q && ruff check src/flashflood_data/core/lakehouse.py src/flashflood_data/orchestration/landing tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_config.py`
+Run: `pytest tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_landing_config.py -q && ruff check src/flashflood_data/core/lakehouse.py src/flashflood_data/orchestration/landing tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_landing_config.py`
 
 Expected: PASS.
 
 - [x] **Step 6: Commit the contracts**
 
 ```bash
-git add config/landing/static.yaml src/flashflood_data/core/lakehouse.py src/flashflood_data/orchestration tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_config.py
+git add config/landing/static.yaml src/flashflood_data/core/lakehouse.py src/flashflood_data/orchestration tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_landing_config.py
 git commit -m "feat: define source landing contracts"
 ```
 
@@ -731,7 +734,7 @@ git commit -m "feat: expose static source landing CLI"
 - Consumes: split methods on `StaticSourceLandingService` and JSON-safe batch models.
 - Produces: paused manual DAG `static_source_landing`, fixed source TaskGroups, and Airflow pool `source_landing_writer` with one slot.
 
-- [ ] **Step 1: Write failing Compose, image, bootstrap, and DAG contract tests**
+- [x] **Step 1: Write failing Compose, image, bootstrap, and DAG contract tests**
 
 ```python
 def test_airflow_has_project_data_config_and_staging_mounts():
@@ -754,29 +757,30 @@ def test_static_source_landing_dag_is_thin_and_source_isolated():
 Also assert the Dockerfile installs the local `flashflood-data` package and the initializer creates
 `lakehouse/staging` without printing secrets.
 
-- [ ] **Step 2: Run infra tests and verify the missing mounts and DAG**
+- [x] **Step 2: Run infra tests and verify the missing mounts and DAG**
 
 Run: `pytest tests/unit/test_lakehouse_compose.py tests/unit/test_lakehouse_env.py tests/contract/infra/test_static_source_landing_dag.py -q`
 
 Expected: FAIL on the new expectations.
 
-- [ ] **Step 3: Install application code in the Airflow image**
+- [x] **Step 3: Install application code in the Airflow image**
 
 After installing `requirements/lakehouse.txt`, copy `pyproject.toml` and `src/` into
 `/opt/flashflood-build` and run:
 
 ```dockerfile
 RUN python -m pip install --no-cache-dir \
-      --constraint "${HOME}/constraints.txt" \
       /opt/flashflood-build \
     && python -m pip check \
     && python -c 'import flashflood_data, geopandas, pyarrow, pyiceberg, rasterio'
 ```
 
-This installs only dependencies already declared by the project and keeps the Airflow constraints
-active. Do not copy `dataset/`, `.env`, or research documents into the image.
+This installs only dependencies already declared by the project. Airflow constraints remain active
+for the preceding Airflow/lakehouse install; the project install uses its declared `pandas<3` and
+`pyarrow<22` bounds, followed by `pip check`, because Airflow 3.3.1 currently constrains newer,
+incompatible versions. Do not copy `dataset/`, `.env`, or research documents into the image.
 
-- [ ] **Step 4: Add runtime mounts, endpoints, credentials, and the one-slot pool**
+- [x] **Step 4: Add runtime mounts, endpoints, credentials, and the one-slot pool**
 
 Extend the Airflow common environment with:
 
@@ -796,7 +800,7 @@ user creation, run
 `airflow pools set source_landing_writer 1 "Serializes local catalog and Iceberg writers"`.
 Create the staging directory in `init_lakehouse_env.sh`; that host script must not invoke Airflow.
 
-- [ ] **Step 5: Implement the thin Airflow DAG**
+- [x] **Step 5: Implement the thin Airflow DAG**
 
 Use `airflow.sdk.dag`, `task`, and `task_group`. Configure `schedule=None`, `catchup=False`,
 `max_active_runs=1`, paused creation, two retries, and fixed source groups loaded from the landing
@@ -818,13 +822,13 @@ finish independently. A final task with `trigger_rule="all_done"` validates ever
 the combined summary, and raises `AirflowException` when the application status is partial or
 failed, making the incomplete DAG run visible.
 
-- [ ] **Step 6: Run infra tests and Compose validation**
+- [x] **Step 6: Run infra tests and Compose validation**
 
 Run: `pytest tests/unit/test_lakehouse_compose.py tests/unit/test_lakehouse_env.py tests/contract/infra/test_static_source_landing_dag.py -q && docker compose config --quiet`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Airflow integration**
+- [x] **Step 7: Commit Airflow integration**
 
 ```bash
 git add airflow/dags/static_source_landing.py infra/docker/airflow/Dockerfile compose.yaml tools/bootstrap/init_lakehouse_env.sh tests/unit/test_lakehouse_compose.py tests/unit/test_lakehouse_env.py tests/contract/infra/test_static_source_landing_dag.py
@@ -843,19 +847,19 @@ git commit -m "feat: orchestrate source landing in Airflow"
 - Consumes: running MinIO, Polaris, and Airflow services.
 - Produces: `make lakehouse-source-landing-smoke` and documented CLI/DAG recovery workflow.
 
-- [ ] **Step 1: Write failing shell/Make contract test**
+- [x] **Step 1: Write failing shell/Make contract test**
 
 In `test_source_landing_smoke.py`, invoke `make --dry-run lakehouse-source-landing-smoke` and
 assert it resolves to `tools/smoke/source_landing.sh`. Read the shell script and assert it uses an
 isolated `smoke_<run-id>` namespace, a `_smoke/` raw prefix, and exact cleanup calls for both.
 
-- [ ] **Step 2: Run the smoke contract and verify the target is absent**
+- [x] **Step 2: Run the smoke contract and verify the target is absent**
 
 Run: `pytest tests/integration/lakehouse/test_source_landing_smoke.py -q`
 
 Expected: FAIL because the script and Make target do not exist.
 
-- [ ] **Step 3: Implement the live round-trip smoke script**
+- [x] **Step 3: Implement the live round-trip smoke script**
 
 Following the existing `tools/smoke/python_runtime.sh` pattern, pipe a Python program into the
 Airflow scheduler container. The program must:
@@ -872,7 +876,7 @@ Airflow scheduler container. The program must:
 The shell script prints only phase names and success state. It must not print environment values,
 credential-bearing catalog configuration, or complete source URIs with query strings.
 
-- [ ] **Step 4: Add Make target and focused documentation**
+- [x] **Step 4: Add Make target and focused documentation**
 
 Add `lakehouse-source-landing-smoke` to `.PHONY`. Document:
 
@@ -886,7 +890,7 @@ Explain that MinIO stores source bytes, `meta.source_objects` inventories them, 
 parsing is a later pipeline. Document object layout, partial-failure retry, and the five initial
 source groups. Preserve unrelated user-authored README sections during conflict resolution.
 
-- [ ] **Step 5: Run final verification**
+- [x] **Step 5: Run final verification**
 
 Run:
 
@@ -910,7 +914,7 @@ Expected:
 - source-landing smoke publishes, registers, reuses, and cleans its isolated fixture;
 - DAG list contains `static_source_landing` and contains no example DAG.
 
-- [ ] **Step 6: Review the final diff for scope and secrets**
+- [x] **Step 6: Review the final diff for scope and secrets**
 
 Run:
 
