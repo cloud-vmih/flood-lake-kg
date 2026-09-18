@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
 from typer.testing import CliRunner
 
 from flashflood_data.cli import app
@@ -151,6 +152,23 @@ class RecordingLandingService:
             status="completed",
             completed_sources=tuple(source_ids),
         )
+
+
+def test_landing_service_uses_project_root_environment(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class StopAfterPathCheck(RuntimeError):
+        pass
+
+    def check_study_area_path(path: Path):
+        assert path == tmp_path.resolve() / "config" / "study_area.yaml"
+        raise StopAfterPathCheck
+
+    monkeypatch.setenv("FLASHFLOOD_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(CLI_MODULE, "load_study_area", check_study_area_path)
+
+    with pytest.raises(StopAfterPathCheck):
+        CLI_MODULE.build_static_landing_service()
 
 
 def test_land_static_routes_sources_and_run_id(monkeypatch, tmp_path: Path) -> None:

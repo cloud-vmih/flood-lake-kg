@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -11,8 +12,14 @@ from pydantic import SecretStr
 from shapely.geometry import box
 from shapely.ops import unary_union
 
-from flashflood_data.catalog import AssetCatalog
-from flashflood_data.catalog.models import AssetStatus, RemoteAsset, SourceSpec
+from flashflood_data.catalog import AssetCatalog, sha256_file
+from flashflood_data.catalog.models import (
+    AssetKind,
+    AssetRecord,
+    AssetStatus,
+    RemoteAsset,
+    SourceSpec,
+)
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.static.sources.base import SourceContext
@@ -193,6 +200,34 @@ def test_missing_cdse_credentials_stops_before_download(
     )
     with pytest.raises(MissingCredentials, match="FLASHFLOOD_CDSE_USERNAME"):
         CopDemAdapter(spec, client=client).resolve(context, [])
+
+
+def test_validated_local_tiles_are_reused_without_cdse_credentials(
+    context: SourceContext, spec: SourceSpec, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = context.paths.raw / "cop_dem" / spec.version / "N20_E103" / "tile.DEM"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"II*\x00fixture")
+    record = AssetRecord(
+        asset_id="cop-dem-2024_1-N20_E103",
+        source_id=spec.source_id,
+        source_version=spec.version,
+        kind=AssetKind.RAW,
+        source_uri="https://example.invalid/tile.DEM",
+        storage_path=str(payload),
+        media_type="image/tiff",
+        size_bytes=payload.stat().st_size,
+        checksum=sha256_file(payload),
+        retrieved_at=datetime(2026, 9, 18, tzinfo=UTC),
+        license_id=spec.license_id,
+        pipeline_run_id="previous-run",
+        status=AssetStatus.VALIDATED,
+    )
+    context.catalog.upsert(record)
+    adapter = CopDemAdapter(spec)
+    monkeypatch.setattr(adapter, "_aoi", lambda *_: box(103.2, 20.2, 103.8, 20.8))
+
+    assert adapter.resolve(context, [record]) == []
 
 
 def test_token_exchange_keeps_credentials_and_access_token_out_of_logs(caplog: pytest.LogCaptureFixture) -> None:

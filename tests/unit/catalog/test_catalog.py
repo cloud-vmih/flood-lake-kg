@@ -69,6 +69,30 @@ def test_has_verified_content_detects_missing_or_changed_payload(catalog, raw_as
     assert not catalog.has_verified_content(raw_asset)
 
 
+def test_catalog_rebases_missing_dataset_storage_path_to_current_mount(
+    catalog, raw_asset
+) -> None:
+    payload = catalog.paths.dataset / "raw" / "soilgrids" / "2.0" / "clay.tif"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"fixture")
+    previous = Path("/previous/project/dataset/raw/soilgrids/2.0/clay.tif")
+    stored = raw_asset.model_copy(
+        update={
+            "source_uri": "https://example.invalid/clay.tif",
+            "storage_path": str(previous),
+            "size_bytes": payload.stat().st_size,
+            "checksum": sha256_file(payload),
+        }
+    )
+    catalog.upsert(stored)
+
+    loaded = catalog.get(stored.asset_id)
+
+    assert loaded.storage_path == str(payload)
+    assert loaded.source_uri == stored.source_uri
+    assert catalog.has_verified_content(loaded)
+
+
 def test_catalog_rejects_illegal_transition(catalog, raw_asset) -> None:
     catalog.upsert(raw_asset)
 

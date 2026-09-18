@@ -1,5 +1,6 @@
 """Atomic, parquet-backed catalog records for local pipeline assets."""
 
+import json
 from collections.abc import Sequence
 from datetime import datetime
 from hashlib import sha256
@@ -76,6 +77,23 @@ class AssetCatalog:
     def _read_rows(path: Path) -> list[dict[str, object]]:
         return pd.read_parquet(path, engine="pyarrow").to_dict(orient="records")
 
+    def _rebase_record(self, record: AssetRecord) -> AssetRecord:
+        stored_path = Path(record.storage_path)
+        if stored_path.is_file():
+            return record
+        dataset_indexes = [
+            index for index, part in enumerate(stored_path.parts[:-1]) if part == "dataset"
+        ]
+        for index in reversed(dataset_indexes):
+            candidate = self.paths.dataset.joinpath(*stored_path.parts[index + 1 :])
+            if not candidate.is_file():
+                continue
+            updates = {"storage_path": str(candidate)}
+            if stored_path.is_absolute() and record.source_uri == stored_path.as_uri():
+                updates["source_uri"] = candidate.as_uri()
+            return record.model_copy(update=updates)
+        return record
+
     @staticmethod
     def _write_rows(path: Path, rows: list[dict[str, object]], columns: Sequence[str]) -> None:
         frame = pd.DataFrame(rows, columns=columns)
@@ -83,7 +101,10 @@ class AssetCatalog:
             frame.to_parquet(partial, engine="pyarrow", index=False)
 
     def _read_assets(self) -> list[AssetRecord]:
-        return [AssetRecord.model_validate(row) for row in self._read_rows(self.assets_path)]
+        return [
+            self._rebase_record(AssetRecord.model_validate(row))
+            for row in self._read_rows(self.assets_path)
+        ]
 
     def _write_assets(self, records: Sequence[AssetRecord]) -> None:
         rows = [record.model_dump(mode="json") for record in records]
@@ -122,15 +143,43 @@ class AssetCatalog:
         )
 
     @staticmethod
-    def has_verified_content(record: AssetRecord) -> bool:
+    def _bundle_checksum(members: list[tuple[str, Path]]) -> str:
+        if len(members) == 1:
+            return sha256_file(members[0][1])
+        digest = sha256()
+        for suffix, path in sorted(members):
+            digest.update(suffix.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(sha256_file(path).encode("ascii"))
+            digest.update(b"\n")
+        return digest.hexdigest()
+
+    def has_verified_content(self, record: AssetRecord) -> bool:
         """Return whether a catalog record still matches its local immutable payload."""
         path = Path(record.storage_path)
-        return (
-            path.is_file()
-            and record.checksum_algorithm == "sha256"
-            and path.stat().st_size == record.size_bytes
-            and sha256_file(path) == record.checksum
-        )
+        if not path.is_file() or record.checksum_algorithm != "sha256":
+            return False
+        try:
+            metadata = json.loads(record.metadata_json or "{}")
+            relatives = metadata.get("bundle_members")
+            if not isinstance(relatives, list) or not relatives:
+                return path.stat().st_size == record.size_bytes and sha256_file(path) == record.checksum
+            dataset = self.paths.dataset.resolve(strict=True)
+            members: list[tuple[str, Path]] = []
+            for relative in relatives:
+                if not isinstance(relative, str):
+                    return False
+                member = (dataset / relative).resolve(strict=True)
+                if not member.is_relative_to(dataset) or not member.is_file():
+                    return False
+                suffix = f"{path.suffix}.xml" if member.name == f"{path.name}.xml" else member.suffix
+                members.append((suffix, member))
+            return (
+                sum(member.stat().st_size for _, member in members) == record.size_bytes
+                and self._bundle_checksum(members) == record.checksum
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
 
     def transition(
         self, record_id: str | None = None, target: AssetStatus | None = None, **updates: object

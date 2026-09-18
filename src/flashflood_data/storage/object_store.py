@@ -15,6 +15,7 @@ from flashflood_data.orchestration.landing.models import PublishedObject
 
 _CHUNK_SIZE = 8 * 1024 * 1024
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._=@+-]*$")
+_COPY_TIMEOUT_MARKERS = ("timeout", "timed out", "curlcode: 28")
 
 
 def _sha256_file(path: Path) -> str:
@@ -41,6 +42,8 @@ class ObjectStore(Protocol):
     def size(self, key: str) -> int: ...
 
     def sha256(self, key: str) -> str: ...
+
+    def read(self, key: str) -> bytes: ...
 
     def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None: ...
 
@@ -85,6 +88,10 @@ class PyArrowS3ObjectStore:
                 digest.update(chunk)
         return digest.hexdigest()
 
+    def read(self, key: str) -> bytes:
+        with self.filesystem.open_input_stream(key) as stream:
+            return stream.read()
+
     def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None:
         with local_path.open("rb") as source, self.filesystem.open_output_stream(
             key, metadata=dict(metadata)
@@ -92,7 +99,23 @@ class PyArrowS3ObjectStore:
             shutil.copyfileobj(source, destination, length=_CHUNK_SIZE)
 
     def copy(self, source_key: str, destination_key: str) -> None:
-        self.filesystem.copy_file(source_key, destination_key)
+        try:
+            self.filesystem.copy_file(source_key, destination_key)
+        except OSError as error:
+            if not any(marker in str(error).lower() for marker in _COPY_TIMEOUT_MARKERS):
+                raise
+            try:
+                with (
+                    self.filesystem.open_input_stream(source_key) as source,
+                    self.filesystem.open_output_stream(destination_key) as destination,
+                ):
+                    shutil.copyfileobj(source, destination, length=_CHUNK_SIZE)
+            except Exception:
+                try:
+                    self.filesystem.delete_file(destination_key)
+                except OSError:
+                    pass
+                raise
 
     def delete(self, key: str) -> None:
         if self.exists(key):
@@ -132,6 +155,29 @@ class ObjectPublisher:
     def __init__(self, store: ObjectStore, bucket: str) -> None:
         self.store = store
         self.bucket = _validated_key(bucket)
+
+    def find_existing(self, final_key: str, media_type: str) -> PublishedObject | None:
+        """Describe an existing immutable object without replacing its original bytes."""
+        final_key = _validated_key(final_key)
+        qualified_final = f"{self.bucket}/{final_key}"
+        if not self.store.exists(qualified_final):
+            return None
+        return self._published(
+            qualified_final,
+            final_key,
+            media_type,
+            self.store.size(qualified_final),
+            self.store.sha256(qualified_final),
+            reused=True,
+        )
+
+    def read_existing(self, final_key: str) -> bytes:
+        """Read a validated final key from the configured bucket."""
+        final_key = _validated_key(final_key)
+        qualified_final = f"{self.bucket}/{final_key}"
+        if not self.store.exists(qualified_final):
+            raise FileNotFoundError(final_key)
+        return self.store.read(qualified_final)
 
     def publish_file(
         self,

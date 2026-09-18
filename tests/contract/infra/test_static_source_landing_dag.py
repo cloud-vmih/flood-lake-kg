@@ -53,3 +53,55 @@ def test_dag_uses_manual_paused_runs_envelopes_and_all_done_summary() -> None:
     assert "publish_source" in text
     assert "register_batch" in text
     assert "cleanup_batch" in text
+
+
+def test_taskflow_callables_do_not_use_reserved_context_argument_names() -> None:
+    tree = ast.parse(DAG_PATH.read_text(encoding="utf-8"))
+    task_functions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            (isinstance(decorator, ast.Name) and decorator.id == "task")
+            or (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "task"
+            )
+            for decorator in node.decorator_list
+        )
+    ]
+
+    assert task_functions
+    for function in task_functions:
+        assert "run_id" not in {argument.arg for argument in function.args.args}
+
+
+def test_source_groups_release_staging_before_the_next_source_publishes() -> None:
+    text = DAG_PATH.read_text(encoding="utf-8")
+
+    assert "previous_cleanup >> published" in text
+
+
+def test_dag_config_uses_the_configured_project_root() -> None:
+    text = DAG_PATH.read_text(encoding="utf-8")
+
+    assert "ProjectPaths.discover().root" in text
+
+
+def test_failure_envelopes_clean_staging_and_summary_handles_missing_xcoms() -> None:
+    text = DAG_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    cleanup = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "cleanup_batch"
+    )
+    cleanup_text = ast.get_source_segment(text, cleanup)
+
+    assert "cleanup_failed_staging(" in cleanup_text
+    assert "cleanup_committed_staging(" in cleanup_text
+    assert "build_static_landing_service" not in cleanup_text
+    assert "StaticSourceLandingService._error_code(error)" in text
+    assert "source_ids: tuple[str, ...]" in text
+    assert '"upstream_task_failed"' in text

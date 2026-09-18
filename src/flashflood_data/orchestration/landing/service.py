@@ -40,6 +40,14 @@ from flashflood_data.storage.iceberg import (
 from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
 
 SourcePreparer = Callable[[str, str], tuple[PreparedObject, ...]]
+_MANIFEST_RUN_ANNOTATIONS = frozenset(
+    {"retrieval_run_id", "source_uri", "provider_metadata"}
+)
+_MANIFEST_IDENTITY_FIELDS = tuple(
+    field
+    for field in LandingManifest.model_fields
+    if field not in _MANIFEST_RUN_ANNOTATIONS
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -65,6 +73,42 @@ def _selection_segments(selection: Mapping[str, object]) -> tuple[str, ...]:
             raise TypeError("published object selection values must be scalar")
         segments.append(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
     return tuple(segments)
+
+
+def _source_staging_root(
+    config: StaticLandingConfig, staging_root: Path, source_id: str, run_id: str
+) -> Path:
+    config.source(source_id)
+    root = Path(staging_root).resolve()
+    run_root = (root / run_id).resolve()
+    source_root = (run_root / source_id).resolve()
+    if not run_root.is_relative_to(root) or not source_root.is_relative_to(run_root):
+        raise ValueError("source staging path escapes staging root")
+    return source_root
+
+
+def cleanup_committed_staging(
+    config: StaticLandingConfig, staging_root: Path, batch: RegisteredBatch
+) -> None:
+    """Remove run-scoped local staging after an Iceberg commit."""
+    if batch.snapshot_id is None:
+        raise ValueError("cannot clean staging without a committed snapshot")
+    root = _source_staging_root(config, staging_root, batch.source_id, batch.run_id)
+    for raw_path in batch.cleanup_paths:
+        path = Path(raw_path).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError("cleanup path escapes source run staging")
+    if batch.cleanup_paths and root.exists():
+        shutil.rmtree(root)
+
+
+def cleanup_failed_staging(
+    config: StaticLandingConfig, staging_root: Path, source_id: str, run_id: str
+) -> None:
+    """Remove run-scoped local staging after a source terminates with failure."""
+    root = _source_staging_root(config, staging_root, source_id, run_id)
+    if root.exists():
+        shutil.rmtree(root)
 
 
 def _sanitized_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -159,6 +203,25 @@ class StaticSourceLandingService:
         )
         return "/".join(parts)
 
+    def _reuse_manifest(
+        self, manifest_key: str, expected: LandingManifest
+    ) -> PublishedObject | None:
+        published = self.publisher.find_existing(manifest_key, "application/json")
+        if published is None:
+            return None
+        try:
+            stored = LandingManifest.model_validate_json(
+                self.publisher.read_existing(manifest_key)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ObjectConflict(f"immutable manifest conflict: {manifest_key}") from exc
+        if any(
+            getattr(stored, field) != getattr(expected, field)
+            for field in _MANIFEST_IDENTITY_FIELDS
+        ):
+            raise ObjectConflict(f"immutable manifest conflict: {manifest_key}")
+        return published
+
     def _publish_prepared(self, prepared: PreparedObject, run_id: str) -> tuple[PublishedObject, SourceObjectRow, Path]:
         published = self.publisher.publish_file(
             prepared.path,
@@ -212,12 +275,18 @@ class StaticSourceLandingService:
         local_manifest.parent.mkdir(parents=True, exist_ok=True)
         local_manifest.write_text(_canonical_json(manifest.model_dump(mode="json")), encoding="utf-8")
         manifest_key = str(Path(self._object_key(prepared)).parent / "manifest.json")
-        published_manifest = self.publisher.publish_file(
-            local_manifest,
-            final_key=manifest_key,
-            run_id=run_id,
-            media_type="application/json",
+        published_manifest = (
+            self._reuse_manifest(manifest_key, manifest)
+            if published.reused
+            else None
         )
+        if published_manifest is None:
+            published_manifest = self.publisher.publish_file(
+                local_manifest,
+                final_key=manifest_key,
+                run_id=run_id,
+                media_type="application/json",
+            )
         completed = published.model_copy(
             update={
                 "manifest_key": published_manifest.object_key,
@@ -284,15 +353,11 @@ class StaticSourceLandingService:
 
     def cleanup_batch(self, batch: RegisteredBatch) -> None:
         """Remove only the committed source's run-scoped local staging directory."""
-        if batch.snapshot_id is None:
-            raise ValueError("cannot clean staging without a committed snapshot")
-        root = (self.staging_root / batch.run_id / batch.source_id).resolve()
-        for raw_path in batch.cleanup_paths:
-            path = Path(raw_path).resolve()
-            if not path.is_relative_to(root):
-                raise ValueError("cleanup path escapes source run staging")
-        if batch.cleanup_paths and root.exists():
-            shutil.rmtree(root)
+        cleanup_committed_staging(self.config, self.staging_root, batch)
+
+    def cleanup_failed_source(self, source_id: str, run_id: str) -> None:
+        """Remove run-scoped local staging after a source terminates with failure."""
+        cleanup_failed_staging(self.config, self.staging_root, source_id, run_id)
 
     @staticmethod
     def _error_code(error: Exception) -> str:

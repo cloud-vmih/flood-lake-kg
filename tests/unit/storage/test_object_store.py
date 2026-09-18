@@ -2,8 +2,13 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from pyarrow import fs
 
-from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
+from flashflood_data.storage.object_store import (
+    ObjectConflict,
+    ObjectPublisher,
+    PyArrowS3ObjectStore,
+)
 
 
 class CopyFailure(RuntimeError):
@@ -44,6 +49,95 @@ class MemoryObjectStore:
 
     def read(self, key: str) -> bytes:
         return self.data[key]
+
+
+class TimeoutCopyFilesystem:
+    def __init__(self) -> None:
+        self.local = fs.LocalFileSystem()
+
+    def copy_file(self, source_key: str, destination_key: str) -> None:
+        raise OSError("CopyObject timeout")
+
+    def open_input_stream(self, key: str):
+        return self.local.open_input_stream(key)
+
+    def open_output_stream(self, key: str):
+        return self.local.open_output_stream(key)
+
+    def delete_file(self, key: str) -> None:
+        self.local.delete_file(key)
+
+
+class NonTimeoutCopyFilesystem(TimeoutCopyFilesystem):
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened_stream = False
+
+    def copy_file(self, source_key: str, destination_key: str) -> None:
+        raise OSError("AccessDenied")
+
+    def open_input_stream(self, key: str):
+        self.opened_stream = True
+        return super().open_input_stream(key)
+
+
+class InterruptedStreamFilesystem(TimeoutCopyFilesystem):
+    class _InterruptedOutput:
+        def __init__(self, stream) -> None:
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            self.stream.__exit__(exc_type, exc, traceback)
+
+        def write(self, data: bytes) -> int:
+            self.stream.write(data[:3])
+            raise OSError("stream interrupted")
+
+    def open_output_stream(self, key: str):
+        return self._InterruptedOutput(super().open_output_stream(key))
+
+
+def test_pyarrow_store_streams_copy_when_server_side_copy_times_out(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"large-object-fixture")
+    store = PyArrowS3ObjectStore(TimeoutCopyFilesystem())
+
+    store.copy(str(source), str(destination))
+
+    assert destination.read_bytes() == source.read_bytes()
+
+
+def test_pyarrow_store_does_not_stream_for_non_timeout_copy_errors(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"large-object-fixture")
+    filesystem = NonTimeoutCopyFilesystem()
+
+    with pytest.raises(OSError, match="AccessDenied"):
+        PyArrowS3ObjectStore(filesystem).copy(str(source), str(destination))
+
+    assert filesystem.opened_stream is False
+    assert not destination.exists()
+
+
+def test_pyarrow_store_removes_partial_destination_after_stream_failure(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"large-object-fixture")
+
+    with pytest.raises(OSError, match="stream interrupted"):
+        PyArrowS3ObjectStore(InterruptedStreamFilesystem()).copy(
+            str(source), str(destination)
+        )
+
+    assert not destination.exists()
 
 
 def test_publish_uses_run_staging_and_reuses_verified_final(tmp_path: Path) -> None:

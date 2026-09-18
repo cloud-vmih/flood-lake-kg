@@ -1,7 +1,10 @@
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+
+import pytest
 
 from flashflood_data.orchestration.landing.config import (
     LandingSourcePolicy,
@@ -10,7 +13,7 @@ from flashflood_data.orchestration.landing.config import (
 from flashflood_data.orchestration.landing.models import PreparedObject, RegisteredBatch
 from flashflood_data.orchestration.landing.service import StaticSourceLandingService
 from flashflood_data.orchestration.landing.sources import SourceLandingError
-from flashflood_data.storage.object_store import ObjectPublisher
+from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
 
 
 class MemoryObjectStore:
@@ -34,6 +37,9 @@ class MemoryObjectStore:
 
     def delete(self, key: str) -> None:
         self.data.pop(key, None)
+
+    def read(self, key: str) -> bytes:
+        return self.data[key]
 
 
 class FakeInventory:
@@ -110,6 +116,19 @@ def test_service_publishes_manifest_before_registering_and_cleans_after_commit(
     assert not (tmp_path / "staging" / "run-1" / "hydrobasins_v1c").exists()
 
 
+def test_service_cleans_failed_source_staging_before_the_next_source(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    source_root = tmp_path / "staging" / "run-1" / "hydrobasins_v1c"
+    source_root.mkdir(parents=True)
+    (source_root / "partial.bin").write_bytes(b"partial")
+
+    service.cleanup_failed_source("hydrobasins_v1c", "run-1")
+
+    assert not source_root.exists()
+
+
 def test_recovery_reuses_objects_manifests_and_inventory_rows(tmp_path: Path) -> None:
     service = _service(tmp_path)
     first = service.publish_source("hydrobasins_v1c", run_id="run-1")
@@ -121,6 +140,41 @@ def test_recovery_reuses_objects_manifests_and_inventory_rows(tmp_path: Path) ->
     assert all(item.reused for item in second.objects)
     assert first_registered.object_ids == second_registered.object_ids
     assert second_registered.reused == 1
+
+
+def test_later_run_reuses_existing_object_manifest(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    service.register_batch(first)
+
+    second = service.publish_source("hydrobasins_v1c", run_id="run-2")
+
+    assert all(item.reused for item in second.objects)
+    assert second.objects[0].manifest_uri == first.objects[0].manifest_uri
+
+
+def test_later_run_rejects_corrupt_existing_manifest(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    service.register_batch(first)
+    service.store.data[first.objects[0].manifest_key] = b"{}"
+
+    with pytest.raises(ObjectConflict, match="immutable manifest conflict"):
+        service.publish_source("hydrobasins_v1c", run_id="run-2")
+
+
+def test_later_run_rejects_manifest_with_different_checksum_contract(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    manifest_key = first.objects[0].manifest_key
+    manifest = json.loads(service.store.data[manifest_key])
+    manifest["checksum_algorithm"] = "md5"
+    service.store.data[manifest_key] = json.dumps(manifest).encode()
+
+    with pytest.raises(ObjectConflict, match="immutable manifest conflict"):
+        service.publish_source("hydrobasins_v1c", run_id="run-2")
 
 
 def test_run_continues_independent_source_and_reports_sanitized_partial_failure(

@@ -327,6 +327,32 @@ def test_inventory_rejects_changed_content_without_overwriting_catalog(tmp_path:
     assert context.catalog.get(original.asset_id) == original
 
 
+def test_inventory_rebases_local_paths_when_dataset_mount_changes(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    payload = context.paths.dataset / "legacy" / "portable.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"stable")
+    rule = _rule("legacy/portable.bin")
+    original = inventory_existing(context, rules=(rule,))[0]
+    previous_dataset = Path("/previous/container/mount/dataset")
+    previous_payload = previous_dataset / "legacy" / "portable.bin"
+    context.catalog.upsert(
+        original.model_copy(
+            update={
+                "source_uri": previous_payload.as_uri(),
+                "storage_path": str(previous_payload),
+            }
+        )
+    )
+
+    rebased = inventory_existing(context, rules=(rule,))[0]
+
+    assert rebased.source_uri == payload.as_uri()
+    assert rebased.storage_path == str(payload)
+    assert rebased.checksum == original.checksum
+    assert rebased.status is AssetStatus.VALIDATED
+
+
 def test_inventory_preserves_matching_quarantined_catalog_row(tmp_path: Path) -> None:
     context = _context(tmp_path)
     payload = context.paths.dataset / "legacy" / "quarantined.bin"

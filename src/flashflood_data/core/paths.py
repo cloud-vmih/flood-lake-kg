@@ -1,5 +1,6 @@
 """Project-relative locations for file-first pipeline assets."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,8 +19,10 @@ class ProjectPaths:
 
     @classmethod
     def discover(cls, root: Path | None = None) -> "ProjectPaths":
-        """Construct project-local paths from *root* or the working directory."""
-        resolved = (root or Path.cwd()).resolve()
+        """Construct paths from an explicit root, configured root, or working directory."""
+        configured = os.environ.get("FLASHFLOOD_PROJECT_ROOT")
+        selected = root if root is not None else Path(configured) if configured else Path.cwd()
+        resolved = selected.resolve()
         dataset = resolved / "dataset"
         return cls(
             resolved,

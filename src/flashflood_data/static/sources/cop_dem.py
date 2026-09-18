@@ -302,12 +302,29 @@ class CopDemAdapter(SourceAdapter):
 
     def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
         """Query one fixed collection product for each Environmental AOI one-degree cell."""
-        del available
         token_client = self._token_client(context)
-        token_client._credentials()
+        credentials_checked = False
+        if not available:
+            token_client._credentials()
+            credentials_checked = True
+        grid_ids = grid_ids_for_geometry(self._aoi(context, "environmental"))
+        reusable_ids = {
+            record.asset_id
+            for record in available
+            if record.source_id == self.spec.source_id
+            and record.source_version == self.spec.version
+            and record.status is AssetStatus.VALIDATED
+            and record.duplicate_of_asset_id is None
+            and context.catalog.has_verified_content(record)
+        }
+        expected_ids = {f"cop-dem-{self.spec.version}-{grid_id}" for grid_id in grid_ids}
+        if expected_ids <= reusable_ids:
+            return []
+        if not credentials_checked:
+            token_client._credentials()
         products = [
             select_dem_product(self._catalogue_response(token_client, grid_id), self._setting("dataset"), grid_id)
-            for grid_id in grid_ids_for_geometry(self._aoi(context, "environmental"))
+            for grid_id in grid_ids
         ]
         expected_type = self._setting("product_type")
         remotes: list[RemoteAsset] = []

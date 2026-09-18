@@ -191,8 +191,6 @@ def _same_immutable_asset(existing: AssetRecord, candidate: AssetRecord) -> bool
         "source_id",
         "source_version",
         "kind",
-        "source_uri",
-        "storage_path",
         "media_type",
         "license_id",
         "size_bytes",
@@ -330,7 +328,12 @@ def inventory_existing(
             if existing.status in _REUSABLE_STATUSES:
                 annotation_updates = {
                     field: getattr(discovered, field)
-                    for field in ("duplicate_of_asset_id", "metadata_json")
+                    for field in (
+                        "source_uri",
+                        "storage_path",
+                        "duplicate_of_asset_id",
+                        "metadata_json",
+                    )
                     if getattr(existing, field) != getattr(discovered, field)
                 }
                 if annotation_updates:

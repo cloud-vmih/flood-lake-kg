@@ -79,6 +79,7 @@ def test_inventory_hashes_compound_shapefiles_and_chooses_lexicographic_duplicat
     assert records[0].duplicate_of_asset_id is None
     assert records[1].duplicate_of_asset_id == records[0].asset_id
     assert all(record.status is AssetStatus.VALIDATED for record in records)
+    assert all(context.catalog.has_verified_content(record) for record in records)
     assert {path: (path.stat().st_mtime_ns, path.read_bytes()) for path in members} == before
     assert not any(path.is_file() for path in context.paths.raw.rglob("*"))
 

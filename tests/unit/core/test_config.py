@@ -27,3 +27,17 @@ def test_paths_never_escape_root(tmp_path: Path) -> None:
     paths = ProjectPaths.discover(tmp_path)
     assert paths.raw == tmp_path / "dataset" / "raw"
     assert paths.catalog == tmp_path / "dataset" / "catalog"
+
+
+def test_paths_use_configured_project_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FLASHFLOOD_PROJECT_ROOT", str(tmp_path))
+
+    assert ProjectPaths.discover().root == tmp_path.resolve()
+
+
+def test_explicit_project_root_overrides_environment(monkeypatch, tmp_path: Path) -> None:
+    configured = tmp_path / "configured"
+    explicit = tmp_path / "explicit"
+    monkeypatch.setenv("FLASHFLOOD_PROJECT_ROOT", str(configured))
+
+    assert ProjectPaths.discover(explicit).root == explicit.resolve()
