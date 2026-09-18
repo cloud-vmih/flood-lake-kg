@@ -1,5 +1,11 @@
 basin_level: 12
 sources:
+  - source_id: sonla_admin_2025
+    mode: individual
+    selection: {scope: son_la_current_administration}
+  - source_id: gadm_vnm_4_1
+    mode: individual
+    selection: {country: VNM, role: historical_administration}
   - source_id: hydrobasins_v1c
     mode: shapefile_bundle
     filename_contains: hybas_as_lev12_v1c.shp
@@ -15,6 +21,15 @@ sources:
     filename_contains: HydroRIVERS_v10_as.shp
     output_name: hydrorivers_asia.zip
     selection: {region: asia}
+  - source_id: worldpop_vnm_2025
+    mode: individual
+    selection: {country: VNM, year: 2025, population_model: constrained}
+  - source_id: historical_flood_evidence_2020_2026
+    mode: individual
+    selection: {region: son_la, period: 2020_2026}
+  - source_id: geofabrik_vietnam_snapshot
+    mode: individual
+    selection: {country: vietnam, snapshot: latest_resolved}
   - source_id: cop_dem_glo30_2024_1
     mode: individual
     selection: {coverage: environmental_aoi}
@@ -25,3 +40,6 @@ sources:
       properties: [clay, sand, silt, bdod, cfvo, soc, wv0033, wv1500]
       depths: [0-5cm, 5-15cm, 15-30cm]
       statistics: [mean, Q0.05, Q0.5, Q0.95]
+  - source_id: esa_worldcover_2021_v200
+    mode: individual
+    selection: {coverage: environmental_aoi, year: 2021}

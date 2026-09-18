@@ -18,6 +18,34 @@ def test_static_landing_config_is_l12_and_has_exact_soil_scope() -> None:
     config = load_static_landing_config(ROOT / "config" / "landing" / "static.yaml")
 
     assert config.basin_level == 12
+    assert [source.source_id for source in config.sources] == [
+        "sonla_admin_2025",
+        "gadm_vnm_4_1",
+        "hydrobasins_v1c",
+        "basinatlas_v10",
+        "hydrorivers_v10",
+        "worldpop_vnm_2025",
+        "historical_flood_evidence_2020_2026",
+        "geofabrik_vietnam_snapshot",
+        "cop_dem_glo30_2024_1",
+        "soilgrids_2_0",
+        "esa_worldcover_2021_v200",
+    ]
+    assert {
+        source.source_id: source.mode for source in config.sources
+    } == {
+        "sonla_admin_2025": "individual",
+        "gadm_vnm_4_1": "individual",
+        "hydrobasins_v1c": "shapefile_bundle",
+        "basinatlas_v10": "shapefile_bundle",
+        "hydrorivers_v10": "shapefile_bundle",
+        "worldpop_vnm_2025": "individual",
+        "historical_flood_evidence_2020_2026": "individual",
+        "geofabrik_vietnam_snapshot": "individual",
+        "cop_dem_glo30_2024_1": "individual",
+        "soilgrids_2_0": "individual",
+        "esa_worldcover_2021_v200": "individual",
+    }
     soil = config.source("soilgrids_2_0")
     assert list(soil.settings_override["properties"]) == [
         "clay",

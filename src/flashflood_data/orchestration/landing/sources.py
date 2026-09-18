@@ -93,7 +93,11 @@ def acquire_validated_assets(
     fetcher: HttpFetcher,
 ) -> tuple[AssetRecord, ...]:
     """Acquire or reuse source payloads and stop after raw validation."""
-    if policy.source_id in {"cop_dem_glo30_2024_1", "soilgrids_2_0"}:
+    if policy.source_id in {
+        "cop_dem_glo30_2024_1",
+        "soilgrids_2_0",
+        "esa_worldcover_2021_v200",
+    }:
         ensure_environmental_aoi(context)
     spec = base_spec.model_copy(
         update={"settings": dict(base_spec.settings) | dict(policy.settings_override)}

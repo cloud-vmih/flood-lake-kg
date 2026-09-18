@@ -13,6 +13,7 @@ from flashflood_data.orchestration.landing.config import (
 from flashflood_data.orchestration.landing.models import PreparedObject, RegisteredBatch
 from flashflood_data.orchestration.landing.service import StaticSourceLandingService
 from flashflood_data.orchestration.landing.sources import SourceLandingError
+from flashflood_data.storage.http import BudgetRejected
 from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
 
 
@@ -189,3 +190,9 @@ def test_run_continues_independent_source_and_reports_sanitized_partial_failure(
     assert summary.failed_sources == ("basinatlas_v10",)
     assert summary.errors == {"basinatlas_v10": "fixture_failure"}
     assert "secret" not in summary.model_dump_json()
+
+
+def test_storage_budget_rejection_has_an_actionable_error_code() -> None:
+    error = BudgetRejected("minimum_free_space")
+
+    assert StaticSourceLandingService._error_code(error) == "storage_budget_rejected"

@@ -25,11 +25,17 @@ from flashflood_data.orchestration.landing.service import (
 
 WRITER_POOL = "source_landing_writer"
 EXPECTED_SOURCE_IDS = (
+    "sonla_admin_2025",
+    "gadm_vnm_4_1",
     "hydrobasins_v1c",
     "basinatlas_v10",
     "hydrorivers_v10",
+    "worldpop_vnm_2025",
+    "historical_flood_evidence_2020_2026",
+    "geofabrik_vietnam_snapshot",
     "cop_dem_glo30_2024_1",
     "soilgrids_2_0",
+    "esa_worldcover_2021_v200",
 )
 CONFIG_PATH = ProjectPaths.discover().root / "config" / "landing" / "static.yaml"
 

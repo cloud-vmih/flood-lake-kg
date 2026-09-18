@@ -30,6 +30,7 @@ from flashflood_data.orchestration.landing.sources import (
 )
 from flashflood_data.static.sources.base import SourceContext
 from flashflood_data.static.sources.existing import inventory_existing
+from flashflood_data.storage.http import BudgetRejected
 from flashflood_data.storage.http.fetcher import HttpFetcher
 from flashflood_data.storage.http.redaction import redact
 from flashflood_data.storage.iceberg import (
@@ -369,6 +370,8 @@ class StaticSourceLandingService:
             return "iceberg_identity_conflict"
         if isinstance(error, IcebergCommitError):
             return "iceberg_commit_failed"
+        if isinstance(error, BudgetRejected):
+            return "storage_budget_rejected"
         return "unexpected_source_failure"
 
     def run(
