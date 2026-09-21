@@ -45,6 +45,8 @@ class ObjectStore(Protocol):
 
     def read(self, key: str) -> bytes: ...
 
+    def download(self, key: str, local_path: Path) -> None: ...
+
     def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None: ...
 
     def copy(self, source_key: str, destination_key: str) -> None: ...
@@ -91,6 +93,11 @@ class PyArrowS3ObjectStore:
     def read(self, key: str) -> bytes:
         with self.filesystem.open_input_stream(key) as stream:
             return stream.read()
+
+    def download(self, key: str, local_path: Path) -> None:
+        """Stream an object into a caller-owned temporary local file."""
+        with self.filesystem.open_input_stream(key) as source, local_path.open("wb") as destination:
+            shutil.copyfileobj(source, destination, length=_CHUNK_SIZE)
 
     def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None:
         with local_path.open("rb") as source, self.filesystem.open_output_stream(

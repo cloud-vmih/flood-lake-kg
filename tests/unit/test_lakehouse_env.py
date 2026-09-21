@@ -60,3 +60,21 @@ def test_initializer_preserves_values_and_is_idempotent(tmp_path: Path) -> None:
         "minio",
         "postgres",
     }
+
+
+def test_initializer_uses_data_root_declared_in_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    data_root = tmp_path / "portable-lakehouse"
+    env_file.write_text(f"LAKEHOUSE_DATA_ROOT={data_root}\n")
+    env = os.environ | {"ENV_FILE": str(env_file)}
+    env.pop("LAKEHOUSE_DATA_ROOT", None)
+
+    subprocess.run([SCRIPT], env=env, text=True, capture_output=True, check=True)
+
+    assert {p.relative_to(data_root).as_posix() for p in data_root.rglob("*") if p.is_dir()} >= {
+        "airflow",
+        "airflow/logs",
+        "staging",
+        "minio",
+        "postgres",
+    }

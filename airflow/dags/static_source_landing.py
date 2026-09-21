@@ -11,6 +11,7 @@ from airflow.sdk import dag, task, task_group
 from flashflood_data.cli.app import build_static_landing_service
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.landing.config import load_static_landing_config
+from flashflood_data.orchestration.landing.meta_audit import audit_registered_batch
 from flashflood_data.orchestration.landing.models import (
     LandingRunSummary,
     LandingTaskEnvelope,
@@ -19,9 +20,12 @@ from flashflood_data.orchestration.landing.models import (
 )
 from flashflood_data.orchestration.landing.service import (
     StaticSourceLandingService,
-    cleanup_committed_staging,
     cleanup_failed_staging,
 )
+from flashflood_data.orchestration.meta.factory import build_meta_recorder
+from flashflood_data.orchestration.meta.registry import load_static_registry
+from flashflood_data.static.sources.registry import load_source_specs
+from flashflood_data.storage.iceberg import SourceObjectInventory
 
 WRITER_POOL = "source_landing_writer"
 EXPECTED_SOURCE_IDS = (
@@ -53,6 +57,23 @@ def _configured_source_ids() -> tuple[str, ...]:
     if source_ids != EXPECTED_SOURCE_IDS:
         raise RuntimeError("static landing DAG source groups do not match the approved config")
     return source_ids
+
+
+@task(retries=2)
+def register_meta_registry() -> dict[str, int]:
+    """Seed source and dataset metadata before any raw object is published."""
+    root = ProjectPaths.discover().root
+    source_specs = load_source_specs(root / "config" / "sources")
+    meta = build_meta_recorder(root)
+    sources, datasets = load_static_registry(
+        root / "config" / "meta" / "static.yaml", source_specs,
+        catalog_name=meta.store.catalog.name,
+    )
+    for row in sources:
+        meta.register_source(row)
+    for row in datasets:
+        meta.register_dataset(row)
+    return {"sources": len(sources), "datasets": len(datasets)}
 
 
 @task(retries=2)
@@ -115,7 +136,8 @@ def cleanup_batch(
             return LandingTaskEnvelope.failed(
                 envelope.source_id, "invalid_registered_envelope"
             ).model_dump(mode="json")
-        cleanup_committed_staging(config, staging_root, envelope.batch)
+        service = build_static_landing_service()
+        service.cleanup_batch(envelope.batch)
         result = LandingTaskEnvelope.succeeded("cleaned", envelope.batch)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
         document = {
@@ -124,6 +146,30 @@ def cleanup_batch(
         }
         raise AirflowException(json.dumps(document, sort_keys=True)) from None
     return result.model_dump(mode="json")
+
+
+@task(retries=2)
+def audit_registered_meta(envelope_json: dict[str, object]) -> dict[str, object]:
+    """Audit the source-object snapshot in the existing raw landing DAG."""
+    source_id = str(envelope_json.get("source_id", "unknown_source"))
+    try:
+        envelope = LandingTaskEnvelope.model_validate(envelope_json)
+        if envelope.status == "failure":
+            return envelope.model_dump(mode="json")
+        if not isinstance(envelope.batch, RegisteredBatch):
+            raise TypeError("raw Meta audit requires a registered batch")
+        meta = build_meta_recorder()
+        inventory = SourceObjectInventory(meta.store.catalog)
+        rows = inventory.available_objects(envelope.source_id)
+        audit_registered_batch(
+            envelope.batch, rows, meta, catalog_name=meta.store.catalog.name,
+            checked_at=datetime.now(UTC),
+        )
+    except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        return LandingTaskEnvelope.failed(
+            source_id, StaticSourceLandingService._error_code(error)
+        ).model_dump(mode="json")
+    return envelope.model_dump(mode="json")
 
 
 @task_group
@@ -136,7 +182,8 @@ def source_landing_group(source_id: str, landing_run_id: str):
     cleaned = cleanup_batch.override(pool="source_landing_writer")(
         registered, landing_run_id
     )
-    return published, cleaned
+    audited = audit_registered_meta(cleaned)
+    return published, audited
 
 
 @task(trigger_rule="all_done", retries=0)
@@ -198,6 +245,7 @@ def publish_run_summary(
 def static_source_landing_dag():
     """Build fixed, independent task groups from the approved landing policy."""
     landing_run_id = "{{ run_id }}"
+    registry_ready = register_meta_registry()
     source_ids = _configured_source_ids()
     results = []
     previous_cleanup = None
@@ -205,6 +253,7 @@ def static_source_landing_dag():
         published, cleaned = source_landing_group.override(group_id=source_id)(
             source_id, landing_run_id
         )
+        registry_ready >> published
         if previous_cleanup is not None:
             previous_cleanup >> published
         results.append(cleaned)

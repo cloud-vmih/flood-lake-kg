@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 ENV_FILE=${ENV_FILE:-$PROJECT_ROOT/.env}
-LAKEHOUSE_DATA_ROOT=${LAKEHOUSE_DATA_ROOT:-$PROJECT_ROOT/dataset/lakehouse}
+LAKEHOUSE_DATA_ROOT_OVERRIDE=${LAKEHOUSE_DATA_ROOT:-}
 
 umask 077
 mkdir -p "$(dirname -- "$ENV_FILE")"
@@ -27,6 +27,18 @@ last_value() {
         END { print value }
     ' "$ENV_FILE"
 }
+
+configured_data_root=$(last_value LAKEHOUSE_DATA_ROOT)
+if [ -n "$LAKEHOUSE_DATA_ROOT_OVERRIDE" ]; then
+    LAKEHOUSE_DATA_ROOT=$LAKEHOUSE_DATA_ROOT_OVERRIDE
+elif [ -n "$configured_data_root" ]; then
+    case $configured_data_root in
+        /*) LAKEHOUSE_DATA_ROOT=$configured_data_root ;;
+        *) LAKEHOUSE_DATA_ROOT=$PROJECT_ROOT/$configured_data_root ;;
+    esac
+else
+    LAKEHOUSE_DATA_ROOT=$PROJECT_ROOT/dataset/lakehouse
+fi
 
 set_if_blank() {
     key=$1

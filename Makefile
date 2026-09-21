@@ -1,11 +1,31 @@
-.PHONY: setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down spark-build spark-up spark-status spark-down spark-smoke
+.PHONY: doctor bootstrap setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down spark-build spark-up spark-status spark-down spark-smoke
+MAKEFLAGS += --no-print-directory
+PYTHON ?= python3.11
+VENV_PYTHON := .venv/bin/python
+
+
+doctor:
+	PYTHON="$(PYTHON)" tools/bootstrap/check_prerequisites.sh
+
+
+bootstrap:
+	$(MAKE) doctor
+	$(MAKE) setup
+	$(MAKE) lakehouse-python-setup
+	$(MAKE) lakehouse-build
+	$(MAKE) lakehouse-up
+	$(MAKE) lakehouse-smoke
+	$(MAKE) lakehouse-python-smoke
+
 
 setup:
-	/home/cloud/.pyenv/shims/python3.11 -m venv .venv
-	.venv/bin/pip install -r requirements.lock
+	$(PYTHON) -c 'import sys; assert sys.version_info[:2] == (3, 11), f"Python 3.11 required, got {sys.version.split()[0]}"'
+	$(PYTHON) -m venv .venv
+	$(VENV_PYTHON) -m pip install -r requirements.lock
 
 test:
-	.venv/bin/pytest -q
+	env -u MAKEFLAGS -u MAKELEVEL .venv/bin/pytest -q
+
 
 lint:
 	.venv/bin/ruff check src tests
@@ -32,6 +52,10 @@ qa-map:
 
 lakehouse-python-setup:
 	tools/bootstrap/setup_python_runtime.sh
+
+lakehouse-build: lakehouse-init
+	docker compose build airflow-api-server polaris-bootstrap
+
 
 lakehouse-airflow-build: lakehouse-init
 	docker compose build airflow-api-server
@@ -60,6 +84,11 @@ lakehouse-python-smoke:
 lakehouse-source-landing-smoke:
 	tools/bootstrap/check_docker_access.sh
 	tools/smoke/source_landing.sh
+
+lakehouse-meta-bronze-smoke:
+	tools/bootstrap/check_docker_access.sh
+	tools/smoke/meta_bronze.sh
+
 
 lakehouse-down:
 	tools/bootstrap/check_docker_access.sh

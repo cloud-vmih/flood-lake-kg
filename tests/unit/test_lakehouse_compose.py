@@ -70,6 +70,18 @@ def test_polaris_bootstrap_is_idempotent_and_private() -> None:
     assert "CLIENT_SECRET" not in "\n".join(line for line in text.splitlines() if line.startswith("echo"))
 
 
+def test_polaris_bootstrap_does_not_install_packages_at_runtime() -> None:
+    service = services()["polaris-bootstrap"]
+    dockerfile = ROOT / "infra/docker/polaris-bootstrap/Dockerfile"
+
+    assert service["image"] == "flood-lakehouse-polaris-bootstrap:8.21.0"
+    assert service["build"]["dockerfile"] == "infra/docker/polaris-bootstrap/Dockerfile"
+    assert service["entrypoint"] == ["/bootstrap.sh"]
+    assert "apk add" not in " ".join(service["entrypoint"])
+    assert dockerfile.is_file()
+    assert "FROM alpine/curl:8.21.0" in dockerfile.read_text()
+
+
 def test_airflow_uses_basic_v3_local_executor_topology() -> None:
     items = services()
     assert {"airflow-init", "airflow-api-server", "airflow-scheduler", "airflow-dag-processor"} <= items.keys()

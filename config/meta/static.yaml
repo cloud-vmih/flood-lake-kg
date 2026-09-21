@@ -1,0 +1,36 @@
+contract_version: v1
+valid_from: 2026-09-20T00:00:00Z
+owner: flashflood-data
+policies:
+  access:
+    bootstrap-root-only: "Current MinIO root credentials and Polaris bootstrap principal; dataset ACLs are not yet provisioned."
+  retention:
+    manual-review: "No automatic retention or purge is configured for these datasets."
+sources:
+  sonla_admin_2025: {provider: Son La provincial government, dataset: Son La 2025 administration}
+  gadm_vnm_4_1: {provider: GADM, dataset: Vietnam administrative boundaries}
+  hydrobasins_v1c: {provider: HydroSHEDS, dataset: HydroBASINS}
+  basinatlas_v10: {provider: HydroATLAS, dataset: BasinATLAS}
+  hydrorivers_v10: {provider: HydroSHEDS, dataset: HydroRIVERS}
+  worldpop_vnm_2025: {provider: WorldPop, dataset: Vietnam population 2025}
+  historical_flood_evidence_2020_2026: {provider: FloodLakeKG project, dataset: Son La flood evidence}
+  geofabrik_vietnam_snapshot: {provider: Geofabrik, dataset: Vietnam OSM extract}
+  cop_dem_glo30_2024_1: {provider: Copernicus, dataset: GLO-30 DEM}
+  soilgrids_2_0: {provider: ISRIC, dataset: SoilGrids 2.0}
+  esa_worldcover_2021_v200: {provider: ESA, dataset: WorldCover 2021}
+datasets:
+  meta.source_registry: "Approved source products and versions"
+  meta.source_objects: "Verified immutable raw objects in MinIO"
+  meta.ingest_attempts: "Raw asset publication and registration attempts"
+  meta.pipeline_runs: "Execution status and publication decisions"
+  meta.table_snapshot_ref: "Input and output Iceberg snapshots per run"
+  meta.parameter_sets: "Versioned model and routing parameters"
+  meta.dataset_registry: "Versioned data contracts and ownership"
+  meta.quality_results: "Rule-level data quality evidence"
+  meta.lineage_edges: "Direct transformation dependencies between objects and snapshots"
+  bronze.basin_polygon_raw: "Source-faithful L12 basin polygon features"
+  bronze.river_reach_raw: "Source-faithful river reach features"
+  bronze.admin_boundary_raw: "Source-faithful administrative boundaries"
+  bronze.osm_feature_raw: "OSM node, way and relation features"
+  bronze.raster_coverage: "Raster band and spatial coverage metadata"
+  bronze.historical_event_raw: "Original structured historical flood evidence"

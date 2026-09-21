@@ -35,7 +35,7 @@ def load_source_specs(config_dir: Path, *, include_disabled: bool = False) -> di
             specifications[spec.source_id] = spec
     if include_disabled:
         return specifications
-    return {source_id: spec for source_id, spec in specifications.items() if spec.enabled}
+    return {source_id:spec for source_id, spec in specifications.items() if spec.enabled}
 
 
 def build_adapter(spec: SourceSpec) -> SourceAdapter:

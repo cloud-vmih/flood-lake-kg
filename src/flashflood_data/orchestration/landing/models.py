@@ -51,6 +51,17 @@ class PublishedObject(ImmutableModel):
     manifest_uri: str | None = None
 
 
+class RawCleanupCandidate(ImmutableModel):
+    """A downloaded local raw file backed by a committed MinIO object."""
+
+    object_id: str
+    asset_id: str
+    storage_path: str
+    object_key: str
+    size_bytes: int = Field(ge=0)
+    checksum: str
+
+
 class SourceObjectRow(ImmutableModel):
     """One authoritative row in the Iceberg source-object inventory."""
 
@@ -117,6 +128,7 @@ class PublishedBatch(ImmutableModel):
     objects: tuple[PublishedObject, ...] = ()
     rows: tuple[SourceObjectRow, ...] = ()
     cleanup_paths: tuple[str, ...] = ()
+    raw_cleanup: tuple[RawCleanupCandidate, ...] = ()
 
 
 class RegisteredBatch(ImmutableModel):
@@ -128,6 +140,7 @@ class RegisteredBatch(ImmutableModel):
     snapshot_id: int | None = None
     reused: int = Field(default=0, ge=0)
     cleanup_paths: tuple[str, ...] = ()
+    raw_cleanup: tuple[RawCleanupCandidate, ...] = ()
 
 
 class LandingTaskEnvelope(ImmutableModel):

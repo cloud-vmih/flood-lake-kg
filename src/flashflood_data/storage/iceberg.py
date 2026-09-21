@@ -6,7 +6,7 @@ from collections.abc import Sequence
 import pyarrow as pa
 from pyiceberg.catalog import Catalog, load_catalog
 from pyiceberg.exceptions import CommitFailedException
-from pyiceberg.expressions import EqualTo, In
+from pyiceberg.expressions import And, EqualTo, In
 
 from flashflood_data.core.lakehouse import LakehouseSettings
 from flashflood_data.orchestration.landing.models import RegisteredBatch, SourceObjectRow
@@ -115,6 +115,34 @@ class SourceObjectInventory:
             selected_fields=_IDENTITY_FIELDS,
         ).to_arrow()
         return {str(row["object_id"]): row for row in table.to_pylist()}
+
+    def source_locations(self, source_id: str) -> dict[tuple[str, str, str], tuple[str, int]]:
+        """Find committed MinIO payloads by local asset identity for recovery."""
+        self.table.refresh()
+        rows = self.table.scan(
+            row_filter=EqualTo("source_id", source_id),
+            selected_fields=(
+                "asset_id", "source_version", "checksum", "object_uri", "size_bytes", "status"
+            ),
+        ).to_arrow().to_pylist()
+        locations: dict[tuple[str, str, str], tuple[str, int]] = {}
+        for row in rows:
+            if row["status"] != "available":
+                continue
+            identity = (str(row["asset_id"]), str(row["source_version"]), str(row["checksum"]))
+            locations.setdefault(identity, (str(row["object_uri"]), int(row["size_bytes"])))
+        return locations
+
+    def available_objects(self, source_id: str) -> tuple[SourceObjectRow, ...]:
+        """Discover verified raw objects eligible for source-specific Bronze parsing."""
+        self.table.refresh()
+        rows = self.table.scan(
+            row_filter=And(EqualTo("source_id", source_id), EqualTo("status", "available"))
+        ).to_arrow().to_pylist()
+        return tuple(
+            SourceObjectRow.model_validate(row)
+            for row in rows if row["source_id"] == source_id and row["status"] == "available"
+        )
 
     @staticmethod
     def _assert_matching(

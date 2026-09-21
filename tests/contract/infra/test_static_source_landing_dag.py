@@ -95,6 +95,15 @@ def test_dag_config_uses_the_configured_project_root() -> None:
     assert "ProjectPaths.discover().root" in text
 
 
+def test_existing_landing_dag_seeds_meta_and_audits_registered_raw() -> None:
+    text = DAG_PATH.read_text(encoding="utf-8")
+    assert "register_meta_registry" in text
+    assert "audit_registered_meta" in text
+    assert "registry_ready >> published" in text
+    assert "registered = register_batch" in text
+    assert "audited = audit_registered_meta" in text
+
+
 def test_failure_envelopes_clean_staging_and_summary_handles_missing_xcoms() -> None:
     text = DAG_PATH.read_text(encoding="utf-8")
     tree = ast.parse(text)
@@ -106,8 +115,8 @@ def test_failure_envelopes_clean_staging_and_summary_handles_missing_xcoms() -> 
     cleanup_text = ast.get_source_segment(text, cleanup)
 
     assert "cleanup_failed_staging(" in cleanup_text
-    assert "cleanup_committed_staging(" in cleanup_text
-    assert "build_static_landing_service" not in cleanup_text
+    assert "build_static_landing_service" in cleanup_text
+    assert "service.cleanup_batch(" in cleanup_text
     assert "StaticSourceLandingService._error_code(error)" in text
     assert "source_ids: tuple[str, ...]" in text
     assert '"upstream_task_failed"' in text

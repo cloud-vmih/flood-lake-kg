@@ -135,3 +135,37 @@ def test_register_many_refreshes_and_retries_optimistic_commit() -> None:
 
     assert result.snapshot_id == 42
     assert table.refresh_count >= 2
+
+
+def test_source_locations_returns_only_available_committed_payloads() -> None:
+    available = _row("object-1").model_dump(mode="python")
+    unavailable = _row("object-2").model_dump(mode="python") | {"status": "retired"}
+
+    class LocationTable(FakeTable):
+        def scan(self, **kwargs: object):
+            assert kwargs["selected_fields"] == (
+                "asset_id", "source_version", "checksum", "object_uri", "size_bytes", "status"
+            )
+            assert kwargs["row_filter"].term.name == "source_id"
+            return SimpleNamespace(to_arrow=lambda: pa.Table.from_pylist([available, unavailable]))
+
+    table = LocationTable(existing=[])
+    inventory = SourceObjectInventory(FakeCatalog(table))
+
+    assert inventory.source_locations("fixture-source") == {
+        ("asset-object-1", "1", "a" * 64): ("s3://raw/object-1.bin", 7)
+    }
+    assert table.refresh_count == 1
+
+
+def test_available_objects_filters_status_and_source_for_bronze_discovery() -> None:
+    available = _row("object-1").model_dump(mode="python")
+    unavailable = _row("object-2").model_dump(mode="python") | {"status": "retired"}
+
+    class DiscoveryTable(FakeTable):
+        def scan(self, **kwargs: object):
+            assert "source_id" in str(kwargs["row_filter"])
+            return SimpleNamespace(to_arrow=lambda: pa.Table.from_pylist([available, unavailable]))
+
+    inventory = SourceObjectInventory(FakeCatalog(DiscoveryTable(existing=[])))
+    assert [row.object_id for row in inventory.available_objects("fixture-source")] == ["object-1"]

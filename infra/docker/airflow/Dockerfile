@@ -3,6 +3,7 @@ FROM apache/airflow:${AIRFLOW_VERSION}-python3.11
 
 ARG AIRFLOW_VERSION
 
+
 COPY --chown=airflow:root requirements/lakehouse.txt /tmp/requirements-lakehouse.txt
 COPY --chown=airflow:root pyproject.toml /opt/flashflood-build/pyproject.toml
 COPY --chown=airflow:root src/ /opt/flashflood-build/src/

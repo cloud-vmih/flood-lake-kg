@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -13,6 +14,7 @@ import typer
 
 from flashflood_data.catalog import AssetCatalog
 from flashflood_data.catalog.models import AssetStatus, RunRecord
+from flashflood_data.cli.commands.bronze import bronze_app
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig, load_study_area
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.static.sources.base import SourceConfigurationError, SourceContext
@@ -22,6 +24,7 @@ from flashflood_data.static.workflow import STATIC_ORDER, RunSummary, Stage
 from flashflood_data.storage.http import BudgetRejected
 
 app = typer.Typer(no_args_is_help=True)
+app.add_typer(bronze_app, name="bronze")
 
 RootOption = Annotated[Path | None, typer.Option("--root")]
 SourcesOption = Annotated[list[str] | None, typer.Option("--source")]
@@ -47,8 +50,6 @@ STATIC_LANDING_SOURCE_IDS = (
 
 def build_static_landing_service(root: Path | None = None):
     """Compose the production landing service from validated project configuration."""
-    import os
-
     from flashflood_data.core.lakehouse import LakehouseSettings
     from flashflood_data.orchestration.landing.config import load_static_landing_config
     from flashflood_data.orchestration.landing.service import StaticSourceLandingService
@@ -205,7 +206,6 @@ def fetch(
         profile=profile,
         command="fetch",
     )
-
 
 @app.command()
 def validate(

@@ -1,0 +1,640 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net" modified="2026-09-20T07:02:29.000Z" agent="Codex" version="24.7.17" type="device" pages="5">
+  <diagram id="class-meta" name="01_Meta_Classes">
+    <mxGraphModel dx="1900" dy="1300" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1530" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="mt" value="META — CROSS-LAYER CONTRACT" style="text;html=1;fontSize=26;fontColor=#666666;align=left;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="50" y="30" width="1100" height="45" />
+        </mxCell>
+        <mxCell id="mn" value="Only meta.source_objects is implemented. Full fields and write rules: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="50" y="78" width="1550" height="35" />
+        </mxCell>
+        <mxCell id="m-source-registry" value="meta.source_registry (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="50" y="150" width="540" height="199" />
+        </mxCell>
+        <mxCell id="m-source-registry-a" value="+ source_id: string ! PK&#10;+ source_version: string ! PK&#10;+ provider: string !&#10;+ dataset: string !&#10;+ license_uri: string ?&#10;+ coverage_ref: string ?&#10;+ refresh_sla_minutes: int ?&#10;+ valid_from: timestamp !&#10;+ valid_to: timestamp ?" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-source-registry" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="165" />
+        </mxCell>
+        <mxCell id="m-source-objects" value="meta.source_objects (implemented)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="660" y="150" width="540" height="454" />
+        </mxCell>
+        <mxCell id="m-source-objects-a" value="+ object_id: string ! PK&#10;+ asset_id: string !&#10;+ source_id: string !&#10;+ source_version: string !&#10;+ source_type: string !&#10;+ product: string !&#10;+ basin_level: int ?&#10;+ object_uri: string !&#10;+ manifest_uri: string !&#10;+ media_type: string !&#10;+ size_bytes: long !&#10;+ checksum_algorithm: string !&#10;+ checksum: string !&#10;+ source_uri: string !&#10;+ provider_issued_at: string ?&#10;+ model_run_time: string ?&#10;+ valid_time: string ?&#10;+ available_at: string ?&#10;+ retrieved_at: timestamp !&#10;+ first_seen_at: timestamp !&#10;+ ingest_run_id: string !&#10;+ status: string !&#10;+ selection_json: json !&#10;+ provider_metadata_json: json !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-source-objects" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="420" />
+        </mxCell>
+        <mxCell id="m-ingest-attempts" value="meta.ingest_attempts (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="1270" y="150" width="540" height="216" />
+        </mxCell>
+        <mxCell id="m-ingest-attempts-a" value="+ ingest_run_id: string ! PK&#10;+ source_id: string ! PK&#10;+ asset_id: string ! PK&#10;+ attempt_no: int ! PK&#10;+ request_fingerprint: string !&#10;+ http_status: int ?&#10;+ error_code: string ?&#10;+ started_at: timestamp !&#10;+ ended_at: timestamp ?&#10;+ status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-ingest-attempts" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="182" />
+        </mxCell>
+        <mxCell id="m-pipeline-runs" value="meta.pipeline_runs (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="50" y="674" width="540" height="335" />
+        </mxCell>
+        <mxCell id="m-pipeline-runs-a" value="+ pipeline_run_id: string ! PK&#10;+ orchestrator_run_id: string ?&#10;+ job_name: string !&#10;+ code_git_sha: string ?&#10;+ image_digest: string ?&#10;+ config_hash: string !&#10;+ parameter_set_id: string ? FK&#10;+ started_at: timestamp !&#10;+ finished_at: timestamp ?&#10;+ published_at: timestamp ?&#10;+ status: string !&#10;+ retry_count: int !&#10;+ input_row_count: long ?&#10;+ output_row_count: long ?&#10;+ quality_result_json: json ?&#10;+ metrics_json: json ?&#10;+ error_code: string ?" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-pipeline-runs" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="301" />
+        </mxCell>
+        <mxCell id="m-table-snapshot-ref" value="meta.table_snapshot_ref (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="660" y="674" width="540" height="148" />
+        </mxCell>
+        <mxCell id="m-table-snapshot-ref-a" value="+ pipeline_run_id: string ! PK/FK&#10;+ table_name: string ! PK&#10;+ iceberg_snapshot_id: long ! PK&#10;+ role: string ! PK&#10;+ created_at: timestamp !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-table-snapshot-ref" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="114" />
+        </mxCell>
+        <mxCell id="m-parameter-sets" value="meta.parameter_sets (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="1270" y="674" width="540" height="199" />
+        </mxCell>
+        <mxCell id="m-parameter-sets-a" value="+ parameter_set_id: string ! PK&#10;+ parameter_type: string !&#10;+ method_version: string !&#10;+ parameters_json: json !&#10;+ beta: double ?&#10;+ alpha_1h: double ?&#10;+ valid_from: timestamp !&#10;+ valid_to: timestamp ?&#10;+ is_active: boolean !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-parameter-sets" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="165" />
+        </mxCell>
+        <mxCell id="m-dataset-registry" value="meta.dataset_registry (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="50" y="1079" width="540" height="301" />
+        </mxCell>
+        <mxCell id="m-dataset-registry-a" value="+ dataset_id: string ! PK&#10;+ contract_version: string ! PK&#10;+ layer: string !&#10;+ description: string !&#10;+ owner: string !&#10;+ source_id: string ? FK&#10;+ schema_ref: string !&#10;+ data_classification: string !&#10;+ license_id: string ?&#10;+ retention_policy_ref: string !&#10;+ freshness_sla_minutes: int ?&#10;+ quality_policy_id: string !&#10;+ access_policy_ref: string !&#10;+ valid_from: timestamp !&#10;+ valid_to: timestamp ?" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-dataset-registry" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="267" />
+        </mxCell>
+        <mxCell id="m-quality-results" value="meta.quality_results (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="660" y="1079" width="540" height="301" />
+        </mxCell>
+        <mxCell id="m-quality-results-a" value="+ pipeline_run_id: string ! PK/FK&#10;+ check_phase: string ! PK&#10;+ dataset_id: string ! PK&#10;+ rule_id: string ! PK&#10;+ rule_version: string ! PK&#10;+ scope_key: string ! PK&#10;+ severity: string !&#10;+ status: string !&#10;+ observed_value_json: json ?&#10;+ expected_value_json: json ?&#10;+ failed_row_count: long ?&#10;+ sample_uri: string ?&#10;+ snapshot_table: string ?&#10;+ snapshot_id: long ?&#10;+ checked_at: timestamp !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-quality-results" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="267" />
+        </mxCell>
+        <mxCell id="m-lineage-edges" value="meta.lineage_edges (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="1270" y="1079" width="540" height="233" />
+        </mxCell>
+        <mxCell id="m-lineage-edges-a" value="+ lineage_edge_id: string ! PK&#10;+ pipeline_run_id: string ! FK&#10;+ input_kind: string !&#10;+ input_object_id: string ? FK&#10;+ input_table: string ?&#10;+ input_snapshot_id: long ?&#10;+ output_table: string !&#10;+ output_snapshot_id: long !&#10;+ transform_role: string !&#10;+ mapping_version: string ?&#10;+ created_at: timestamp !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-lineage-edges" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="199" />
+        </mxCell>
+        <mxCell id="me1" value="registers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-source-registry" target="m-source-objects">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me2" value="attempts" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-source-registry" target="m-ingest-attempts">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me3" value="uses" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-parameter-sets" target="m-pipeline-runs">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me4" value="governs" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-dataset-registry" target="m-pipeline-runs">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me5" value="run snapshots" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-pipeline-runs" target="m-table-snapshot-ref">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me6" value="QA" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-pipeline-runs" target="m-quality-results">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me7" value="transform" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-pipeline-runs" target="m-lineage-edges">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me8" value="raw input" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-source-objects" target="m-lineage-edges">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me9" value="snapshot input/output" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-table-snapshot-ref" target="m-lineage-edges">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me10" value="quality policy" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-dataset-registry" target="m-quality-results">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="class-bronze" name="02_Bronze_Classes">
+    <mxGraphModel dx="1500" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2100" pageHeight="1080" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="bt" value="BRONZE — PARSED SOURCE TABLES" style="text;html=1;fontSize=26;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="30" width="900" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="bn" value="Raw bytes remain in MinIO; exact parsed fields: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="75" width="1200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="b-basin-raw" value="bronze.basin_polygon_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="70" y="250" width="400" height="216" as="geometry" />
+        </mxCell>
+        <mxCell id="b-basin-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_feature_id: string ! PK&#10;+ source_id: string !&#10;+ source_fields_json: json !&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-basin-raw">
+          <mxGeometry x="0" y="34" width="400" height="182" as="geometry" />
+        </mxCell>
+        <mxCell id="b-river-raw" value="bronze.river_reach_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="530" y="250" width="400" height="199" as="geometry" />
+        </mxCell>
+        <mxCell id="b-river-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_feature_id: string ! PK&#10;+ source_fields_json: json !&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-river-raw">
+          <mxGeometry x="0" y="34" width="400" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="b-raster-raw" value="bronze.raster_coverage (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="990" y="250" width="400" height="318" as="geometry" />
+        </mxCell>
+        <mxCell id="b-raster-raw-a" value="+ object_id: string ! PK/FK&#10;+ band_or_layer: string ! PK&#10;+ property: string ?&#10;+ depth_interval: string ?&#10;+ statistic: string ?&#10;+ object_uri: string !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ resolution_x: double !&#10;+ resolution_y: double !&#10;+ nodata: double ?&#10;+ dtype: string !&#10;+ checksum: string !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-raster-raw">
+          <mxGeometry x="0" y="34" width="400" height="284" as="geometry" />
+        </mxCell>
+        <mxCell id="b-weather-raw" value="bronze.weather_grid_value (conditional rows)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1450" y="250" width="410" height="369" as="geometry" />
+        </mxCell>
+        <mxCell id="b-weather-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_id: string !&#10;+ source_grid_id: string ! PK&#10;+ source_grid_version: string ! PK&#10;+ variable: string ! PK&#10;+ vertical_level: string ! PK&#10;+ valid_time: timestamp ! PK&#10;+ window_start: timestamp ! PK&#10;+ window_end: timestamp ! PK&#10;+ source_revision: int ! PK&#10;+ source_cycle_id: string ! PK&#10;+ model_run_time: timestamp ?&#10;+ available_at: timestamp !&#10;+ value: double ?&#10;+ unit: string !&#10;+ value_kind: string !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-weather-raw">
+          <mxGeometry x="0" y="34" width="410" height="335" as="geometry" />
+        </mxCell>
+        <mxCell id="b-osm-raw" value="bronze.osm_feature_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="70" y="700" width="400" height="216" as="geometry" />
+        </mxCell>
+        <mxCell id="b-osm-raw-a" value="+ object_id: string ! PK/FK&#10;+ osm_type: string ! PK&#10;+ osm_id: string ! PK&#10;+ tags_json: json !&#10;+ geometry_wkb: binary ?&#10;+ crs: string ?&#10;+ bbox_wgs84: list&lt;double&gt; ?&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-osm-raw">
+          <mxGeometry x="0" y="34" width="400" height="182" as="geometry" />
+        </mxCell>
+        <mxCell id="b-event-raw" value="bronze.historical_event_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="530" y="700" width="400" height="199" as="geometry" />
+        </mxCell>
+        <mxCell id="b-event-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_record_id: string ! PK&#10;+ source_document_id: string ?&#10;+ event_text: string ?&#10;+ original_fields_json: json !&#10;+ source_valid_time: string ?&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-event-raw">
+          <mxGeometry x="0" y="34" width="400" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="be5" value="parse" edge="1" parent="1" source="b-source-ref" target="b-basin-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="be6" value="parse" edge="1" parent="1" source="b-source-ref" target="b-river-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="be7" value="parse" edge="1" parent="1" source="b-source-ref" target="b-raster-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="be8" value="parse" edge="1" parent="1" source="b-source-ref" target="b-weather-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="be9" value="parse" edge="1" parent="1" source="b-source-ref" target="b-osm-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="be10" value="parse" edge="1" parent="1" source="b-source-ref" target="b-event-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="b-source-ref" value="meta.source_objects (raw object reference)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=13;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="740" y="130" width="460" height="70" />
+        </mxCell>
+      <mxCell id="b-admin-raw" value="bronze.admin_boundary_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="990" y="700" width="400" height="216" as="geometry" /></mxCell><mxCell id="b-admin-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_feature_id: string ! PK&#10;+ source_id: string !&#10;+ source_fields_json: json !&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-admin-raw"><mxGeometry x="0" y="34" width="400" height="182" as="geometry" /></mxCell><mxCell id="be-admin" value="parse" edge="1" parent="1" source="b-source-ref" target="b-admin-raw" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;"><mxGeometry relative="1" as="geometry" /></mxCell></root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="class-silver" name="03_Silver_Classes">
+    <mxGraphModel dx="2200" dy="1300" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="2050" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="st" value="SILVER — TARGET CLASS DIAGRAM (L12)" style="text;html=1;fontSize=26;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="25" width="1000" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="sn" value="Representative fields; exact attributes and keys: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="70" width="1400" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="s-grid-dim" value="silver.source_grid (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="50" y="150" width="300" height="215" as="geometry" />
+        </mxCell>
+        <mxCell id="s-grid-dim-a" value="+ source_id: string ! PK&#10;+ source_grid_version: string ! PK&#10;+ source_grid_id: string ! PK&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ resolution_x: double !&#10;+ resolution_y: double !&#10;+ centroid_lon: double !&#10;+ centroid_lat: double !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-dim">
+          <mxGeometry x="0" y="32" width="300" height="183" as="geometry" />
+        </mxCell>
+        <mxCell id="s-grid-fact" value="silver.grid_value (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="410" y="130" width="330" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="s-grid-fact-a" value="+ business_key_hash: string ! PK&#10;+ source_id: string ! FK&#10;+ source_grid_version: string ! FK&#10;+ source_grid_id: string ! FK&#10;+ raw_object_id: string ! FK&#10;+ source_cycle_id: string !&#10;+ model_run_time: timestamp ?&#10;+ valid_time: timestamp !&#10;+ window_start: timestamp !&#10;+ window_end: timestamp !&#10;+ variable: string !&#10;+ vertical_level: string !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-fact">
+          <mxGeometry x="0" y="32" width="330" height="248" as="geometry" />
+        </mxCell>
+        <mxCell id="s-basin" value="silver.dim_basin (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="860" y="120" width="330" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="s-basin-a" value="+ basin_id: string ! PK&#10;+ basin_version: string ! PK&#10;+ hydrobasins_level: int ! = 12&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ geometry_hash: string !&#10;+ next_down_id: string ?&#10;+ main_basin_id: string ?&#10;+ pfaf_id: string ?&#10;+ topology_sort_hint: long ?&#10;+ basin_area_km2: double !&#10;+ upstream_area_km2: double !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-basin">
+          <mxGeometry x="0" y="32" width="330" height="258" as="geometry" />
+        </mxCell>
+        <mxCell id="s-grid-basin" value="silver.grid_basin_weight (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="145" width="340" height="235" as="geometry" />
+        </mxCell>
+        <mxCell id="s-grid-basin-a" value="+ source_id: string ! PK/FK&#10;+ source_grid_version: string ! PK/FK&#10;+ source_grid_id: string ! PK/FK&#10;+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ geometry_processing_version: string ! PK&#10;+ intersection_area_m2: double !&#10;+ weight_by_basin: double !&#10;+ weight_by_grid: double !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-basin">
+          <mxGeometry x="0" y="32" width="340" height="203" as="geometry" />
+        </mxCell>
+        <mxCell id="s-static" value="silver.basin_static_feature (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1730" y="120" width="350" height="363" as="geometry" />
+        </mxCell>
+        <mxCell id="s-static-a" value="+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ feature_build_version: string ! PK&#10;+ elevation_mean_m: double ?&#10;+ relief_m: double ?&#10;+ slope_mean_deg: double ?&#10;+ outlet_lon: double ?&#10;+ outlet_lat: double ?&#10;+ outlet_elevation_m: double ?&#10;+ longest_flow_path_m: double ?&#10;+ source_elevation_m: double ?&#10;+ main_channel_slope_m_m: double ?&#10;+ tc_hours: double ?&#10;+ kb_fast_hours: double ?&#10;+ soil_clay_pct_0_30: double ?&#10;+ field_capacity_m3m3_0_30: double ?&#10;+ awc_m3m3_0_30: double ?&#10;+ forest_pct: double ?&#10;+ pipeline_run_id: string ! FK&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-static">
+          <mxGeometry x="0" y="32" width="350" height="331" as="geometry" />
+        </mxCell>
+        <mxCell id="s-river" value="silver.dim_river_reach (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="50" y="540" width="320" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="s-river-a" value="+ river_reach_id: string ! PK&#10;+ river_version: string ! PK&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ hydrorivers_id: string ?&#10;+ osm_way_id: string ?&#10;+ river_name: string ?&#10;+ stream_order: int ?&#10;+ length_km: double !&#10;+ upstream_node_id: string ?&#10;+ downstream_node_id: string ?&#10;+ source_object_id: string ! FK" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-river">
+          <mxGeometry x="0" y="32" width="320" height="213" as="geometry" />
+        </mxCell>
+        <mxCell id="s-river-edge" value="silver.river_reach_edge (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="420" y="555" width="300" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="s-river-edge-a" value="+ river_version: string ! PK/FK&#10;+ upstream_reach_id: string ! PK/FK&#10;+ downstream_reach_id: string ? FK&#10;+ topology_version: string ! PK&#10;+ length_km: double ?&#10;+ elevation_drop_m: double ?&#10;+ channel_slope_m_m: double ?&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-river-edge">
+          <mxGeometry x="0" y="32" width="300" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="s-river-basin" value="silver.river_basin (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="790" y="555" width="310" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="s-river-basin-a" value="+ river_reach_id: string ! PK/FK&#10;+ river_version: string ! PK/FK&#10;+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ geometry_processing_version: string ! PK&#10;+ length_inside_km: double !&#10;+ intersection_ratio: double !&#10;+ spatial_relation: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-river-basin">
+          <mxGeometry x="0" y="32" width="310" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="s-basin-edge" value="silver.basin_edge (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="525" width="350" height="265" as="geometry" />
+        </mxCell>
+        <mxCell id="s-basin-edge-a" value="+ topology_version: string ! PK&#10;+ basin_version: string ! PK/FK&#10;+ upstream_basin_id: string ! PK/FK&#10;+ downstream_basin_id: string ? FK&#10;+ edge_status: string !&#10;+ river_length_km: double ?&#10;+ elevation_drop_m: double ?&#10;+ channel_slope_m_m: double ?&#10;+ cycle_check: string !&#10;+ outlet_check: string !&#10;+ source_object_id: string ! FK" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-basin-edge">
+          <mxGeometry x="0" y="32" width="350" height="233" as="geometry" />
+        </mxCell>
+        <mxCell id="s-fac" value="silver.dim_facility (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1590" y="520" width="320" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="s-fac-a" value="+ facility_id: string ! PK&#10;+ facility_version: string ! PK&#10;+ facility_type: string !&#10;+ name: string ?&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ capacity: int ?&#10;+ criticality_level: int ?&#10;+ source_object_id: string ! FK&#10;+ valid_from: timestamp !&#10;+ valid_to: timestamp ?&#10;+ is_current: boolean !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-fac">
+          <mxGeometry x="0" y="32" width="320" height="238" as="geometry" />
+        </mxCell>
+        <mxCell id="s-fac-basin" value="silver.facility_basin (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1980" y="540" width="330" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="s-fac-basin-a" value="+ facility_id: string ! PK/FK&#10;+ facility_version: string ! PK/FK&#10;+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ geometry_processing_version: string ! PK&#10;+ spatial_relation: string !&#10;+ distance_to_stream_m: double ?&#10;+ distance_to_outlet_m: double ?&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-fac-basin">
+          <mxGeometry x="0" y="32" width="330" height="198" as="geometry" />
+        </mxCell>
+        <mxCell id="s-pop" value="silver.population_grid (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="50" y="920" width="330" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="s-pop-a" value="+ source_id: string ! PK/FK&#10;+ source_grid_version: string ! PK/FK&#10;+ source_grid_id: string ! PK/FK&#10;+ reference_year: int ! PK&#10;+ population_count: double ?&#10;+ population_density: double ?&#10;+ children_population: double ?&#10;+ elderly_population: double ?&#10;+ available_at: timestamp !&#10;+ source_object_id: string ! FK" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-pop">
+          <mxGeometry x="0" y="32" width="330" height="213" as="geometry" />
+        </mxCell>
+        <mxCell id="s-road-node" value="silver.dim_road_node (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="470" y="925" width="290" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="s-road-node-a" value="+ road_node_id: string ! PK&#10;+ road_version: string ! PK&#10;+ osm_node_id: long ?&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ elevation_m: double ?&#10;+ node_type: string !&#10;+ source_object_id: string ! FK" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-road-node">
+          <mxGeometry x="0" y="32" width="290" height="178" as="geometry" />
+        </mxCell>
+        <mxCell id="s-road-edge" value="silver.dim_road_edge (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="830" y="890" width="330" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="s-road-edge-a" value="+ road_edge_id: string ! PK&#10;+ road_version: string ! PK&#10;+ from_node_id: string ! FK&#10;+ to_node_id: string ! FK&#10;+ osm_way_id: long ?&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ length_m: double !&#10;+ base_travel_time_s: double ?&#10;+ oneway: boolean !&#10;+ highway_class: string ?&#10;+ surface: string ?&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-road-edge">
+          <mxGeometry x="0" y="32" width="330" height="248" as="geometry" />
+        </mxCell>
+        <mxCell id="s-road-basin" value="silver.road_basin (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="920" width="320" height="225" as="geometry" />
+        </mxCell>
+        <mxCell id="s-road-basin-a" value="+ road_edge_id: string ! PK/FK&#10;+ road_version: string ! PK/FK&#10;+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ geometry_processing_version: string ! PK&#10;+ length_inside_m: double !&#10;+ intersection_ratio: double !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-road-basin">
+          <mxGeometry x="0" y="32" width="320" height="193" as="geometry" />
+        </mxCell>
+        <mxCell id="s-cross" value="silver.river_crossing (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1620" y="910" width="320" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="s-cross-a" value="+ crossing_id: string ! PK&#10;+ road_edge_id: string ! FK&#10;+ road_version: string ! FK&#10;+ river_reach_id: string ! FK&#10;+ river_version: string ! FK&#10;+ crossing_type: string !&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ deck_height_m: double ?&#10;+ geometry_processing_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-cross">
+          <mxGeometry x="0" y="32" width="320" height="213" as="geometry" />
+        </mxCell>
+        <mxCell id="s-event" value="silver.observed_flood_event (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="2010" y="900" width="350" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="s-event-a" value="+ flood_event_id: string ! PK&#10;+ event_revision: int ! PK&#10;+ event_start: timestamp ?&#10;+ event_end: timestamp ?&#10;+ reported_place: string ?&#10;+ event_geometry_wkb: binary ?&#10;+ event_geometry_kind: string ?&#10;+ severity_level: int ?&#10;+ source_document_id: string ? FK&#10;+ confidence_level: string !&#10;+ is_current: boolean !&#10;+ pipeline_run_id: string ! FK" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-event">
+          <mxGeometry x="0" y="32" width="350" height="238" as="geometry" />
+        </mxCell>
+        <mxCell id="s-doc" value="silver.document_chunk (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="2010" y="1280" width="350" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="s-doc-a" value="+ chunk_id: string ! PK&#10;+ document_id: string ! FK&#10;+ raw_object_id: string ! FK&#10;+ chunk_index: int !&#10;+ chunk_text: string !&#10;+ extraction_version: string !&#10;+ created_at: timestamp !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-doc">
+          <mxGeometry x="0" y="32" width="350" height="198" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e1" value="1:N" edge="1" parent="1" source="s-grid-dim" target="s-grid-fact" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e2" value="1:N" edge="1" parent="1" source="s-grid-dim" target="s-grid-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e3" value="1:N" edge="1" parent="1" source="s-basin" target="s-grid-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e4" value="1:N versions" edge="1" parent="1" source="s-basin" target="s-static" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e5" value="1:N" edge="1" parent="1" source="s-river" target="s-river-edge" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e6" value="N:M" edge="1" parent="1" source="s-river" target="s-river-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e7" edge="1" parent="1" source="s-river-basin" target="s-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e8" value="spatial/topology QA" edge="1" parent="1" source="s-river-edge" target="s-basin-edge" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e9" value="up/down FK" edge="1" parent="1" source="s-basin" target="s-basin-edge" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e10" value="1:N" edge="1" parent="1" source="s-fac" target="s-fac-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e11" edge="1" parent="1" source="s-fac-basin" target="s-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e12" value="grid FK" edge="1" parent="1" source="s-pop" target="s-grid-dim" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e13" value="from/to" edge="1" parent="1" source="s-road-node" target="s-road-edge" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e14" value="1:N" edge="1" parent="1" source="s-road-edge" target="s-road-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e15" edge="1" parent="1" source="s-road-basin" target="s-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e16" value="crosses" edge="1" parent="1" source="s-road-edge" target="s-cross" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e17" edge="1" parent="1" source="s-river" target="s-cross" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e18" value="1:N event-basin" edge="1" parent="1" source="s-event" target="s-event-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-feature-lineage" value="silver.basin_feature_lineage (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="2130" y="130" width="410" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="s-feature-lineage-a" value="+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ feature_build_version: string ! PK/FK&#10;+ object_id: string ! PK/FK&#10;+ role: string ! PK&#10;+ contribution: string ?&#10;+ qa_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-feature-lineage">
+          <mxGeometry x="0" y="32" width="410" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="s-document" value="silver.source_document (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1560" y="1280" width="380" height="215" as="geometry" />
+        </mxCell>
+        <mxCell id="s-document-a" value="+ document_id: string ! PK&#10;+ raw_object_id: string ! FK&#10;+ source_uri: string !&#10;+ title: string ?&#10;+ document_type: string !&#10;+ source_valid_time: string ?&#10;+ extraction_version: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-document">
+          <mxGeometry x="0" y="32" width="380" height="183" as="geometry" />
+        </mxCell>
+        <mxCell id="s-event-basin" value="silver.event_basin (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="2010" y="1580" width="380" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="s-event-basin-a" value="+ flood_event_id: string ! PK/FK&#10;+ event_revision: int ! PK/FK&#10;+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ spatial_relation: string !&#10;+ affected_area_km2: double ?&#10;+ affected_fraction_of_basin: double ?&#10;+ area_estimation_method: string ?&#10;+ evidence_id: string ?&#10;+ qa_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-event-basin">
+          <mxGeometry x="0" y="32" width="380" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e19" value="N source objects" edge="1" parent="1" source="s-static" target="s-feature-lineage" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e20" value="feature lineage" edge="1" parent="1" source="s-feature-lineage" target="s-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e21" value="many basins" edge="1" parent="1" source="s-event-basin" target="s-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e22" value="1:N chunks" edge="1" parent="1" source="s-document" target="s-doc" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e23" value="source document" edge="1" parent="1" source="s-document" target="s-event-evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-event-evidence" value="silver.event_evidence (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1560" y="1590" width="390" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="s-event-evidence-a" value="+ flood_event_id: string ! PK/FK&#10;+ event_revision: int ! PK/FK&#10;+ chunk_id: string ! PK/FK&#10;+ evidence_role: string ! PK&#10;+ extraction_version: string !&#10;+ confidence_score: double ?&#10;+ qa_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-event-evidence">
+          <mxGeometry x="0" y="32" width="390" height="178" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e24" value="chunk evidence" edge="1" parent="1" source="s-doc" target="s-event-evidence" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s-e25" value="supports / contradicts" edge="1" parent="1" source="s-event-evidence" target="s-event" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="class-gold" name="04_Gold_Classes">
+    <mxGraphModel dx="2100" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="gt" value="GOLD &amp; SERVING — TARGET CLASS DIAGRAM" style="text;html=1;fontSize=26;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="25" width="1000" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g-forcing" value="gold.basin_forcing (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="50" y="130" width="350" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="g-forcing-a" value="+ forcing_id: string ! PK&#10;+ source_product: string !&#10;+ source_cycle_id: string !&#10;+ valid_time: timestamp !&#10;+ window_start: timestamp !&#10;+ window_end: timestamp !&#10;+ available_at: timestamp !&#10;+ as_of_time: timestamp !&#10;+ runoff_depth_mm: double ?&#10;+ precipitation_mm: double ?&#10;+ input_snapshot_table: string !&#10;+ input_snapshot_id: long !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-forcing">
+          <mxGeometry x="0" y="32" width="350" height="268" as="geometry" />
+        </mxCell>
+        <mxCell id="g-indicator" value="gold.basin_dynamic_indicator (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="480" y="130" width="350" height="285" as="geometry" />
+        </mxCell>
+        <mxCell id="g-indicator-a" value="+ indicator_id: string ! PK&#10;+ basin_id: string ! FK&#10;+ basin_version: string ! FK&#10;+ forcing_id: string ! FK&#10;+ valid_time: timestamp !&#10;+ as_of_time: timestamp !&#10;+ precip_1h_mm: double ?&#10;+ precip_3h_mm: double ?&#10;+ precip_6h_mm: double ?&#10;+ ffg_method: string !&#10;+ indicator_version: string !&#10;+ pipeline_run_id: string ! FK&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-indicator">
+          <mxGeometry x="0" y="32" width="350" height="253" as="geometry" />
+        </mxCell>
+        <mxCell id="g-hydro" value="gold.hydro_state (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="910" y="120" width="350" height="315" as="geometry" />
+        </mxCell>
+        <mxCell id="g-hydro-a" value="+ hydro_state_id: string ! PK&#10;+ valid_time: timestamp !&#10;+ as_of_time: timestamp !&#10;+ source_cycle_id: string !&#10;+ scenario_id: string !&#10;+ input_revision: string !&#10;+ beta: double !&#10;+ kb_hours: double !&#10;+ alpha_1h: double ?&#10;+ local_inflow_m3s: double ?&#10;+ q_out_m3s: double ?&#10;+ estimate_kind: string !&#10;+ input_snapshot_table: string !&#10;+ input_snapshot_id: long !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-hydro">
+          <mxGeometry x="0" y="32" width="350" height="283" as="geometry" />
+        </mxCell>
+        <mxCell id="g-exposure" value="gold.basin_exposure_snapshot (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="125" width="360" height="305" as="geometry" />
+        </mxCell>
+        <mxCell id="g-exposure-a" value="+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ exposure_reference_date: date ! PK&#10;+ exposure_build_version: string ! PK&#10;+ available_at: timestamp !&#10;+ population_total: double ?&#10;+ population_density: double ?&#10;+ vulnerable_population: double ?&#10;+ facility_count: long ?&#10;+ road_length_km: double ?&#10;+ exposure_score: double ?&#10;+ source_snapshot_refs_json: json !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-exposure">
+          <mxGeometry x="0" y="32" width="360" height="273" as="geometry" />
+        </mxCell>
+        <mxCell id="g-disrupt" value="gold.road_disruption_scenario (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1780" y="130" width="360" height="265" as="geometry" />
+        </mxCell>
+        <mxCell id="g-disrupt-a" value="+ scenario_id: string ! PK&#10;+ road_edge_id: string ! PK/FK&#10;+ road_version: string ! PK/FK&#10;+ valid_time: timestamp ! PK&#10;+ road_graph_version: string !&#10;+ assessment_id: string ! FK&#10;+ disruption_level: int ?&#10;+ passable: boolean ?&#10;+ travel_time_multiplier: double ?&#10;+ confidence_level: string !&#10;+ model_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-disrupt">
+          <mxGeometry x="0" y="32" width="360" height="233" as="geometry" />
+        </mxCell>
+        <mxCell id="g-assess" value="gold.hazard_assessment (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="720" y="600" width="420" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="g-assess-a" value="+ assessment_id: string ! PK&#10;+ basin_id: string ! FK&#10;+ basin_version: string ! FK&#10;+ scenario_id: string !&#10;+ valid_time: timestamp !&#10;+ as_of_time: timestamp !&#10;+ issued_at: timestamp !&#10;+ hydrological_threat_level: string !&#10;+ static_susceptibility_score: double ?&#10;+ exposure_score: double ?&#10;+ impact_level: string ?&#10;+ alert_level: string !&#10;+ hydro_state_id: string ? FK&#10;+ indicator_id: string ? FK&#10;+ risk_policy_version: string !&#10;+ parameter_set_id: string ! FK&#10;+ assessment_revision: int !&#10;+ pipeline_run_id: string ! FK&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-assess">
+          <mxGeometry x="0" y="32" width="420" height="358" as="geometry" />
+        </mxCell>
+        <mxCell id="g-route" value="gold.evacuation_route (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1780" y="610" width="360" height="275" as="geometry" />
+        </mxCell>
+        <mxCell id="g-route-a" value="+ route_id: string ! PK&#10;+ scenario_id: string !&#10;+ road_graph_version: string !&#10;+ origin_node_id: string ! FK&#10;+ road_version: string ! FK&#10;+ destination_facility_id: string ! FK&#10;+ destination_facility_version: string ! FK&#10;+ valid_time: timestamp !&#10;+ ordered_edge_refs_json: json !&#10;+ total_distance_m: double !&#10;+ travel_time_s: double ?&#10;+ safety_status: string !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-route">
+          <mxGeometry x="0" y="32" width="360" height="243" as="geometry" />
+        </mxCell>
+        <mxCell id="g-eval" value="gold.model_evaluation (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="50" y="620" width="350" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="g-eval-a" value="+ evaluation_id: string ! PK&#10;+ model_variant: string !&#10;+ hydro_model_version: string !&#10;+ parameter_set_id: string ! FK&#10;+ event_catalog_version: string !&#10;+ label_protocol_version: string !&#10;+ window_start: timestamp !&#10;+ window_end: timestamp !&#10;+ pod_recall: double ?&#10;+ false_alarm_ratio: double ?&#10;+ csi: double ?&#10;+ median_lead_time_hours: double ?&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-eval">
+          <mxGeometry x="0" y="32" width="350" height="238" as="geometry" />
+        </mxCell>
+        <mxCell id="g-latest" value="serving.basin_latest (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="630" width="390" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="g-latest-a" value="+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ scenario_id: string ! PK&#10;+ product_view: string ! PK&#10;+ latest_assessment_id: string ? FK&#10;+ as_of_time: timestamp !&#10;+ valid_time: timestamp ?&#10;+ hydrological_threat_level: string !&#10;+ alert_level: string !&#10;+ state: string !&#10;+ freshness_seconds: long ?&#10;+ updated_at: timestamp !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-latest">
+          <mxGeometry x="0" y="32" width="390" height="288" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e1" value="1:N" edge="1" parent="1" source="g-forcing" target="g-indicator" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e2" value="runoff input" edge="1" parent="1" source="g-forcing" target="g-hydro" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e3" value="FFG/rain evidence" edge="1" parent="1" source="g-indicator" target="g-assess" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e4" value="Q evidence" edge="1" parent="1" source="g-hydro" target="g-assess" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e5" value="exposure" edge="1" parent="1" source="g-exposure" target="g-assess" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e6" value="hazard scenario" edge="1" parent="1" source="g-assess" target="g-disrupt" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e7" value="1:N routes" edge="1" parent="1" source="g-disrupt" target="g-route" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e8" value="latest revision" edge="1" parent="1" source="g-assess" target="g-latest" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e9" value="evaluated by" edge="1" parent="1" source="g-assess" target="g-eval" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="g-edge-param" value="gold.basin_edge_routing_parameter (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="880" y="1100" width="440" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="g-edge-param-a" value="+ topology_version: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ upstream_basin_id: string ! PK/FK&#10;+ scenario_id: string ! PK&#10;+ parameter_set_id: string ! PK/FK&#10;+ velocity_ms: double ?&#10;+ travel_time_hours: double ?&#10;+ attenuation_factor: double ?&#10;+ method_version: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="g-edge-param">
+          <mxGeometry x="0" y="32" width="440" height="213" as="geometry" />
+        </mxCell>
+        <mxCell id="g-e10" value="scenario routing" edge="1" parent="1" source="g-edge-param" target="g-hydro" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn" value="Representative fields; exact attributes and keys: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="75" width="1400" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="class-kg" name="05_Knowledge_Graph_Classes">
+    <mxGraphModel dx="2100" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="kt" value="KNOWLEDGE GRAPH — TARGET ONTOLOGY" style="text;html=1;fontSize=26;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="25" width="1200" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="kn" value="Versioned projection from Silver/Gold; exact fields: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
+          <mxGeometry x="50" y="70" width="1400" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="k-node" value="kg.node (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="60" y="150" width="330" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="k-node-a" value="+ node_id: string ! PK&#10;+ node_type: string !&#10;+ business_key: string !&#10;+ business_version: string !&#10;+ display_name: string ?&#10;+ properties_json: json !&#10;+ geometry_ref: string ?&#10;+ valid_from: timestamp !&#10;+ valid_to: timestamp ?&#10;+ source_table: string !&#10;+ source_snapshot_id: long !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-node">
+          <mxGeometry x="0" y="32" width="330" height="213" as="geometry" />
+        </mxCell>
+        <mxCell id="k-edge" value="kg.edge (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="60" y="470" width="330" height="255" as="geometry" />
+        </mxCell>
+        <mxCell id="k-edge-a" value="+ edge_id: string ! PK&#10;+ from_node_id: string ! FK&#10;+ predicate: string !&#10;+ to_node_id: string ! FK&#10;+ valid_from: timestamp !&#10;+ valid_to: timestamp ?&#10;+ scenario_id: string ?&#10;+ properties_json: json !&#10;+ confidence_score: double ?&#10;+ evidence_id: string ! FK&#10;+ rule_or_extraction_version: string !&#10;+ edge_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-edge">
+          <mxGeometry x="0" y="32" width="330" height="223" as="geometry" />
+        </mxCell>
+        <mxCell id="k-evidence" value="kg.evidence (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="60" y="800" width="330" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="k-evidence-a" value="+ evidence_id: string ! PK&#10;+ evidence_type: string !&#10;+ raw_object_id: string ? FK&#10;+ chunk_id: string ? FK&#10;+ source_table: string ?&#10;+ iceberg_snapshot_id: long ?&#10;+ rule_or_extraction_version: string !&#10;+ confidence_score: double ?&#10;+ created_at: timestamp !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-evidence">
+          <mxGeometry x="0" y="32" width="330" height="213" as="geometry" />
+        </mxCell>
+        <mxCell id="k-basin" value="BasinNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="660" y="170" width="270" height="175" as="geometry" />
+        </mxCell>
+        <mxCell id="k-basin-a" value="+ node_id: string ! FK (kg.node)&#10;+ basin_id: string !&#10;+ basin_version: string !&#10;+ topology_version: string !&#10;+ upstream_area_km2: double !&#10;+ geometry_ref: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-basin">
+          <mxGeometry x="0" y="32" width="270" height="143" as="geometry" />
+        </mxCell>
+        <mxCell id="k-river" value="RiverReachNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="150" width="280" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="k-river-a" value="+ node_id: string ! FK (kg.node)&#10;+ river_reach_id: string !&#10;+ river_version: string !&#10;+ river_name: string ?&#10;+ stream_order: int ?&#10;+ length_km: double !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-river">
+          <mxGeometry x="0" y="32" width="280" height="168" as="geometry" />
+        </mxCell>
+        <mxCell id="k-road" value="RoadEdgeNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="145" width="280" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="k-road-a" value="+ node_id: string ! FK (kg.node)&#10;+ road_edge_id: string !&#10;+ road_version: string !&#10;+ osm_way_id: long ?&#10;+ street_name: string ?&#10;+ highway_class: string ?" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-road">
+          <mxGeometry x="0" y="32" width="280" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="k-fac" value="FacilityNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1820" y="150" width="280" height="195" as="geometry" />
+        </mxCell>
+        <mxCell id="k-fac-a" value="+ node_id: string ! FK (kg.node)&#10;+ facility_id: string !&#10;+ facility_version: string !&#10;+ facility_type: string !&#10;+ facility_name: string ?&#10;+ capacity: int ?&#10;+ criticality_level: int ?" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-fac">
+          <mxGeometry x="0" y="32" width="280" height="163" as="geometry" />
+        </mxCell>
+        <mxCell id="k-pop" value="PopulationZoneNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="660" y="540" width="280" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="k-pop-a" value="+ node_id: string ! FK (kg.node)&#10;+ zone_id: string !&#10;+ zone_version: string !&#10;+ reference_year: int !&#10;+ population_total: double ?&#10;+ vulnerable_population: double ?&#10;+ geometry_ref: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-pop">
+          <mxGeometry x="0" y="32" width="280" height="158" as="geometry" />
+        </mxCell>
+        <mxCell id="k-event" value="FloodEventNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="530" width="280" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="k-event-a" value="+ node_id: string ! FK (kg.node)&#10;+ flood_event_id: string !&#10;+ event_revision: int !&#10;+ event_start: timestamp ?&#10;+ event_end: timestamp ?&#10;+ reported_place: string ?&#10;+ confidence_level: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-event">
+          <mxGeometry x="0" y="32" width="280" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="k-assess" value="AssessmentNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="520" width="280" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="k-assess-a" value="+ node_id: string ! FK (kg.node)&#10;+ assessment_id: string !&#10;+ basin_id: string !&#10;+ basin_version: string !&#10;+ scenario_id: string !&#10;+ valid_time: timestamp !&#10;+ as_of_time: timestamp !&#10;+ threat_level: string !&#10;+ impact_level: string ?&#10;+ alert_level: string !&#10;+ confidence_level: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-assess">
+          <mxGeometry x="0" y="32" width="280" height="188" as="geometry" />
+        </mxCell>
+        <mxCell id="k-doc" value="DocumentChunkNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1820" y="520" width="290" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="k-doc-a" value="+ node_id: string ! FK (kg.node)&#10;+ chunk_id: string !&#10;+ document_id: string !&#10;+ source_uri: string !&#10;+ chunk_text_ref: string !&#10;+ extraction_version: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-doc">
+          <mxGeometry x="0" y="32" width="290" height="188" as="geometry" />
+        </mxCell>
+        <mxCell id="k-qdrant" value="Qdrant index (external)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1810" y="900" width="310" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="k-qdrant-a" value="+ point_id: string ! PK&#10;+ chunk_id: string ! FK logic&#10;+ embedding_model_version: string !&#10;+ vector_dimension: int !&#10;+ source_snapshot_table: string !&#10;+ source_snapshot_id: long !&#10;+ payload_ref: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-qdrant">
+          <mxGeometry x="0" y="32" width="310" height="173" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e1" value="from_node 1:N" edge="1" parent="1" source="k-node" target="k-edge" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e2" value="evidence" edge="1" parent="1" source="k-evidence" target="k-edge" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e3" value="FLOWS_TO" edge="1" parent="1" source="k-basin" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;loopStyle=orthogonalLoopStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e4" value="FLOWS_THROUGH" edge="1" parent="1" source="k-river" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e5" value="CROSSES" edge="1" parent="1" source="k-road" target="k-river" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e6" value="INTERSECTS" edge="1" parent="1" source="k-road" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e7" value="LOCATED_IN" edge="1" parent="1" source="k-fac" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e8" value="OVERLAPS" edge="1" parent="1" source="k-pop" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e9" value="OCCURRED_IN" edge="1" parent="1" source="k-event" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e10" value="AFFECTED" edge="1" parent="1" source="k-event" target="k-fac" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e11" value="AFFECTED" edge="1" parent="1" source="k-event" target="k-road" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e12" value="EVALUATES" edge="1" parent="1" source="k-assess" target="k-basin" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e13" value="VALIDATED_BY" edge="1" parent="1" source="k-assess" target="k-event" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e14" value="MENTIONS" edge="1" parent="1" source="k-doc" target="k-event" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e15" value="indexes embedding (external)" edge="1" parent="1" source="k-doc" target="k-qdrant" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-road-state" value="RoadDisruptionStateNode (projection)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="900" width="300" height="225" as="geometry" />
+        </mxCell>
+        <mxCell id="k-road-state-a" value="+ node_id: string ! FK (kg.node)&#10;+ road_edge_id: string !&#10;+ road_version: string !&#10;+ scenario_id: string !&#10;+ valid_time: timestamp !&#10;+ passability_status: string !&#10;+ assessment_id: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="k-road-state">
+          <mxGeometry x="0" y="32" width="300" height="193" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e16" value="HAS_STATE" edge="1" parent="1" source="k-road" target="k-road-state" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="k-e17" value="SUPPORTED_BY" edge="1" parent="1" source="k-road-state" target="k-assess" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

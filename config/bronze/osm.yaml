@@ -1,0 +1,26 @@
+version: v1
+groups:
+  hydrology:
+    waterway: ["*"]
+    natural: [water, wetland, bay, spring]
+    water: ["*"]
+    landuse: [reservoir, basin]
+  hydraulic_structure:
+    man_made: [dam, dyke, embankment, water_works, wastewater_plant, pumping_station, water_tower]
+    barrier: [dam, dike]
+    tunnel: [culvert]
+  critical_transport:
+    bridge: ["*"]
+    ford: ["*"]
+    highway: [motorway, motorway_link, trunk, trunk_link, primary, primary_link, secondary, secondary_link, tertiary, tertiary_link]
+    railway: [rail]
+    aeroway: [aerodrome, helipad]
+    public_transport: [station]
+    amenity: [bus_station]
+  critical_facility:
+    amenity: [hospital, clinic, doctors, fire_station, police, rescue_station, shelter, school, community_centre, townhall]
+    healthcare: [hospital, clinic, doctor, centre]
+    emergency: [ambulance_station, disaster_response, assembly_point, landing_site]
+    social_facility: [shelter]
+    power: [plant, substation]
+    man_made: [water_works, wastewater_plant, pumping_station, water_tower, communications_tower]

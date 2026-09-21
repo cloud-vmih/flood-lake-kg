@@ -17,6 +17,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:?run make lakehouse-init}@postgres:5432/airflow
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?run make lakehouse-init}
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_SECRET_KEY:?run make lakehouse-init}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?run make lakehouse-init}
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW__API__DAG_CACHE_SIZE: "16"
@@ -175,7 +176,10 @@ services:
     networks: [lakehouse]
 
   polaris-bootstrap:
-    image: alpine/curl:8.21.0
+    image: flood-lakehouse-polaris-bootstrap:8.21.0
+    build:
+      context: .
+      dockerfile: infra/docker/polaris-bootstrap/Dockerfile
     user: root
     depends_on:
       polaris:
@@ -185,7 +189,7 @@ services:
       POLARIS_CLIENT_SECRET: ${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
     volumes:
       - ./infra/services/polaris/bootstrap.sh:/bootstrap.sh:ro,Z
-    entrypoint: ["/bin/sh", "-c", "apk add --no-cache jq >/dev/null && exec /bootstrap.sh"]
+    entrypoint: ["/bootstrap.sh"]
     restart: "no"
     networks: [lakehouse]
 
@@ -214,6 +218,7 @@ services:
             --email admin@localhost
         fi
         airflow pools set source_landing_writer 1 "Serializes local catalog and Iceberg writers"
+        airflow pools set bronze_writer 1 "Serializes Bronze Iceberg writers"
     restart: "no"
 
   airflow-api-server:

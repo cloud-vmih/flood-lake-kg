@@ -7,9 +7,10 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from flashflood_data.catalog import AssetCatalog
-from flashflood_data.catalog.models import SourceSpec
+from flashflood_data.catalog import AssetCatalog, sha256_file
+from flashflood_data.catalog.models import AssetKind, AssetStatus, SourceSpec
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.landing.config import StaticLandingConfig
@@ -20,6 +21,7 @@ from flashflood_data.orchestration.landing.models import (
     PreparedObject,
     PublishedBatch,
     PublishedObject,
+    RawCleanupCandidate,
     RegisteredBatch,
     SourceObjectRow,
 )
@@ -30,6 +32,7 @@ from flashflood_data.orchestration.landing.sources import (
 )
 from flashflood_data.static.sources.base import SourceContext
 from flashflood_data.static.sources.existing import inventory_existing
+from flashflood_data.storage.atomic import atomic_target
 from flashflood_data.storage.http import BudgetRejected
 from flashflood_data.storage.http.fetcher import HttpFetcher
 from flashflood_data.storage.http.redaction import redact
@@ -184,6 +187,7 @@ class StaticSourceLandingService:
             raise SourceLandingError(f"unknown source: {source_id}") from exc
         policy = self.config.source(source_id)
         context = self._contexts[run_id]
+        self._restore_missing_remote_assets(source_id)
         records = acquire_validated_assets(policy, spec, context, self.fetcher)
         return prepare_source_objects(
             policy,
@@ -191,6 +195,47 @@ class StaticSourceLandingService:
             staging_root=self.staging_root,
             run_id=run_id,
         )
+
+    def _restore_missing_remote_assets(self, source_id: str) -> None:
+        """Recover removed provider downloads from committed MinIO objects for a rerun."""
+        spec = self.source_specs[source_id]
+        if spec.adapter == "existing" or self.paths is None or self.catalog is None:
+            return
+        missing = [
+            record for record in self.catalog.raw_assets(source_id)
+            if record.status is AssetStatus.VALIDATED
+            and record.duplicate_of_asset_id is None
+            and not self.catalog.has_verified_content(record)
+        ]
+        if not missing:
+            return
+        locations = self.inventory.source_locations(source_id)
+        for record in missing:
+            location = locations.get((record.asset_id, record.source_version, record.checksum))
+            if location is None:
+                continue
+            object_uri, size_bytes = location
+            uri = urlsplit(object_uri)
+            if uri.scheme != "s3" or uri.netloc != self.publisher.bucket:
+                raise ObjectConflict("registered raw object is outside the configured bucket")
+            key = f"{uri.netloc}{uri.path}"
+            parts = Path(record.storage_path).parts
+            candidates = [
+                self.paths.dataset.joinpath(*parts[index + 1:])
+                for index, part in enumerate(parts[:-1]) if part == "dataset"
+            ]
+            target = next(
+                (path for path in reversed(candidates) if path.resolve().is_relative_to(self.paths.raw.resolve())),
+                None,
+            )
+            if target is None or target.is_symlink() or target.exists():
+                raise ObjectConflict("local raw path is unsafe to restore")
+            if size_bytes != record.size_bytes:
+                raise ObjectConflict("registered raw size differs from local catalog")
+            with atomic_target(target) as partial:
+                self.store.download(key, partial)
+                if partial.stat().st_size != record.size_bytes or sha256_file(partial) != record.checksum:
+                    raise ObjectConflict("registered raw object failed checksum verification")
 
     @staticmethod
     def _object_key(prepared: PreparedObject) -> str:
@@ -330,11 +375,15 @@ class StaticSourceLandingService:
         published: list[PublishedObject] = []
         rows: list[SourceObjectRow] = []
         cleanup: set[str] = set()
+        raw_cleanup: list[RawCleanupCandidate] = []
         run_source_root = (self.staging_root / run_id / source_id).resolve()
         for prepared in prepared_objects:
             item, row, manifest_path = self._publish_prepared(prepared, run_id)
             published.append(item)
             rows.append(row)
+            candidate = self._raw_cleanup_candidate(prepared, item, row)
+            if candidate is not None:
+                raw_cleanup.append(candidate)
             cleanup.add(str(manifest_path))
             prepared_path = prepared.path.resolve()
             if prepared_path.is_relative_to(run_source_root):
@@ -345,16 +394,75 @@ class StaticSourceLandingService:
             objects=tuple(published),
             rows=tuple(rows),
             cleanup_paths=tuple(sorted(cleanup)),
+            raw_cleanup=tuple(raw_cleanup),
+        )
+
+    def _raw_cleanup_candidate(
+        self, prepared: PreparedObject, published: PublishedObject, row: SourceObjectRow
+    ) -> RawCleanupCandidate | None:
+        """Select only a published, catalogued download beneath dataset/raw."""
+        spec = self.source_specs.get(prepared.source_id)
+        if spec is None or spec.adapter == "existing" or self.paths is None or self.catalog is None:
+            return None
+        try:
+            record = self.catalog.get(prepared.asset_id)
+        except KeyError:
+            return None
+        path = Path(record.storage_path)
+        if (
+            record.kind is not AssetKind.RAW
+            or record.status is not AssetStatus.VALIDATED
+            or record.checksum != row.checksum
+            or path.is_symlink()
+            or path.resolve() != prepared.path.resolve()
+            or not path.resolve().is_relative_to(self.paths.raw.resolve())
+        ):
+            return None
+        return RawCleanupCandidate(
+            object_id=row.object_id,
+            asset_id=record.asset_id,
+            storage_path=str(path),
+            object_key=published.object_key,
+            size_bytes=row.size_bytes,
+            checksum=row.checksum,
         )
 
     def register_batch(self, batch: PublishedBatch) -> RegisteredBatch:
         """Register all published objects for a source in one Iceberg commit."""
         registered = self.inventory.register_many(batch.rows)
-        return registered.model_copy(update={"cleanup_paths": batch.cleanup_paths})
+        return registered.model_copy(update={
+            "cleanup_paths": batch.cleanup_paths,
+            "raw_cleanup": batch.raw_cleanup,
+        })
 
     def cleanup_batch(self, batch: RegisteredBatch) -> None:
-        """Remove only the committed source's run-scoped local staging directory."""
+        """Remove committed staging and verified copies of remote raw objects."""
         cleanup_committed_staging(self.config, self.staging_root, batch)
+        if batch.raw_cleanup and (self.paths is None or self.catalog is None):
+            raise ValueError("raw cleanup requires project paths and asset catalog")
+        for candidate in batch.raw_cleanup:
+            if candidate.object_id not in batch.object_ids:
+                raise ValueError("raw cleanup object is not in the committed batch")
+            record = self.catalog.get(candidate.asset_id)
+            path = Path(candidate.storage_path)
+            if (
+                record.source_id != batch.source_id
+                or record.kind is not AssetKind.RAW
+                or record.checksum != candidate.checksum
+                or Path(record.storage_path) != path
+                or path.is_symlink()
+                or not path.resolve().is_relative_to(self.paths.raw.resolve())
+            ):
+                raise ValueError("raw cleanup candidate does not match its local catalog record")
+            if (
+                self.store.size(candidate.object_key) != candidate.size_bytes
+                or self.store.sha256(candidate.object_key) != candidate.checksum
+            ):
+                raise ObjectConflict("cannot clean raw file without a verified MinIO copy")
+            if path.exists():
+                if not self.catalog.has_verified_content(record):
+                    raise ObjectConflict("local raw file changed after publication")
+                path.unlink()
 
     def cleanup_failed_source(self, source_id: str, run_id: str) -> None:
         """Remove run-scoped local staging after a source terminates with failure."""

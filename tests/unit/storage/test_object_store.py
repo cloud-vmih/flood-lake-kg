@@ -112,6 +112,16 @@ def test_pyarrow_store_streams_copy_when_server_side_copy_times_out(tmp_path: Pa
     assert destination.read_bytes() == source.read_bytes()
 
 
+def test_pyarrow_store_streams_download_to_local_file(tmp_path: Path) -> None:
+    source = tmp_path / "object.bin"
+    destination = tmp_path / "download.bin"
+    source.write_bytes(b"raw-source-payload")
+
+    PyArrowS3ObjectStore(fs.LocalFileSystem()).download(str(source), destination)
+
+    assert destination.read_bytes() == b"raw-source-payload"
+
+
 def test_pyarrow_store_does_not_stream_for_non_timeout_copy_errors(tmp_path: Path) -> None:
     source = tmp_path / "source.bin"
     destination = tmp_path / "destination.bin"
