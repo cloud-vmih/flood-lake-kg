@@ -294,7 +294,7 @@ flowchart TD
     FB --> FH["flood_event_harmonize"]
   end
 
-  subgraph Weather["Weather domain — mục tiêu"]
+  subgraph Weather["Weather ingest — đã có; Silver/Gold — mục tiêu"]
     GI["gsmap_ingest<br/>Landing → Raw/Meta → Bronze"]
     EI["era5_land_ingest<br/>Landing → Raw/Meta → Bronze"]
     II["ifs_ingest<br/>Landing → Raw/Meta → Bronze"]
@@ -455,11 +455,11 @@ GSMaP NOW và IFS provisional không bị xóa khi dữ liệu final xuất hi�
 
 ### 9.2. Một ingest DAG cho mỗi source
 
-| DAG mục tiêu | Wake-up schedule dự kiến | Safe end do provider quyết định | Công việc |
+| DAG đã triển khai | Wake-up schedule | Safe end hiện dùng | Công việc |
 | --- | --- | --- | --- |
-| `gsmap_ingest` | 30 phút | File/time slot thực sự đã xuất hiện trong archive/listing | Standard cho lịch sử ổn định, NOW cho đoạn gần hiện tại; Landing → Bronze. |
-| `ifs_ingest` | 1 giờ | Các forecast cycle và lead time provider đang công bố | Enumerate cycle/lead/revision; Landing → Bronze. |
-| `era5_land_ingest` | Hằng ngày | Mốc cuối provider/CDS đã phát hành an toàn | Backfill/correction theo chunk; Landing → Bronze. |
+| `gsmap_ingest` | Phút 17 mỗi giờ | Đồng hồ UTC trừ lag riêng Standard/NOW; file thiếu làm run fail và giữ cursor | Standard cho lịch sử ổn định, NOW cho đoạn gần hiện tại; Landing → Bronze. |
+| `ifs_ingest` | Phút 12 mỗi 6 giờ | UTC trừ 7 giờ, làm tròn theo cycle 6 giờ | Lấy explicit archived run qua Open-Meteo Single Runs; Landing → Bronze. |
+| `era5_land_ingest` | 02:43 hằng ngày | UTC trừ 10 ngày rồi lùi về đầu tháng hoàn chỉnh gần nhất | Backfill/correction theo tháng; Landing → Bronze. |
 
 Cả ba DAG đặt:
 
@@ -473,7 +473,8 @@ Airflow schedule chỉ dùng để **đánh thức** DAG. Airflow không cần t
 Do đó:
 
 - Nếu Docker chạy liên tục, DAG hoạt động như polling.
-- Nếu Docker tắt vài ngày, lần chạy đầu tiên sau khi bật lại tự catch-up toàn bộ khoảng còn thiếu.
+- Nếu Docker tắt vài ngày, các lần chạy sau khi bật lại tự tiếp tục từ cursor. Mỗi run bị giới hạn
+  số object để không làm phình XCom; schedule hoặc manual trigger tiếp theo xử lý phần còn lại.
 - Operator cũng có thể trigger thủ công bất cứ lúc nào; thuật toán catch-up không thay đổi.
 - `docker compose down` không làm mất tiến độ nếu volume/catalog trong `dataset/lakehouse/` vẫn được giữ.
 - Catch-up chỉ tự động được trong khoảng provider còn lưu archive; nếu downtime vượt retention, pipeline phải ghi gap và dùng nguồn/backfill archive thay thế.
@@ -539,25 +540,24 @@ Khoảng hổng chưa giải quyết được ghi vào quality result của run 
 
 ### 9.5. Bảng Meta điều khiển tiến độ
 
-Cần bổ sung bảng `meta.ingest_watermarks` trước khi triển khai weather DAG:
+Các weather DAG đã dùng bảng `meta.ingest_watermarks`:
 
 | Field | Ý nghĩa |
 | --- | --- |
 | `source_id` | Source/provider sở hữu stream. |
 | `product` | Product cụ thể, ví dụ GSMaP Standard và Gauge NOW không dùng chung cursor. |
-| `variable_group` | Nhóm biến có cùng nhịp và request strategy. |
-| `stream_key` | Phân biệt grid/AOI/cycle family khi một product có nhiều stream. |
-| `last_contiguous_valid_time` | Mốc valid time liên tục cuối đã có Raw hoặc đã ghi nhận NO_DATA hợp lệ. |
-| `last_seen_cycle` | Forecast cycle mới nhất đã nhìn thấy; null cho nguồn không có cycle. |
-| `last_seen_revision` | Revision mới nhất đã quan sát cho stream. |
-| `overlap_seconds` | Khoảng nhìn lùi khi lập kế hoạch lần kế tiếp. |
-| `pipeline_run_id` | Run đã cập nhật cursor gần nhất. |
+| `stream_id` | Phân biệt request/cycle family khi một product có nhiều stream. |
+| `cursor_time` | Mốc cuối liên tục đã có Raw hoặc đã ghi nhận NO_DATA hợp lệ. |
+| `last_safe_end` | Safe end quan sát ở lần lập kế hoạch gần nhất. |
+| `last_run_id` | Run đã cập nhật cursor gần nhất. |
+| `status` | `ready`, `gap` hoặc `failed`. |
 | `updated_at` | Thời điểm cập nhật UTC. |
+| `detail_json` | Chi tiết gap/NO_DATA có schema version. |
 
 Khóa logic là:
 
 ```text
-(source_id, product, variable_group, stream_key)
+(source_id, product, stream_id)
 ```
 
 Vai trò các bảng không trùng nhau:
@@ -576,23 +576,27 @@ Trước khi code bảng này phải cập nhật đồng bộ `docs/schema_cont
 
 - Backfill project từ năm 2020 bằng Gauge Standard ở đoạn archive đã ổn định.
 - Dùng Gauge NOW cho đoạn gần hiện tại chưa có Standard.
-- Không hardcode `now - 3 days` làm sự thật tuyệt đối; adapter phải đọc listing/file thực tế và chọn mốc Standard/NOW đang khả dụng.
+- Bản hiện tại dùng lag bảo thủ riêng cho Standard/NOW; file chưa tồn tại làm task fail và giữ watermark. Đọc listing thực tế là cải tiến tiếp theo.
+- Gauge NOW biểu diễn cửa sổ mưa một giờ nhưng có request cadence 30 phút; expected assets gồm cả `HH:00` và `HH:30`.
+- Binary Standard/NOW dùng float32 little-endian; `-4`, `-8`, `-99` được giữ là missing/null, không đổi thành mưa âm.
 - Khi Standard xuất hiện cho time slot từng có NOW, ingest revision Standard mới và để Silver selector chuyển ưu tiên.
 - Giữ product, version và revision trong object identity; không trộn Standard và NOW thành một chuỗi không phân biệt nguồn.
 
 #### ERA5-Land
 
-- Safe end lấy từ availability thực tế của CDS/provider, không lấy đồng hồ hiện tại.
-- Chia backfill lớn theo tháng hoặc chunk giới hạn của API.
+- Bản hiện tại lấy UTC trừ 10 ngày rồi lùi về đầu tháng hoàn chỉnh gần nhất; probe availability thực tế của CDS là cải tiến tiếp theo.
+- Chia catch-up lớn theo tháng hoàn chỉnh để request identity ổn định; explicit backfill vẫn dùng khoảng operator cung cấp.
 - Operational run nhìn lùi một khoảng overlap để nhận correction.
+- Bronze giữ accumulation gốc từ 00 UTC; mốc 00 UTC đại diện 24 giờ trước. De-accumulation và đổi m → mm thực hiện ở Silver.
 - Nếu ERA5 chưa tới hiện tại, Silver có thể dùng IFS provisional cho đoạn trễ.
 
 #### IFS
 
-- Adapter enumerate cycle đang có thay vì giả định một cycle chắc chắn xuất hiện đúng giờ.
+- Bản hiện tại lập cycle 6 giờ từ UTC trừ lag bảo thủ; cycle chưa có làm task fail và giữ watermark. Enumerate availability thực tế là cải tiến tiếp theo.
 - Lập expected identities theo `cycle + lead_time + valid_time + revision`.
 - Chỉ tải model/product đã chốt; không dùng cơ chế “best match” có thể đổi model giữa các lần chạy.
-- Poll mỗi giờ giúp phát hiện cycle mới. Nếu Docker tắt, lần sau enumerate lại các cycle còn nằm trong archive và tải phần thiếu.
+- Open-Meteo request chốt `models=ecmwf_ifs` và `run=<cycle UTC>`.
+- Schedule 6 giờ phát hiện cycle mới. Nếu Docker tắt, lần sau planner lập lại các cycle còn nằm trong archive và tải phần thiếu.
 
 ### 9.7. Backfill và operational dùng cùng code
 
@@ -684,7 +688,7 @@ Sau Bronze:
 
 Mapping grid–basin được version riêng cho GSMaP, IFS và ERA5-Land. Weight giữ diện tích giao, mẫu số và valid coverage; Landing không làm spatial aggregation.
 
-### 9.10. Tổ chức file mục tiêu
+### 9.10. Tổ chức file hiện có và phần tiếp theo
 
 ```text
 airflow/dags/
@@ -698,29 +702,22 @@ airflow/dags/
 config/dynamic/
 ├── gsmap.yaml
 ├── era5_land.yaml
-├── ifs.yaml
-├── bronze.yaml
-├── silver.yaml
-└── gold.yaml
+└── ifs.yaml
 
 src/flashflood_data/orchestration/weather/
-├── common/
-│   ├── models.py
-│   ├── config.py
-│   ├── planner.py
-│   ├── watermarks.py
-│   ├── landing.py
-│   ├── temporal.py
-│   └── quality.py
+├── models.py
+├── config.py
+├── planner.py
+├── watermarks.py
+├── landing.py
+├── bronze.py
+├── parsers.py
+├── factory.py
+├── airflow_factory.py
 ├── providers/
 │   ├── gsmap.py
 │   ├── era5_land.py
 │   └── ifs_openmeteo.py
-├── bronze/
-│   ├── registry.py
-│   ├── parsers.py
-│   ├── service.py
-│   └── reconcile.py
 ├── silver/
 │   ├── grid.py
 │   ├── basin_weights.py
@@ -749,32 +746,32 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 
 ### Task 2 — Bổ sung Meta watermark và catch-up planner
 
-- [ ] Thêm `meta.ingest_watermarks` vào schema contract, draw.io, Iceberg bootstrap và repository.
-- [ ] Tạo planner lập expected windows theo cursor, overlap và provider safe end.
-- [ ] Trừ object đã có bằng identity trong `meta.source_objects`.
-- [ ] Chỉ advance cursor sau contiguous coverage hoặc `NO_DATA` có lý do.
-- [ ] Kiểm thử khoảng 10:00 và 12:00 đã có nhưng 11:00 thiếu vẫn được phát hiện.
+- [x] Thêm `meta.ingest_watermarks` vào schema contract, draw.io, Iceberg schema và repository.
+- [x] Tạo planner lập expected windows theo cursor, overlap và provider safe end.
+- [x] Trừ object đã có bằng identity trong `meta.source_objects`.
+- [x] Chỉ advance cursor sau contiguous coverage hoặc `NO_DATA` có lý do.
+- [x] Kiểm thử khoảng 10:00 và 12:00 đã có nhưng 11:00 thiếu vẫn được phát hiện.
 
 **Nghiệm thu:** restart service không mất cursor; gap giữa chuỗi không bị bỏ qua; retry sau Raw commit không tải lại object.
 
 ### Task 3 — Xây common weather ingest và Bronze framework
 
-- [ ] Tạo model request/raw object, provider protocol và config loader dùng chung.
-- [ ] Mở rộng manifest/`SourceObjectRow` cho product, cycle, lead, valid/available time, revision và request fingerprint.
-- [ ] Tái sử dụng `ObjectPublisher`, `SourceObjectInventory` và `MetaRecorder`.
-- [ ] Tạo parser registry và Bronze contract theo benchmark.
-- [ ] Tạo reconciliation quét mọi Raw weather object chưa có Bronze hợp lệ.
+- [x] Tạo model request/raw object, provider protocol và config loader dùng chung.
+- [x] Mở rộng manifest/`SourceObjectRow` cho product, cycle, valid/available time, revision và request fingerprint.
+- [x] Tái sử dụng `ObjectPublisher`, `SourceObjectInventory` và `MetaRecorder`.
+- [x] Tạo parser dispatch và Bronze row contract.
+- [x] Discover quét mọi Raw weather object chưa có parser version hiện tại.
 - [ ] Thêm DQ cho interval, unit, negative precipitation, missing, out-of-order và coverage.
 
 **Nghiệm thu:** fake provider chạy trọn Landing → Raw/Meta → Bronze; rerun không tạo lát trùng; Bronze lỗi có thể phục hồi từ Raw.
 
 ### Task 4 — Triển khai ba source ingest DAG
 
-- [ ] `gsmap_ingest`: Standard backfill, NOW near-real-time, revision replacement ở Silver selector.
-- [ ] `era5_land_ingest`: CDS submit/poll, chunk theo tháng, safe end và correction overlap.
-- [ ] `ifs_ingest`: enumerate cycle/lead/revision và archive explicit run.
-- [ ] Mỗi DAG có TaskGroup `landing_raw` và `bronze`, `catchup=False`, `max_active_runs=1`.
-- [ ] Chỉ phát `weather_bronze_updated` sau Bronze snapshot đã publish.
+- [x] `gsmap_ingest`: Standard backfill, NOW near-real-time; revision được giữ cho Silver selector sau này.
+- [x] `era5_land_ingest`: CDS request theo tháng, safe lag và correction overlap.
+- [x] `ifs_ingest`: explicit archived cycle qua Single Runs API.
+- [x] Mỗi DAG có TaskGroup `landing_raw` và `bronze`, `catchup=False`, `max_active_runs=1`.
+- [x] Chỉ phát `weather_bronze_updated` sau Bronze snapshot đã publish; không phát khi danh sách parse rỗng.
 - [ ] Thêm provider rate-limit, retry/backoff, pool và sanitized error.
 
 **Nghiệm thu:** một provider lỗi không chặn provider khác; Docker tắt rồi bật lại tự lấp time slot thiếu; manual trigger và schedule dùng cùng code.
@@ -868,7 +865,7 @@ docker compose exec -T airflow-scheduler \
 make lakehouse-meta-bronze-smoke
 ```
 
-Giao diện dự kiến sau khi weather pipeline được triển khai:
+Giao diện weather đã triển khai:
 
 ```bash
 # Catch-up tự động từ watermark tới safe end của provider
@@ -889,4 +886,4 @@ docker compose exec -T airflow-scheduler \
   airflow dags trigger ifs_ingest
 ```
 
-Các lệnh weather trong block cuối là contract DAG dự kiến, chưa tồn tại trong code hiện tại. Chỉ chuyển chúng vào README vận hành sau khi code và test tương ứng đã có.
+Các lệnh weather cần credential provider tương ứng trong `.env`; backfill không đẩy cursor operational.

@@ -147,6 +147,17 @@ _DEFINITIONS = {
         mapping_version string ?
         created_at timestamp !
     """,
+    ("meta", "ingest_watermarks"): """
+        source_id string !
+        product string !
+        stream_id string !
+        cursor_time timestamp !
+        last_safe_end timestamp !
+        last_run_id string !
+        status string !
+        updated_at timestamp !
+        detail_json json !
+    """,
     ("bronze", "basin_polygon_raw"): """
         object_id string !
         source_feature_id string !
@@ -260,4 +271,3 @@ def table_schema(identifier: tuple[str, str]) -> pa.Schema:
             if identifier[1] == name:
                 return _schema(definition)
     raise KeyError(f"table identifier outside contract: {identifier}")
-

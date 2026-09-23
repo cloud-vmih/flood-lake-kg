@@ -1,0 +1,35 @@
+contract_version: "1.0"
+source_id: era5_land
+source_version: cds-era5-land-hourly-v1
+provider: era5_land
+schedule: "43 2 * * *"
+aoi_path: dataset/harmonized/aoi/hydrological_aoi.geoparquet
+parser_version: era5-land-v1
+license_id: copernicus-cds-licence
+license_uri: https://cds.climate.copernicus.eu/api/v2/terms/static/licence-to-use-copernicus-products.pdf
+max_objects_per_run: 3
+streams:
+  - stream_id: hourly_reanalysis
+    product: reanalysis-era5-land
+    start_at: 2020-01-01T00:00:00Z
+    step_minutes: 60
+    chunk_minutes: 44640
+    chunking: calendar_month
+    availability_lag_minutes: 14400
+    overlap_steps: 120
+    variables:
+      - total_precipitation
+      - volumetric_soil_water_layer_1
+      - volumetric_soil_water_layer_2
+      - volumetric_soil_water_layer_3
+      - volumetric_soil_water_layer_4
+      - surface_runoff
+    media_type: application/x-netcdf
+    filename_suffix: .nc
+    endpoint: https://cds.climate.copernicus.eu/api
+    credential_env: [CDSAPI_URL, CDSAPI_KEY]
+    options:
+      dataset: reanalysis-era5-land
+      data_format: netcdf
+      download_format: unarchived
+      grid_resolution_degrees: 0.1

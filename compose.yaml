@@ -34,6 +34,13 @@ x-airflow-common: &airflow-common
     AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}
     AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
     AWS_REGION: us-east-1
+    GSMAP_STANDARD_URL_TEMPLATE: ${GSMAP_STANDARD_URL_TEMPLATE:-}
+    GSMAP_NOW_URL_TEMPLATE: ${GSMAP_NOW_URL_TEMPLATE:-}
+    GSMAP_USERNAME: ${GSMAP_USERNAME:-}
+    GSMAP_PASSWORD: ${GSMAP_PASSWORD:-}
+    CDSAPI_URL: ${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
+    CDSAPI_KEY: ${CDSAPI_KEY:-}
+    OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-}
   volumes:
     - ./airflow/dags:/opt/airflow/dags:ro,Z
     - ./airflow/plugins:/opt/airflow/plugins:ro,Z
@@ -219,6 +226,9 @@ services:
         fi
         airflow pools set source_landing_writer 1 "Serializes local catalog and Iceberg writers"
         airflow pools set bronze_writer 1 "Serializes Bronze Iceberg writers"
+        airflow pools set weather_fetch 4 "Limits concurrent dynamic provider requests"
+        airflow pools set weather_raw_writer 1 "Serializes dynamic Raw and Meta Iceberg writers"
+        airflow pools set weather_bronze_writer 1 "Serializes dynamic Bronze Iceberg writers"
     restart: "no"
 
   airflow-api-server:

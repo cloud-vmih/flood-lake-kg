@@ -1,14 +1,14 @@
 <?xml version='1.0' encoding='utf-8'?>
 <mxfile host="app.diagrams.net" modified="2026-09-20T07:02:29.000Z" agent="Codex" version="24.7.17" type="device" pages="5">
   <diagram id="class-meta" name="01_Meta_Classes">
-    <mxGraphModel dx="1900" dy="1300" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1530" math="0" shadow="0">
+    <mxGraphModel dx="1900" dy="1500" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1800" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
         <mxCell id="mt" value="META — CROSS-LAYER CONTRACT" style="text;html=1;fontSize=26;fontColor=#666666;align=left;" parent="1" vertex="1">
           <mxGeometry as="geometry" x="50" y="30" width="1100" height="45" />
         </mxCell>
-        <mxCell id="mn" value="Only meta.source_objects is implemented. Full fields and write rules: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" parent="1" vertex="1">
+        <mxCell id="mn" value="Meta physical contracts are implemented; tables are created on first use. Full rules: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" parent="1" vertex="1">
           <mxGeometry as="geometry" x="50" y="78" width="1550" height="35" />
         </mxCell>
         <mxCell id="m-source-registry" value="meta.source_registry (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
@@ -65,6 +65,12 @@
         <mxCell id="m-lineage-edges-a" value="+ lineage_edge_id: string ! PK&#10;+ pipeline_run_id: string ! FK&#10;+ input_kind: string !&#10;+ input_object_id: string ? FK&#10;+ input_table: string ?&#10;+ input_snapshot_id: long ?&#10;+ output_table: string !&#10;+ output_snapshot_id: long !&#10;+ transform_role: string !&#10;+ mapping_version: string ?&#10;+ created_at: timestamp !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-lineage-edges" vertex="1">
           <mxGeometry as="geometry" x="0" y="34" width="540" height="199" />
         </mxCell>
+        <mxCell id="m-ingest-watermarks" value="meta.ingest_watermarks (implemented contract)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="1270" y="1380" width="540" height="199" />
+        </mxCell>
+        <mxCell id="m-ingest-watermarks-a" value="+ source_id: string ! PK/FK&#10;+ product: string ! PK&#10;+ stream_id: string ! PK&#10;+ cursor_time: timestamp !&#10;+ last_safe_end: timestamp !&#10;+ last_run_id: string !&#10;+ status: string !&#10;+ updated_at: timestamp !&#10;+ detail_json: json !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-ingest-watermarks" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="165" />
+        </mxCell>
         <mxCell id="me1" value="registers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-source-registry" target="m-source-objects">
           <mxGeometry as="geometry" relative="1" />
         </mxCell>
@@ -93,6 +99,9 @@
           <mxGeometry as="geometry" relative="1" />
         </mxCell>
         <mxCell id="me10" value="quality policy" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-dataset-registry" target="m-quality-results">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="me11" value="dynamic cursor" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-source-registry" target="m-ingest-watermarks">
           <mxGeometry as="geometry" relative="1" />
         </mxCell>
       </root>
@@ -127,7 +136,7 @@
         <mxCell id="b-raster-raw-a" value="+ object_id: string ! PK/FK&#10;+ band_or_layer: string ! PK&#10;+ property: string ?&#10;+ depth_interval: string ?&#10;+ statistic: string ?&#10;+ object_uri: string !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ resolution_x: double !&#10;+ resolution_y: double !&#10;+ nodata: double ?&#10;+ dtype: string !&#10;+ checksum: string !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-raster-raw">
           <mxGeometry x="0" y="34" width="400" height="284" as="geometry" />
         </mxCell>
-        <mxCell id="b-weather-raw" value="bronze.weather_grid_value (conditional rows)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="b-weather-raw" value="bronze.weather_grid_value (implemented contract)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="1450" y="250" width="410" height="369" as="geometry" />
         </mxCell>
         <mxCell id="b-weather-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_id: string !&#10;+ source_grid_id: string ! PK&#10;+ source_grid_version: string ! PK&#10;+ variable: string ! PK&#10;+ vertical_level: string ! PK&#10;+ valid_time: timestamp ! PK&#10;+ window_start: timestamp ! PK&#10;+ window_end: timestamp ! PK&#10;+ source_revision: int ! PK&#10;+ source_cycle_id: string ! PK&#10;+ model_run_time: timestamp ?&#10;+ available_at: timestamp !&#10;+ value: double ?&#10;+ unit: string !&#10;+ value_kind: string !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-weather-raw">

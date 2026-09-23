@@ -3,7 +3,8 @@
 Repository xây dựng Lakehouse địa không gian để tích hợp dữ liệu theo phiên bản, tạo feature theo
 lưu vực nhỏ và chuẩn bị dữ liệu cho threat B0–B3, Knowledge Graph và routing lũ quét tại Sơn La.
 
-Luồng vận hành hiện tại dùng **HydroBASINS level 12 (L12)** và hai DAG Airflow:
+Luồng vận hành hiện tại dùng **HydroBASINS level 12 (L12)**, hai DAG static và ba DAG
+weather động:
 
 ```mermaid
 flowchart LR
@@ -16,6 +17,10 @@ flowchart LR
     F --> G[Iceberg bronze]
     F --> H[Quality và lineage trong meta]
     G --> I[Silver L12 - kế hoạch tiếp theo]
+    B --> W[gsmap / era5_land / ifs ingest]
+    W --> D
+    W --> E
+    W --> G
 ```
 
 Pipeline file-first L10 trước đây không còn là luồng vận hành của project. Artifact L10 trong
@@ -35,7 +40,7 @@ Cập nhật ngày **23/09/2026**:
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
 | Spark/Iceberg | Đã có profile tùy chọn và smoke test ghi–đọc bảng tạm |
 | Silver L12 | Chưa triển khai |
-| GSMaP, ERA5-Land và IFS | Chưa có DAG production |
+| GSMaP, ERA5-Land và IFS | Đã có ba DAG Raw → Bronze; chờ cấu hình credential rồi chạy backfill |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
 Snapshot Iceberg được kiểm tra gần nhất:
@@ -59,14 +64,16 @@ thái thực tế sau mỗi lần chạy DAG.
 
 ## Yêu cầu môi trường
 
-- Linux x86_64 hoặc Windows với WSL2 x86_64.
+- Linux x86_64 hoặc Windows + WSL2 x86_64.
 - Docker Engine và Docker Compose v2.
 - Python 3.11, Git, GNU Make và OpenSSL.
 - Tài khoản Copernicus Data Space Ecosystem để tải DEM.
 - Nên có ít nhất 10 GiB dung lượng trống sau khi tải dữ liệu.
 
-Trên WSL2, đặt repository trong filesystem Linux, ví dụ `~/projects/FloodLakeKG`. Không đặt
-PostgreSQL/MinIO hoặc repository dưới `/mnt/c/` vì bind mount và quyền file sẽ chậm, dễ lỗi hơn.
+Trên WSL2, đặt repository trong filesystem Linux, ví dụ `~/projects/FloodLakeKG`; không đặt repository dưới `/mnt/c/`
+vì bind mount và quyền file sẽ chậm, dễ lỗi hơn. Cũng không đặt volume PostgreSQL/MinIO dưới `/mnt/c/`.
+Nếu user chưa dùng được Docker mà không có `sudo`, chạy `sudo usermod -aG docker "$USER"`, đăng
+xuất rồi đăng nhập lại WSL.
 
 ## Cài đặt và khởi động
 
@@ -81,6 +88,12 @@ Lệnh này kiểm tra prerequisite, tạo `.venv`, cài runtime, sinh secret lo
 
 ```bash
 make bootstrap PYTHON=/duong/dan/toi/python3.11
+```
+
+Nếu chỉ muốn tạo môi trường Python trước khi dựng Docker, dùng:
+
+```bash
+make setup PYTHON=/duong/dan/toi/python3.11
 ```
 
 Các lệnh vận hành stack:
@@ -115,6 +128,34 @@ FLASHFLOOD_CDSE_PASSWORD=mat_khau
 
 Không ghi credential vào YAML, Git, chat hoặc log.
 
+### Cấu hình nguồn weather động
+
+Ba DAG weather chỉ đọc tên credential từ môi trường. Điền các giá trị cần dùng vào `.env`:
+
+```dotenv
+# JAXA GSMaP: URL template do tài khoản/archive cung cấp; hỗ trợ placeholder
+# {year}, {month}, {day}, {hour}, {minute}, {product}.
+GSMAP_STANDARD_URL_TEMPLATE=https://host/path/{year}/{month}/{day}/file-{hour}{minute}.dat.gz
+GSMAP_NOW_URL_TEMPLATE=https://host/path/{year}/{month}/{day}/file-{hour}{minute}.dat.gz
+GSMAP_USERNAME=...
+GSMAP_PASSWORD=...
+
+# Copernicus CDS API
+CDSAPI_URL=https://cds.climate.copernicus.eu/api
+CDSAPI_KEY=...
+
+# Không bắt buộc với endpoint Open-Meteo public; điền khi dùng commercial key.
+OPEN_METEO_API_KEY=
+```
+
+Tài khoản CDS phải chấp nhận terms của dataset ERA5-Land trước lần tải đầu. Không đặt secret trong
+`config/dynamic/*.yaml`.
+
+Tài liệu provider: [JAXA GSMaP user guide](https://sharaku.eorc.jaxa.jp/GSMaP/guide.html),
+[Copernicus CDS API setup](https://cds.climate.copernicus.eu/how-to-api),
+[ERA5-Land hourly](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land) và
+[Open-Meteo Single Runs](https://open-meteo.com/en/docs/single-runs-api).
+
 ### Cập nhật code trong image Airflow
 
 Package `src/flashflood_data` được cài vào image, không bind mount trực tiếp. Sau khi sửa code
@@ -144,7 +185,7 @@ Lệnh tạo bốn file trong `dataset/harmonized/aoi/`:
 | `environmental_aoi.geoparquet` | Hydrological AOI cộng buffer để lấy dữ liệu môi trường |
 | `exposure_aoi.geoparquet` | Core cộng buffer và giới hạn trong Việt Nam |
 
-Hai DAG không tự dựng AOI. Cần chạy lại bước này khi thay đổi basin level, upstream hops hoặc
+Các DAG không tự dựng AOI. Cần chạy lại bước này khi thay đổi basin level, upstream hops hoặc
 buffer trong `config/study_area.yaml`.
 
 ### AOI ảnh hưởng dữ liệu raster thế nào
@@ -292,6 +333,86 @@ docker compose exec -T airflow-scheduler airflow dags trigger \
 .venv/bin/flashflood-data bronze reconcile
 ```
 
+## Bước 4 — Ba DAG weather động
+
+| DAG | Schedule | Product | Giới hạn mặc định mỗi run |
+| --- | --- | --- | ---: |
+| `gsmap_ingest` | phút 17 mỗi giờ | Gauge Standard v8 và Gauge NOW v8 | 336 object |
+| `era5_land_ingest` | 02:43 hằng ngày | ERA5-Land hourly | 3 tháng hoàn chỉnh |
+| `ifs_ingest` | phút 12 mỗi 6 giờ | IFS HRES Single Runs | 28 cycle |
+
+Schedule chỉ đánh thức DAG. Mỗi lần chạy, planner đọc `meta.ingest_watermarks`, lập các cửa sổ từ
+cursor tới mốc an toàn của provider, đối chiếu `meta.source_objects`, rồi tải object thiếu hoặc
+nằm trong overlap cần kiểm tra revision. Vì `catchup=False`, Airflow không tạo hàng loạt DAG run
+cho thời gian Docker đã tắt; application tự bù phần thiếu khi stack chạy lại.
+ERA5-Land chỉ tiến theo ranh giới tháng đã hoàn chỉnh để identity của request ổn định và không tạo
+các chunk tháng chồng lấn. Mốc an toàn hiện dùng lag bảo thủ; nếu provider chưa có object dự kiến,
+task fetch fail và watermark giữ nguyên để lần sau thử lại.
+Gauge NOW có cửa sổ mưa một giờ nhưng phát hành mỗi 30 phút, nên planner tạo cả asset `HH:00` và
+`HH:30`. Parser đọc binary float32 little-endian và đổi các mã `-4`, `-8`, `-99` thành null.
+
+Trong mỗi DAG có hai TaskGroup:
+
+```text
+landing_raw
+  load_cursor → determine_available_end → plan_expected_windows
+  → fetch_missing_or_revised → register_raw_and_meta
+  → verify_contiguous_coverage → advance_cursor
+
+bronze
+  discover_unparsed_objects → parse_bronze
+```
+
+Raw được lưu bất biến theo checksum dưới:
+
+```text
+s3://raw/weather/<source_id>/<product>/YYYY/MM/DD/<asset_id>/<checksum>/<filename>
+s3://raw/weather/<source_id>/<product>/YYYY/MM/DD/<asset_id>/<checksum>/<filename>.manifest.json
+```
+
+`meta.source_objects` giữ inventory; `meta.ingest_watermarks` giữ cursor riêng theo product/stream;
+`bronze.weather_grid_value` giữ từng giá trị tại grid/time theo đúng biến và unit của nguồn. Nếu
+Bronze lỗi sau khi Raw đã commit, lần chạy sau chỉ discover và parse lại Raw còn thiếu, không tải
+lại payload đã commit ngoài cửa sổ overlap.
+Với ERA5-Land, Bronze giữ đúng accumulation gốc từ 00 UTC; timestamp 00 UTC mang cửa sổ 24 giờ
+trước đó. Việc de-accumulate sang lượng theo giờ thuộc pipeline Silver để không làm mất nghĩa gốc.
+
+Build lại image sau khi pull code vì Airflow cần thêm `cdsapi`:
+
+```bash
+make lakehouse-airflow-build
+docker compose up -d --no-deps --force-recreate \
+  airflow-api-server airflow-scheduler airflow-dag-processor
+```
+
+Sau đó unpause DAG cần chạy:
+
+```bash
+docker compose exec -T airflow-api-server airflow dags unpause gsmap_ingest
+docker compose exec -T airflow-api-server airflow dags unpause era5_land_ingest
+docker compose exec -T airflow-api-server airflow dags unpause ifs_ingest
+```
+
+Trigger catch-up theo watermark:
+
+```bash
+docker compose exec -T airflow-scheduler airflow dags trigger gsmap_ingest
+docker compose exec -T airflow-scheduler airflow dags trigger era5_land_ingest
+docker compose exec -T airflow-scheduler airflow dags trigger ifs_ingest
+```
+
+Backfill một khoảng rõ ràng không đẩy cursor operational:
+
+```bash
+docker compose exec -T airflow-scheduler airflow dags trigger gsmap_ingest \
+  --conf '{"mode":"backfill","start":"2020-01-01T00:00:00Z","end":"2020-02-01T00:00:00Z"}'
+```
+
+`max_objects` trong DAG conf cho phép giảm/tăng batch của một lần chạy. Khoảng lớn hơn giới hạn
+sẽ được xử lý qua các lần catch-up tiếp theo; không truyền hàng chục nghìn object qua một XCom.
+ERA5-Land và IFS dùng `hydrological_aoi.geoparquet`; GSMaP giữ file provider trong Raw và chỉ
+phát sinh các row Bronze nằm trong bbox AOI này.
+
 ## Xem log Airflow
 
 Trong Airflow UI: mở DAG → DAG run → task instance → **Logs**.
@@ -361,10 +482,14 @@ chuẩn bị cho transform lớn; hai DAG static hiện tại chạy bằng Pyth
 .
 ├── airflow/dags/
 │   ├── static_source_landing.py       # Source → Raw MinIO + Meta
-│   └── static_source_to_bronze.py     # Raw/Meta → Bronze + audit/lineage
+│   ├── static_source_to_bronze.py     # Raw/Meta → Bronze + audit/lineage
+│   ├── gsmap_ingest.py                # GSMaP Raw → Bronze
+│   ├── era5_land_ingest.py            # ERA5-Land Raw → Bronze
+│   └── ifs_ingest.py                  # IFS/Open-Meteo Raw → Bronze
 ├── config/
 │   ├── study_area.yaml                # L12, upstream hops, buffer và CRS
 │   ├── sources/*.yaml                 # Adapter, version và policy của nguồn
+│   ├── dynamic/*.yaml                 # Product, schedule, biến, overlap và chunk weather
 │   ├── landing/static.yaml            # 10 source đang hoạt động và selection của Landing
 │   ├── bronze/static.yaml             # source → parser/table/version
 │   ├── bronze/osm.yaml                # Allowlist OSM phục vụ lũ
@@ -372,6 +497,7 @@ chuẩn bị cho transform lớn; hai DAG static hiện tại chạy bằng Pyth
 ├── src/flashflood_data/
 │   ├── orchestration/landing/         # Acquire, publish, register, audit, cleanup
 │   ├── orchestration/bronze/          # Discover, parse, quality, reconcile
+│   ├── orchestration/weather/          # Planner, watermark, provider, Raw/Bronze, DAG factory
 │   ├── orchestration/meta/            # Ghi registry, run, quality, snapshot, lineage
 │   ├── static/sources/                # Adapter theo từng nhà cung cấp
 │   └── storage/                       # MinIO, Polaris và Iceberg table/schema
@@ -393,9 +519,8 @@ Thứ tự triển khai dự kiến:
 
 1. `static_bronze_to_silver`: schema chuẩn L12, topology, raster/OSM aggregate theo basin.
 2. `flood_event_landing` và `flood_event_to_bronze`: tách sự kiện lũ khỏi static pipeline.
-3. Landing/Bronze riêng cho GSMaP, ERA5-Land và IFS theo source/time partition.
-4. Silver dynamic và basin-hour dataset.
-5. Threat B0–B3, Knowledge Graph, routing, API và dashboard.
+3. Silver dynamic và basin-hour dataset đọc `bronze.weather_grid_value`.
+4. Threat B0–B3, Knowledge Graph, routing, API và dashboard.
 
 Schema contract hiện tại nằm tại [docs/schema_contract/data.md](docs/schema_contract/data.md).
 Tổng quan pipeline và kế hoạch tiếp theo nằm tại
@@ -409,5 +534,5 @@ make lint
 docker compose config --quiet
 ```
 
-Bộ test gần nhất: **545 passed**. Trước khi push, không commit `.env`, volume dưới
+Bộ test gần nhất: **579 passed**. Trước khi push, không commit `.env`, volume dưới
 `dataset/lakehouse/` hoặc credential cá nhân.

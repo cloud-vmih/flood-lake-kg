@@ -8,7 +8,7 @@ from flashflood_data.storage.iceberg_schemas import table_schema
 META_TABLES = (
     "source_registry", "source_objects", "ingest_attempts", "pipeline_runs",
     "table_snapshot_ref", "parameter_sets", "dataset_registry", "quality_results",
-    "lineage_edges",
+    "lineage_edges", "ingest_watermarks",
 )
 STATIC_BRONZE_TABLES = (
     "basin_polygon_raw", "river_reach_raw", "osm_feature_raw",
@@ -21,6 +21,9 @@ def test_meta_contract_has_every_target_table_and_preserves_source_objects() -> 
     assert table_schema(("meta", "source_objects")) == source_objects_arrow_schema()
     assert table_schema(("meta", "pipeline_runs")).field("retry_count").type == pa.int32()
     assert table_schema(("meta", "lineage_edges")).field("output_snapshot_id").type == pa.int64()
+    watermark = table_schema(("meta", "ingest_watermarks"))
+    assert watermark.field("cursor_time").type == pa.timestamp("us", tz="UTC")
+    assert watermark.field("detail_json").nullable is False
 
 
 def test_static_bronze_contract_has_raw_geometry_and_raster_fields() -> None:

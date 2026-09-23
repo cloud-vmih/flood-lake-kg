@@ -16,6 +16,8 @@ EXPECTED_REQUIREMENTS = {
     "pyiceberg[pyarrow]==0.11.1",
     "cfgrib==0.9.15.1",
     "eccodes==2.48.0",
+    "cdsapi==0.7.7",
+    "netCDF4==1.7.4",
 }
 
 

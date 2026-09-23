@@ -1,0 +1,34 @@
+contract_version: "1.0"
+source_id: ifs_openmeteo
+source_version: ifs-hres-single-runs-v1
+provider: ifs_openmeteo
+schedule: "12 */6 * * *"
+aoi_path: dataset/harmonized/aoi/hydrological_aoi.geoparquet
+parser_version: ifs-openmeteo-v1
+license_id: open-meteo-ecmwf-terms
+license_uri: https://open-meteo.com/en/terms
+max_objects_per_run: 28
+streams:
+  - stream_id: hres_single_runs
+    product: ecmwf_ifs
+    start_at: 2024-03-01T00:00:00Z
+    step_minutes: 360
+    chunk_minutes: 360
+    availability_lag_minutes: 420
+    overlap_steps: 8
+    variables:
+      - precipitation
+      - soil_moisture_0_to_7cm
+      - soil_moisture_7_to_28cm
+      - soil_moisture_28_to_100cm
+      - soil_moisture_100_to_255cm
+      - runoff
+    media_type: application/json
+    filename_suffix: .json
+    endpoint: https://single-runs-api.open-meteo.com/v1/forecast
+    credential_env: [OPEN_METEO_API_KEY]
+    options:
+      model: ecmwf_ifs
+      forecast_hours: 360
+      point_batch_size: 50
+      grid_resolution_degrees: 0.1

@@ -1,6 +1,6 @@
 # Data schema contract — FloodLakeKG Sơn La
 
-Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Tại thời điểm viết, **chỉ `meta.source_objects` đã có schema Iceberg trong code**; các bảng còn lại là thiết kế để triển khai, không phải tuyên bố rằng dữ liệu đã có trong MinIO/Iceberg.
+Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Meta, các bảng Bronze static và `bronze.weather_grid_value` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Silver trở đi vẫn là thiết kế đích.
 
 Các sơ đồ Mermaid dưới đây biểu diễn quan hệ logic; bảng dữ liệu bên dưới mới là danh sách thuộc tính. `PK`/`FK` là ràng buộc cần pipeline kiểm tra vì Iceberg không tự thực thi khóa ngoại. `!` là không null, `?` là có thể null. Kiểu `timestamp` là UTC; `geometry_wkb` là WKB `binary` kèm `crs`/bbox. `json` nghĩa là chuỗi JSON có schema version cho tới khi có `struct`/`map` vật lý. ID basin luôn là chuỗi `HYBAS_ID` **level 12**; mọi tham chiếu tới basin dùng đủ `(basin_id, basin_version)`. `object_id` là SHA-256 ổn định, còn Iceberg snapshot ID là `long` và phải đi với tên bảng.
 
@@ -28,6 +28,7 @@ Iceberg không thực thi unique constraint cho các khóa logic này. Writer ph
 ```mermaid
 flowchart LR
   SR["source_registry"] --> SO["source_objects<br/>ĐÃ CÓ"]
+  SR --> IW["ingest_watermarks"]
   IA["ingest_attempts"] --> SO
   DR["dataset_registry"] --> PR["pipeline_runs"]
   PS["parameter_sets"] --> PR
@@ -38,7 +39,7 @@ flowchart LR
   DR --> QR
 ```
 
-Meta là **control plane dùng chung** cho raw, Bronze, Silver, Gold và các projection sau đó: danh mục nguồn/bảng, run, chất lượng, snapshot và lineage. Nó không chứa bản sao pixel hay feature nghiệp vụ. `meta.source_objects` chỉ kiểm kê file raw; `meta.table_snapshot_ref` và `meta.lineage_edges` theo dõi các bảng về sau. Airflow logs/metrics, quyền MinIO và quyền catalog được thực thi ở hệ thống tương ứng; các bảng Meta chỉ giữ tham chiếu, trạng thái và bằng chứng cần truy vấn/tái lập. Hiện chỉ `meta.source_objects` đã có trong Iceberg; các bảng Meta còn lại dưới đây là thiết kế đích. Sơ đồ draw.io đi kèm đã có trang Meta riêng và ba bảng mở rộng `dataset_registry`, `quality_results`, `lineage_edges`.
+Meta là **control plane dùng chung** cho raw, Bronze, Silver, Gold và các projection sau đó: danh mục nguồn/bảng, run, chất lượng, snapshot và lineage. Nó không chứa bản sao pixel hay feature nghiệp vụ. `meta.source_objects` chỉ kiểm kê file raw; `meta.ingest_watermarks` giới hạn khoảng planner phải quét cho từng stream động; `meta.table_snapshot_ref` và `meta.lineage_edges` theo dõi các bảng về sau. Airflow logs/metrics, quyền MinIO và quyền catalog được thực thi ở hệ thống tương ứng; các bảng Meta chỉ giữ tham chiếu, trạng thái và bằng chứng cần truy vấn/tái lập.
 
 ### `meta.source_registry` — một dòng / `(source_id, source_version)`; đích
 
@@ -88,6 +89,24 @@ Các kiểu/null dưới đây đối chiếu trực tiếp với `source_object
 | `status` | string ! | Trạng thái object; chỉ object đã xác minh mới `available`. |
 | `selection_json` | json ! | AOI, level, layer và lựa chọn tải nguồn. |
 | `provider_metadata_json` | json ! | Header/ETag/metadata nguồn chưa chuẩn hóa. |
+
+### `meta.ingest_watermarks` — một dòng / `(source_id, product, stream_id)`; **đã có contract**
+
+**Vai trò:** Giữ cursor operational bền vững cho từng product/stream động. Bảng này giảm khoảng cần lập kế hoạch; inventory `meta.source_objects` vẫn là bằng chứng authoritative rằng Raw object đã commit.
+
+| Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
+| --- | --- | --- |
+| `source_id` | string ! PK/FK | Nguồn sở hữu stream, ví dụ `gsmap`. |
+| `product` | string ! PK | Product có vòng đời riêng, ví dụ `gauge_standard_v8`. |
+| `stream_id` | string ! PK | Request/cycle family có chung nhịp và cursor. |
+| `cursor_time` | timestamp ! | Cuối khoảng liên tục đã có Raw hoặc `NO_DATA` hợp lệ. |
+| `last_safe_end` | timestamp ! | Mốc provider-safe quan sát ở lần cập nhật gần nhất. |
+| `last_run_id` | string ! | Airflow run cập nhật cursor. |
+| `status` | string ! | `ready`, `gap` hoặc `failed`. |
+| `updated_at` | timestamp ! | Thời điểm ghi cursor UTC. |
+| `detail_json` | json ! | Chi tiết gap/NO_DATA có schema version; `{}` khi không có. |
+
+Backfill explicit không cập nhật bảng này. Catch-up chỉ tăng `cursor_time` qua chuỗi cửa sổ liên tục; một object ở 12:00 không che được lỗ hổng 11:00.
 
 ### `meta.ingest_attempts` — một dòng / `(ingest_run_id, source_id, asset_id, attempt_no)`; đích
 
@@ -369,11 +388,11 @@ bất kỳ bằng chứng nào sẽ được xử lý lại. Tham số `force_re
 | `parser_version` | string ! | Phiên bản parser/OCR. |
 | `quality_status` | string ! | Mức đọc được/thiếu thông tin. |
 
-### `bronze.weather_grid_value` — một dòng / `(object_id, source_grid_version, source_grid_id, variable, vertical_level, source_cycle_id, valid_time, window_start, window_end, source_revision)`; đích có điều kiện
+### `bronze.weather_grid_value` — một dòng / `(object_id, source_grid_version, source_grid_id, variable, vertical_level, source_cycle_id, valid_time, window_start, window_end, source_revision)`; **đã có contract**
 
 **Vai trò:** Biểu diễn giá trị thời tiết/dòng chảy theo ô lưới và thời gian sau khi parse file động.
 
-Chỉ tạo dạng hàng khi benchmark xác nhận chi phí lưu/truy vấn chấp nhận được; file GRIB/NetCDF chunk có thể vẫn là payload Bronze. `source_grid_version` cần hiện diện để định danh ô lưới xuyên các lần đổi grid.
+Ba weather ingest DAG parse GSMaP, ERA5-Land và IFS/Open-Meteo sang dạng hàng này. File gzip/NetCDF/JSON gốc vẫn nằm trong Raw để replay; `source_grid_version` định danh ô lưới xuyên các lần đổi grid.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
@@ -392,7 +411,7 @@ Chỉ tạo dạng hàng khi benchmark xác nhận chi phí lưu/truy vấn ch�
 | `available_at` | timestamp ! | Lúc nguồn công bố/khả dụng. |
 | `value` | double ? | Giá trị; null nếu missing theo source. |
 | `unit` | string ! | Đơn vị gốc đã khai báo. |
-| `value_kind` | string ! | Instant, accumulated, mean hoặc rate. |
+| `value_kind` | string ! | Instant, preceding-hour sum, rate hoặc `accumulation_since_00_utc`; ERA5-Land giữ accumulation gốc và de-accumulate ở Silver. |
 | `ingest_run_id` | string ! | Run parser. |
 | `parser_version` | string ! | Phiên bản parser. |
 | `quality_status` | string ! | QA temporal/unit/missing. |

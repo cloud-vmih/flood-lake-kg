@@ -1,0 +1,53 @@
+contract_version: "1.0"
+source_id: gsmap
+source_version: v8
+provider: gsmap
+schedule: "17 * * * *"
+aoi_path: dataset/harmonized/aoi/hydrological_aoi.geoparquet
+parser_version: gsmap-v1
+license_id: jaxa-gsmap-terms
+license_uri: https://sharaku.eorc.jaxa.jp/GSMaP/guide.html
+max_objects_per_run: 336
+streams:
+  - stream_id: gauge_standard
+    product: gauge_standard_v8
+    start_at: 2020-01-01T00:00:00Z
+    step_minutes: 60
+    chunk_minutes: 60
+    availability_lag_minutes: 4320
+    overlap_steps: 72
+    variables: [precipitation]
+    media_type: application/gzip
+    filename_suffix: .dat.gz
+    endpoint_env: GSMAP_STANDARD_URL_TEMPLATE
+    credential_env: [GSMAP_USERNAME, GSMAP_PASSWORD]
+    options:
+      grid_resolution_degrees: 0.1
+      value_kind: preceding_hour_sum
+      dtype: "<f4"
+      grid_height: 1200
+      grid_width: 3600
+      grid_north: 60.0
+      grid_west: 0.0
+      missing_values: [-4.0, -8.0, -99.0]
+  - stream_id: gauge_now
+    product: gauge_now_v8
+    start_at: 2026-01-01T00:00:00Z
+    step_minutes: 30
+    chunk_minutes: 60
+    availability_lag_minutes: 60
+    overlap_steps: 12
+    variables: [precipitation]
+    media_type: application/gzip
+    filename_suffix: .dat.gz
+    endpoint_env: GSMAP_NOW_URL_TEMPLATE
+    credential_env: [GSMAP_USERNAME, GSMAP_PASSWORD]
+    options:
+      grid_resolution_degrees: 0.1
+      value_kind: preceding_hour_sum
+      dtype: "<f4"
+      grid_height: 1200
+      grid_width: 3600
+      grid_north: 60.0
+      grid_west: 0.0
+      missing_values: [-4.0, -8.0, -99.0]
