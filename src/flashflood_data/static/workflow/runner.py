@@ -191,10 +191,7 @@ class StaticPipeline:
         import geopandas as gpd
 
         from flashflood_data.static.harmonize.aoi import build_study_areas, write_study_areas
-        from flashflood_data.static.harmonize.hydro import (
-            default_hydro_inputs,
-            select_l10_with_upstream,
-        )
+        from flashflood_data.static.harmonize.hydro import select_basins_with_upstream
 
         core_path = self.paths.harmonized / "aoi" / "core_aoi.geoparquet"
         vietnam_path = self.paths.harmonized / "admin" / "vietnam_boundary.geoparquet"
@@ -206,8 +203,14 @@ class StaticPipeline:
             raise ValueError("administrative AOI inputs are empty or missing a CRS")
         core = core_layer.geometry.union_all()
         vietnam = vietnam_layer.geometry.union_all()
-        l10 = gpd.read_file(default_hydro_inputs(self.paths).l10)
-        selected = select_l10_with_upstream(l10, core, hops=self.study_area.upstream_hops)
+        level = self.study_area.hydrobasins_level
+        basin_path = (
+            self.paths.dataset / "hybas_as_lev01-12_v1c" / f"hybas_as_lev{level:02d}_v1c.shp"
+        )
+        basins = gpd.read_file(basin_path)
+        selected = select_basins_with_upstream(
+            basins, core, hops=self.study_area.upstream_hops
+        )
         areas = build_study_areas(core, selected, vietnam, self.study_area)
         write_study_areas(
             areas,
@@ -215,7 +218,7 @@ class StaticPipeline:
             self.study_area.storage_crs,
             include_core=False,
         )
-        summary.metrics.update({"selected_l10": len(selected)})
+        summary.metrics.update({f"selected_l{level}": len(selected)})
         self._run_handler(Stage.AOI, "aoi", context, summary)
 
     def _run_bootstrap(

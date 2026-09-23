@@ -32,19 +32,19 @@ def _ids(frame: gpd.GeoDataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="raise").astype("int64")
 
 
-def select_l10_with_upstream(
-    l10: gpd.GeoDataFrame, core: BaseGeometry, hops: int = 1
+def select_basins_with_upstream(
+    basins: gpd.GeoDataFrame, core: BaseGeometry, hops: int = 1
 ) -> gpd.GeoDataFrame:
-    """Select basins intersecting Core plus an exact number of upstream topology hops."""
+    """Select basins at one level intersecting Core plus upstream topology hops."""
     if hops < 0:
         raise ValueError("upstream hops must be non-negative")
-    if l10.crs is None:
-        raise ValueError("L10 basins must have a CRS")
-    basin_ids = _ids(l10, "HYBAS_ID")
+    if basins.crs is None:
+        raise ValueError("basins must have a CRS")
+    basin_ids = _ids(basins, "HYBAS_ID")
     if basin_ids.duplicated().any():
-        raise ValueError("L10 layer contains duplicate HYBAS_ID values")
-    downstream = _ids(l10, "NEXT_DOWN")
-    direct = set(basin_ids.loc[l10.geometry.intersects(core)])
+        raise ValueError("basin layer contains duplicate HYBAS_ID values")
+    downstream = _ids(basins, "NEXT_DOWN")
+    direct = set(basin_ids.loc[basins.geometry.intersects(core)])
     selected = set(direct)
     frontier = direct
     for _ in range(hops):
@@ -53,8 +53,15 @@ def select_l10_with_upstream(
         upstream = set(basin_ids.loc[downstream.isin(frontier)])
         selected.update(upstream)
         frontier = upstream
-    result = l10.loc[basin_ids.isin(selected)].copy()
+    result = basins.loc[basin_ids.isin(selected)].copy()
     return result.assign(HYBAS_ID=_ids(result, "HYBAS_ID")).sort_values("HYBAS_ID").reset_index(drop=True)
+
+
+def select_l10_with_upstream(
+    l10: gpd.GeoDataFrame, core: BaseGeometry, hops: int = 1
+) -> gpd.GeoDataFrame:
+    """Compatibility entry point for the legacy L10 hydro products."""
+    return select_basins_with_upstream(l10, core, hops=hops)
 
 
 def _parent_for_point(

@@ -1,17 +1,30 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+import geopandas as gpd
 import pytest
+from shapely.geometry import box
 
-from flashflood_data.catalog import sha256_file
-from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus
+from flashflood_data.catalog import AssetCatalog, sha256_file
+from flashflood_data.catalog.models import (
+    AssetKind,
+    AssetRecord,
+    AssetStatus,
+    RemoteAsset,
+    SourceSpec,
+)
+from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
+from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.landing.config import LandingSourcePolicy
 from flashflood_data.orchestration.landing.sources import (
     AmbiguousSourceSelection,
     MissingSourceAssets,
+    acquire_validated_assets,
     prepare_source_objects,
 )
+from flashflood_data.static.sources.base import SourceContext
 
 NOW = datetime(2026, 9, 16, tzinfo=UTC)
 
@@ -184,3 +197,77 @@ def test_soilgrids_reports_complete_missing_set(tmp_path: Path) -> None:
 
     assert "clay/0-5cm/mean.tif" in str(error.value)
     assert "clay/0-5cm/Q0.05.tif" in str(error.value)
+
+
+def test_soilgrids_accepts_versioned_raw_identity(tmp_path: Path) -> None:
+    policy = LandingSourcePolicy(
+        source_id="soilgrids_2_0", mode="individual",
+        settings_override={"properties": ("clay",), "depths": ("0-5cm",), "statistics": ("mean",)},
+    )
+    capability = _record(
+        tmp_path / "clay" / "capabilities.xml",
+        asset_id="soilgrids-2-0-clay-capabilities", source_id="soilgrids_2_0", version="2.0",
+    )
+    versioned = _record(
+        tmp_path / "clay" / "0-5cm" / "mean--abc123.tif",
+        asset_id="soilgrids-2-0-clay-0-5cm-mean--abc123",
+        source_id="soilgrids_2_0", version="2.0",
+    )
+    prepared = prepare_source_objects(
+        policy, (capability, versioned), staging_root=tmp_path / "staging", run_id="run-1"
+    )
+    assert {item.asset_id for item in prepared} == {capability.asset_id, versioned.asset_id}
+
+
+def test_soilgrids_acquisition_returns_only_selected_raw_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    aoi_dir = paths.harmonized / "aoi"
+    aoi_dir.mkdir(parents=True)
+    gpd.GeoDataFrame(geometry=[box(104, 20, 105, 21)], crs="EPSG:4326").to_parquet(
+        aoi_dir / "environmental_aoi.geoparquet", index=False
+    )
+    catalog = AssetCatalog(paths)
+    records = [
+        _record(
+            paths.raw / "soilgrids" / "2.0" / "clay" / "capabilities.xml",
+            asset_id="soilgrids-2-0-clay-capabilities", source_id="soilgrids_2_0", version="2.0",
+        ),
+        _record(
+            paths.raw / "soilgrids" / "2.0" / "clay" / "0-5cm" / "mean.tif",
+            asset_id="soilgrids-2-0-clay-0-5cm-mean", source_id="soilgrids_2_0", version="2.0",
+        ),
+        _record(
+            paths.raw / "soilgrids" / "2.0" / "clay" / "0-5cm" / "mean--abc123.tif",
+            asset_id="soilgrids-2-0-clay-0-5cm-mean--abc123",
+            source_id="soilgrids_2_0", version="2.0",
+        ),
+    ]
+    for record in records:
+        catalog.upsert(record)
+    chosen = records[-1]
+    remote = RemoteAsset(
+        asset_id=chosen.asset_id, source_id=chosen.source_id,
+        source_version=chosen.source_version, uri=chosen.source_uri,
+        target_relative_path=Path(chosen.storage_path).relative_to(paths.dataset),
+        media_type=chosen.media_type, license_id=chosen.license_id,
+    )
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.sources.build_adapter",
+        lambda spec: SimpleNamespace(resolve=lambda context, available: [remote]),
+    )
+    context = SourceContext(
+        paths=paths, catalog=catalog, study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None), run_id="run-1",
+    )
+    policy = LandingSourcePolicy(source_id="soilgrids_2_0", mode="individual")
+    spec = SourceSpec(
+        source_id="soilgrids_2_0", adapter="soilgrids", version="2.0", license_id="fixture-license"
+    )
+    fetcher = SimpleNamespace(fetch=lambda remote, run_id: pytest.fail("unexpected download"))
+
+    selected = acquire_validated_assets(policy, spec, context, fetcher)
+
+    assert {record.asset_id for record in selected} == {records[0].asset_id, chosen.asset_id}

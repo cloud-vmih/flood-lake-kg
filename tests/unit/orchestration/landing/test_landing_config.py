@@ -25,7 +25,6 @@ def test_static_landing_config_is_l12_and_has_exact_soil_scope() -> None:
         "basinatlas_v10",
         "hydrorivers_v10",
         "worldpop_vnm_2025",
-        "historical_flood_evidence_2020_2026",
         "geofabrik_vietnam_snapshot",
         "cop_dem_glo30_2024_1",
         "soilgrids_2_0",
@@ -40,12 +39,15 @@ def test_static_landing_config_is_l12_and_has_exact_soil_scope() -> None:
         "basinatlas_v10": "shapefile_bundle",
         "hydrorivers_v10": "shapefile_bundle",
         "worldpop_vnm_2025": "individual",
-        "historical_flood_evidence_2020_2026": "individual",
         "geofabrik_vietnam_snapshot": "individual",
         "cop_dem_glo30_2024_1": "individual",
         "soilgrids_2_0": "individual",
         "esa_worldcover_2021_v200": "individual",
     }
+    assert all(
+        source.source_id != "historical_flood_evidence_2020_2026"
+        for source in config.sources
+    )
     soil = config.source("soilgrids_2_0")
     assert list(soil.settings_override["properties"]) == [
         "clay",

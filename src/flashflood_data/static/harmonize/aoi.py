@@ -29,20 +29,20 @@ def _project_geometry(geometry: BaseGeometry, source_crs: str, target_crs: str) 
 
 def build_study_areas(
     core: BaseGeometry,
-    selected_l10: gpd.GeoDataFrame,
+    selected_basins: gpd.GeoDataFrame,
     vietnam: BaseGeometry,
     config: StudyAreaConfig,
 ) -> StudyAreas:
     """Build the four approved AOIs with all metric buffering done in processing CRS."""
-    if selected_l10.empty:
-        raise ValueError("cannot construct study areas from an empty L10 selection")
-    if selected_l10.crs is None:
-        raise ValueError("selected L10 basins must have a CRS")
+    if selected_basins.empty:
+        raise ValueError("cannot construct study areas from an empty basin selection")
+    if selected_basins.crs is None:
+        raise ValueError("selected basins must have a CRS")
 
-    source_crs = selected_l10.crs.to_string()
+    source_crs = selected_basins.crs.to_string()
     core_metric = _project_geometry(core, source_crs, config.processing_crs)
     vietnam_metric = _project_geometry(vietnam, source_crs, config.processing_crs)
-    selected_metric = selected_l10.to_crs(config.processing_crs)
+    selected_metric = selected_basins.to_crs(config.processing_crs)
     hydrological_metric = selected_metric.geometry.union_all()
     environmental_metric = hydrological_metric.buffer(config.raster_buffer_km * 1_000)
     exposure_metric = core_metric.buffer(config.exposure_buffer_km * 1_000).intersection(vietnam_metric)

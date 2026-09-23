@@ -36,12 +36,12 @@ def test_static_source_landing_dag_is_thin_and_source_isolated() -> None:
         "basinatlas_v10",
         "hydrorivers_v10",
         "worldpop_vnm_2025",
-        "historical_flood_evidence_2020_2026",
         "geofabrik_vietnam_snapshot",
         "cop_dem_glo30_2024_1",
         "soilgrids_2_0",
         "esa_worldcover_2021_v200",
     } <= _string_literals(tree)
+    assert "historical_flood_evidence_2020_2026" not in _string_literals(tree)
     assert not ({"geopandas", "rasterio", "pyiceberg", "pyarrow"} & _imported_roots(tree))
     assert "harmonize" not in text
 

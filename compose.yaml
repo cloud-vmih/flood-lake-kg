@@ -268,6 +268,41 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  trino:
+    image: trinodb/trino:483
+    profiles: [query]
+    mem_limit: 2g
+    depends_on:
+      polaris:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      TRINO_CATALOG_DIR: /etc/trino/catalog
+      POLARIS_URI: http://polaris:8181/api/catalog
+      POLARIS_CATALOG: flood_lakehouse
+      POLARIS_CLIENT_ID: ${POLARIS_CLIENT_ID:?run make lakehouse-init}
+      POLARIS_CLIENT_SECRET: ${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?run make lakehouse-init}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+    volumes:
+      - ./infra/services/trino/render_catalog.sh:/opt/trino/render_catalog.sh:ro,Z
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sh /opt/trino/render_catalog.sh && exec /usr/lib/trino/bin/launcher run --etc-dir /etc/trino
+    ports:
+      - "127.0.0.1:8083:8080"
+    healthcheck:
+      test: [CMD, /usr/lib/trino/bin/health-check]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 45s
+    restart: unless-stopped
+    networks: [lakehouse]
+
   spark-master:
     <<: *spark-image
     profiles: [spark]

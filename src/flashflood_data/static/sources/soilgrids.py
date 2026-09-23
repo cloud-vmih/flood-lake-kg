@@ -7,12 +7,14 @@ import io
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Final
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import geopandas as gpd
+import rasterio
 from pyproj import Geod
 from rasterio.enums import Resampling
 from shapely.geometry import box
@@ -119,6 +121,24 @@ def _request_uri(endpoint: str, parameters: list[tuple[str, str]]) -> str:
 
 def _asset_id(property_id: str, depth: str, statistic: str) -> str:
     return f"soilgrids-2-0-{property_id}-{depth}-{statistic}"
+
+
+def _covering_area(path: Path, bounds: tuple[float, float, float, float], crs: str) -> float | None:
+    """Return raster area when its actual extent contains the requested AOI bbox."""
+    try:
+        with rasterio.open(path) as raster:
+            if raster.crs is None or raster.crs.to_string() != crs:
+                return None
+            left, bottom, right, top = raster.bounds
+    except (OSError, rasterio.errors.RasterioError):
+        return None
+    west, south, east, north = bounds
+    tolerance = 1e-8
+    if left > west + tolerance or bottom > south + tolerance:
+        return None
+    if right < east - tolerance or top < north - tolerance:
+        return None
+    return (right - left) * (top - bottom)
 
 
 def build_wcs_getcoverage(
@@ -241,6 +261,60 @@ class SoilGridsAdapter(SourceAdapter):
             raise ValueError("environmental AOI is empty")
         return geometry
 
+    def _coverage_remote(
+        self,
+        context: SourceContext,
+        available: list[AssetRecord],
+        requested: RemoteAsset,
+        bounds: tuple[float, float, float, float],
+        output_crs: str,
+    ) -> RemoteAsset:
+        """Reuse a covering raw raster or assign immutable identity to a new WCS bbox."""
+        candidates: list[tuple[float, AssetRecord]] = []
+        for record in available:
+            if record.asset_id != requested.asset_id and not record.asset_id.startswith(
+                f"{requested.asset_id}--"
+            ):
+                continue
+            if (
+                record.status is not AssetStatus.VALIDATED
+                or record.duplicate_of_asset_id is not None
+                or not context.catalog.has_verified_content(record)
+            ):
+                continue
+            area = _covering_area(Path(record.storage_path), bounds, output_crs)
+            if area is not None:
+                candidates.append((area, record))
+        if candidates:
+            _, record = min(candidates, key=lambda item: (item[0], item[1].asset_id))
+            relative_path = Path(record.storage_path).relative_to(context.paths.dataset)
+            return requested.model_copy(
+                update={
+                    "asset_id": record.asset_id,
+                    "uri": record.source_uri,
+                    "target_relative_path": relative_path,
+                    "expected_checksum": record.checksum,
+                }
+            )
+
+        request_hash = sha256(requested.uri.encode("utf-8")).hexdigest()[:16]
+        versioned = requested.model_copy(
+            update={
+                "asset_id": f"{requested.asset_id}--{request_hash}",
+                "target_relative_path": requested.target_relative_path.with_name(
+                    f"{requested.target_relative_path.stem}--{request_hash}.tif"
+                ),
+            }
+        )
+        if any(
+            record.asset_id == versioned.asset_id
+            and record.status is AssetStatus.VALIDATED
+            and context.catalog.has_verified_content(record)
+            for record in available
+        ):
+            raise ValueError("SoilGrids raw raster does not cover its recorded WCS request")
+        return versioned
+
     def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
         """Fetch capabilities first, then declare only verified configured coverages."""
         properties = self._strings("properties")
@@ -272,18 +346,24 @@ class SoilGridsAdapter(SourceAdapter):
         bounds = self._environmental_aoi(context).bounds
         output_crs = self._setting("output_crs")
         remotes = [
-            build_wcs_getcoverage(
-                property_id,
-                depth,
-                statistic,
+            self._coverage_remote(
+                context,
+                available,
+                build_wcs_getcoverage(
+                    property_id,
+                    depth,
+                    statistic,
+                    bounds,
+                    endpoint_template=self._setting("endpoint_template"),
+                    source_id=self.spec.source_id,
+                    source_version=self.spec.version,
+                    license_id=self.spec.license_id,
+                    output_crs=output_crs,
+                    target_resolution_m=self._resolution_setting("target_resolution_m"),
+                    budget_size_bytes=self._budget_setting("coverage_budget_size_bytes"),
+                ),
                 bounds,
-                endpoint_template=self._setting("endpoint_template"),
-                source_id=self.spec.source_id,
-                source_version=self.spec.version,
-                license_id=self.spec.license_id,
-                output_crs=output_crs,
-                target_resolution_m=self._resolution_setting("target_resolution_m"),
-                budget_size_bytes=self._budget_setting("coverage_budget_size_bytes"),
+                output_crs,
             )
             for property_id in properties
             for depth in depths
@@ -331,7 +411,7 @@ class SoilGridsAdapter(SourceAdapter):
             raise ValueError(f"SoilGrids raw asset is outside its immutable source path: {asset.asset_id}") from exc
         if Path(filename).suffix != ".tif":
             raise ValueError(f"SoilGrids raw asset is not a TIFF: {asset.asset_id}")
-        statistic = Path(filename).stem
+        statistic = Path(filename).stem.split("--", 1)[0]
         return property_id, depth, statistic
 
     def harmonize(self, context: SourceContext, assets: list[AssetRecord]) -> list[AssetRecord]:
@@ -350,7 +430,16 @@ class SoilGridsAdapter(SourceAdapter):
             and asset.kind is AssetKind.RAW
             and Path(asset.storage_path).suffix.lower() in {".tif", ".tiff"}
         ]
-        indexed = {self._raw_parts(context, asset): asset for asset in raw_assets}
+        indexed: dict[tuple[str, str, str], AssetRecord] = {}
+        covering_areas: dict[tuple[str, str, str], float] = {}
+        for asset in raw_assets:
+            key = self._raw_parts(context, asset)
+            area = _covering_area(
+                Path(asset.storage_path), aoi.bounds, self._setting("output_crs")
+            )
+            if area is not None and (key not in covering_areas or area < covering_areas[key]):
+                indexed[key] = asset
+                covering_areas[key] = area
         missing = sorted(expected - indexed.keys())
         if missing:
             raise ValueError(f"SoilGrids harmonization is missing raw coverages: {missing}")

@@ -18,7 +18,8 @@ def test_static_bronze_policy_pins_parser_versions_and_enables_osm() -> None:
     assert config.parser_version("geofabrik_vietnam_snapshot") == "v1"
     assert "geofabrik_vietnam_snapshot" in config.ready_source_ids()
     assert "hydrobasins_v1c" in config.ready_source_ids()
-    assert len(config.sources) == 11
+    assert "historical_flood_evidence_2020_2026" not in config.ready_source_ids()
+    assert len(config.sources) == 10
     assert config.rules is not None
     assert "business_key_unique" in config.rules
     assert config.rules["business_key_unique"]["severity"] == "fatal"

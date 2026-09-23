@@ -24,9 +24,6 @@ sources:
   - source_id: worldpop_vnm_2025
     mode: individual
     selection: {country: VNM, year: 2025, population_model: constrained}
-  - source_id: historical_flood_evidence_2020_2026
-    mode: individual
-    selection: {region: son_la, period: 2020_2026}
   - source_id: geofabrik_vietnam_snapshot
     mode: individual
     selection: {country: vietnam, snapshot: latest_resolved}

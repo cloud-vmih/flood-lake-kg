@@ -127,12 +127,19 @@ def acquire_validated_assets(
                 )
                 raise RawSourceValidationError(fetched.asset_id)
             context.catalog.transition(fetched.asset_id, AssetStatus.VALIDATED)
+    selected_ids = None
+    if spec.source_id == "soilgrids_2_0":
+        selected_ids = {remote.asset_id for remote in remotes}
+        selected_ids.update(
+            record.asset_id for record in available if record.asset_id.endswith("-capabilities")
+        )
     return tuple(
         record
         for record in context.catalog.raw_assets(spec.source_id)
         if record.status is AssetStatus.VALIDATED
         and record.duplicate_of_asset_id is None
         and context.catalog.has_verified_content(record)
+        and (selected_ids is None or record.asset_id in selected_ids)
     )
 
 
@@ -244,7 +251,17 @@ def _prepare_soilgrids(
         and record.status is AssetStatus.VALIDATED
         and record.duplicate_of_asset_id is None
     }
-    missing_ids = sorted(set(expected) - set(indexed))
+    selected: dict[str, AssetRecord] = {}
+    for expected_id in expected:
+        matches = [
+            record for asset_id, record in indexed.items()
+            if asset_id == expected_id or asset_id.startswith(f"{expected_id}--")
+        ]
+        if len(matches) > 1:
+            raise AmbiguousSourceSelection(expected_id)
+        if matches:
+            selected[expected_id] = matches[0]
+    missing_ids = sorted(set(expected) - set(selected))
     if missing_ids:
         missing_paths = []
         for asset_id in missing_ids:
@@ -258,7 +275,7 @@ def _prepare_soilgrids(
                 )
         raise MissingSourceAssets(", ".join(missing_paths))
     return tuple(
-        _prepared(indexed[asset_id], selection=expected[asset_id]) for asset_id in sorted(expected)
+        _prepared(selected[asset_id], selection=expected[asset_id]) for asset_id in sorted(expected)
     )
 
 

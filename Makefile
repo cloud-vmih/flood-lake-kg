@@ -1,4 +1,4 @@
-.PHONY: doctor bootstrap setup test lint smoke inventory preflight preflight-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down spark-build spark-up spark-status spark-down spark-smoke
+.PHONY: doctor bootstrap setup test lint smoke inventory preflight lakehouse-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down spark-build spark-up spark-status spark-down spark-smoke
 MAKEFLAGS += --no-print-directory
 PYTHON ?= python3.11
 VENV_PYTHON := .venv/bin/python
@@ -36,13 +36,13 @@ smoke:
 inventory:
 	.venv/bin/flashflood-data inventory --root .
 
-preflight-aoi:
+lakehouse-aoi:
 	.venv/bin/flashflood-data run-static --profile live --root . --stop-after aoi --json-summary
 
 resolve-live:
 	.venv/bin/flashflood-data fetch --profile live --root . --resolve-only --json-summary
 
-preflight: inventory preflight-aoi resolve-live
+preflight: inventory lakehouse-aoi resolve-live
 
 live:
 	.venv/bin/flashflood-data run-static --profile live --root . --json-summary
@@ -93,6 +93,23 @@ lakehouse-meta-bronze-smoke:
 lakehouse-down:
 	tools/bootstrap/check_docker_access.sh
 	docker compose down
+
+query-up: lakehouse-up
+	docker compose --profile query up -d --wait trino
+
+query-status:
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query ps trino
+
+query-smoke:
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query exec -T trino trino --catalog lakehouse --execute 'SHOW TABLES FROM lakehouse.meta'
+	docker compose --profile query exec -T trino trino --catalog lakehouse --execute 'SELECT object_id FROM lakehouse.meta.source_objects LIMIT 1'
+
+query-down:
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query stop trino
+	docker compose --profile query rm -f trino
 
 spark-build: lakehouse-init
 	docker compose --profile spark build spark-master

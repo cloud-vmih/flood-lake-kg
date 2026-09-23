@@ -118,3 +118,25 @@ def test_soilgrids_harmonize_keeps_int16_raw_values_and_scale_metadata(tmp_path:
     assert metadata["unit"] == "cm3/cm3"
     assert metadata["raw_value_divisor"] == 10
     assert metadata["resampling"] == "bilinear"
+
+
+def test_soilgrids_harmonize_selects_raw_version_covering_current_aoi(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    raw_path = context.paths.raw / "soilgrids" / "2.0" / "wv0033" / "0-5cm" / "mean.tif"
+    raw_path.parent.mkdir(parents=True)
+    other_path = raw_path.with_name("mean--otherbbox.tif")
+    for path, west, value in ((raw_path, 104, 10), (other_path, 106, 99)):
+        with rasterio.open(
+            path, "w", driver="GTiff", width=2, height=2, count=1,
+            dtype="int16", crs="EPSG:4326", nodata=-32768,
+            transform=from_origin(west, 21, 0.5, 0.5),
+        ) as dataset:
+            dataset.write(np.full((2, 2), value, dtype="int16"), 1)
+    other = _raw_asset(other_path).model_copy(
+        update={"asset_id": "soilgrids-2-0-wv0033-0-5cm-mean--otherbbox"}
+    )
+
+    output = _adapter().harmonize(context, [_raw_asset(raw_path), other])[0]
+
+    with rasterio.open(output.storage_path) as dataset:
+        assert set(dataset.read(1, masked=True).compressed()) == {10}

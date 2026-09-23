@@ -11,7 +11,7 @@ class StudyAreaConfig(BaseModel):
     """Approved spatial, quality, and storage constraints for the study area."""
 
     province_origin_code: str = "14"
-    hydrobasins_level: int = Field(default=10, ge=1, le=12)
+    hydrobasins_level: int = Field(default=12, ge=1, le=12)
     upstream_hops: int = Field(default=1, ge=0, le=3)
     raster_buffer_km: float = Field(default=10, gt=0)
     exposure_buffer_km: float = Field(default=10, gt=0)

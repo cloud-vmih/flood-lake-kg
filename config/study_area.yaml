@@ -1,5 +1,5 @@
 province_origin_code: "14"
-hydrobasins_level: 10
+hydrobasins_level: 12
 upstream_hops: 1
 raster_buffer_km: 10
 exposure_buffer_km: 10

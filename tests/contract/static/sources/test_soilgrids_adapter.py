@@ -8,7 +8,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import geopandas as gpd
+import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 from shapely.geometry import box
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
@@ -191,3 +194,60 @@ def test_resolve_rejects_property_missing_an_uncertainty_coverage(
 
     with pytest.raises(ValueError, match="missing configured coverages"):
         adapter.resolve(context, [_available(payload, "soilgrids-2-0-wv0033-capabilities")])
+
+
+def test_resolve_reuses_covering_raw_and_versions_expanded_bbox(
+    adapter: SoilGridsAdapter, context: SourceContext, fixture_dir: Path
+) -> None:
+    settings = dict(adapter.spec.settings)
+    settings.update(properties=["wv0033"], depths=["0-5cm"], statistics=["mean"])
+    adapter = SoilGridsAdapter(adapter.spec.model_copy(update={"settings": settings}))
+    capabilities = context.paths.raw / "soilgrids" / "2.0" / "wv0033" / "capabilities.xml"
+    capabilities.parent.mkdir(parents=True)
+    capabilities.write_bytes((fixture_dir / "wv0033_capabilities.xml").read_bytes())
+    capability = _available(capabilities, "soilgrids-2-0-wv0033-capabilities")
+    legacy_path = capabilities.parent / "0-5cm" / "mean.tif"
+    legacy_path.parent.mkdir()
+
+    def write_raster(path: Path, west: float, east: float) -> None:
+        with rasterio.open(
+            path, "w", driver="GTiff", width=10, height=10, count=1,
+            dtype="int16", crs="EPSG:4326", nodata=-32768,
+            transform=from_origin(west, 21, (east - west) / 10, 0.1),
+        ) as dataset:
+            dataset.write(np.ones((10, 10), dtype="int16"), 1)
+
+    write_raster(legacy_path, 104, 105)
+    legacy = _available(legacy_path, "soilgrids-2-0-wv0033-0-5cm-mean").model_copy(
+        update={"media_type": "image/tiff"}
+    )
+    available = [capability, legacy]
+    assert adapter.resolve(context, available)[0].asset_id == legacy.asset_id
+
+    aoi_path = context.paths.harmonized / "aoi" / "environmental_aoi.geoparquet"
+    gpd.GeoDataFrame(geometry=[box(103.5, 20, 105, 21)], crs="EPSG:4326").to_parquet(
+        aoi_path, index=False
+    )
+    expanded = adapter.resolve(context, available)[0]
+    assert expanded.asset_id != legacy.asset_id
+    assert expanded.target_relative_path != Path("raw/soilgrids/2.0/wv0033/0-5cm/mean.tif")
+    assert "Long(103.5,105)" in expanded.uri
+
+    expanded_path = context.paths.dataset / expanded.target_relative_path
+    write_raster(expanded_path, 104, 105)
+    insufficient = _available(expanded_path, expanded.asset_id).model_copy(
+        update={"media_type": "image/tiff", "source_uri": expanded.uri}
+    )
+    with pytest.raises(ValueError, match="does not cover"):
+        adapter.resolve(context, [*available, insufficient])
+
+    write_raster(expanded_path, 103.5, 105)
+    expanded_record = _available(expanded_path, expanded.asset_id).model_copy(
+        update={"media_type": "image/tiff", "source_uri": expanded.uri}
+    )
+    assert adapter.resolve(context, [*available, expanded_record])[0].asset_id == expanded.asset_id
+
+    gpd.GeoDataFrame(geometry=[box(104.1, 20.1, 104.9, 20.9)], crs="EPSG:4326").to_parquet(
+        aoi_path, index=False
+    )
+    assert adapter.resolve(context, [*available, expanded_record])[0].asset_id == legacy.asset_id

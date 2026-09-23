@@ -260,7 +260,7 @@ def test_bootstrap_then_aoi_writes_downstream_aoi_inputs(project_paths: Path) ->
     fixture = Path("tests/fixtures/hydro/basins_l10.geojson")
     raw_dir = project_paths.dataset / "hybas_as_lev01-12_v1c"
     raw_dir.mkdir(parents=True)
-    gpd.read_file(fixture).to_file(raw_dir / "hybas_as_lev10_v1c.shp")
+    gpd.read_file(fixture).to_file(raw_dir / "hybas_as_lev12_v1c.shp")
     catalog = AssetCatalog(project_paths)
     specs = {
         source_id: SourceSpec(
@@ -278,6 +278,7 @@ def test_bootstrap_then_aoi_writes_downstream_aoi_inputs(project_paths: Path) ->
     summary = pipeline.run([Stage.BOOTSTRAP_ADMIN, Stage.AOI, Stage.FETCH])
 
     assert summary.status == "completed"
+    assert summary.metrics["selected_l12"] == 2
     for name in ("hydrological_aoi", "environmental_aoi", "exposure_aoi"):
         assert (project_paths.harmonized / "aoi" / f"{name}.geoparquet").is_file()
 

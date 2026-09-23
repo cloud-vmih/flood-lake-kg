@@ -6,7 +6,6 @@ sources:
   basinatlas_v10: {target_table: basin_polygon_raw, parser_version: v1, status: ready}
   hydrorivers_v10: {target_table: river_reach_raw, parser_version: v1, status: ready}
   worldpop_vnm_2025: {target_table: raster_coverage, parser_version: v1, status: ready}
-  historical_flood_evidence_2020_2026: {target_table: historical_event_raw, parser_version: v1, status: ready}
   geofabrik_vietnam_snapshot: {target_table: osm_feature_raw, parser_version: v1, status: ready}
   cop_dem_glo30_2024_1: {target_table: raster_coverage, parser_version: v1, status: ready}
   soilgrids_2_0: {target_table: raster_coverage, parser_version: v1, status: ready}
