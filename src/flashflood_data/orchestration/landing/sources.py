@@ -1,12 +1,11 @@
 """Source acquisition and exact raw-object selection without harmonization."""
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import geopandas as gpd
 
-from flashflood_data.catalog import AssetCatalog
 from flashflood_data.catalog.models import AssetRecord, AssetStatus, RemoteAsset, SourceSpec
 from flashflood_data.orchestration.landing.bundle import (
     build_deterministic_zip,
@@ -59,7 +58,11 @@ def ensure_environmental_aoi(context: SourceContext) -> None:
         raise SourcePreconditionError("environmental_aoi_invalid") from None
 
 
-def _reusable(remote: RemoteAsset, available: Sequence[AssetRecord], catalog: AssetCatalog) -> bool:
+def _reusable(
+    remote: RemoteAsset,
+    available: Sequence[AssetRecord],
+    is_verified: Callable[[AssetRecord], bool],
+) -> bool:
     for record in available:
         if (
             record.asset_id == remote.asset_id
@@ -67,7 +70,7 @@ def _reusable(remote: RemoteAsset, available: Sequence[AssetRecord], catalog: As
             and record.source_version == remote.source_version
             and record.status is AssetStatus.VALIDATED
             and record.duplicate_of_asset_id is None
-            and catalog.has_verified_content(record)
+            and is_verified(record)
             and (remote.expected_checksum is None or remote.expected_checksum == record.checksum)
         ):
             return True
@@ -103,6 +106,19 @@ def acquire_validated_assets(
         update={"settings": dict(base_spec.settings) | dict(policy.settings_override)}
     )
     adapter = build_adapter(spec)
+    verification_cache: dict[tuple[str, str, str, int], bool] = {}
+
+    def is_verified(record: AssetRecord) -> bool:
+        identity = (
+            record.asset_id,
+            record.checksum,
+            record.storage_path,
+            record.size_bytes,
+        )
+        if identity not in verification_cache:
+            verification_cache[identity] = context.catalog.has_verified_content(record)
+        return verification_cache[identity]
+
     while True:
         available = context.catalog.raw_assets(spec.source_id)
         verified_available = [
@@ -110,13 +126,13 @@ def acquire_validated_assets(
             for record in available
             if record.status is AssetStatus.VALIDATED
             and record.duplicate_of_asset_id is None
-            and context.catalog.has_verified_content(record)
+            and is_verified(record)
         ]
         remotes = adapter.resolve(context, verified_available)
         pending = [
             remote
             for remote in remotes
-            if not _reusable(remote, available, context.catalog)
+            if not _reusable(remote, available, is_verified)
         ]
         if not pending:
             break
@@ -145,7 +161,7 @@ def acquire_validated_assets(
         for record in context.catalog.raw_assets(spec.source_id)
         if record.status is AssetStatus.VALIDATED
         and record.duplicate_of_asset_id is None
-        and context.catalog.has_verified_content(record)
+        and is_verified(record)
         and (selected_ids is None or record.asset_id in selected_ids)
     )
 

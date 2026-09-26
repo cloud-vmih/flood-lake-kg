@@ -288,6 +288,247 @@ def test_missing_validated_remote_without_inventory_is_marked_stale(
     assert catalog.get(record.asset_id).status is AssetStatus.STALE
 
 
+def test_missing_local_payload_restored_by_operator_is_revalidated(
+    tmp_path: Path,
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    grid = paths.raw / "worldcover" / "2021-v200" / "grid.geojson"
+    payload = b'{"type":"FeatureCollection","features":[]}'
+    record = AssetRecord(
+        asset_id="worldcover-grid",
+        source_id="esa_worldcover_2021_v200",
+        source_version="2021-v200",
+        kind=AssetKind.RAW,
+        source_uri="https://example.invalid/grid.geojson",
+        storage_path=str(grid),
+        media_type="application/geo+json",
+        size_bytes=len(payload),
+        checksum=sha256(payload).hexdigest(),
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        license_id="fixture",
+        pipeline_run_id="run-1",
+        status=AssetStatus.VALIDATED,
+    )
+    catalog.upsert(record)
+    catalog.transition(
+        record.asset_id,
+        AssetStatus.STALE,
+        error_code="local_payload_missing",
+        error_message="validated local payload is unavailable",
+    )
+    grid.parent.mkdir(parents=True)
+    grid.write_bytes(payload)
+    source_id = record.source_id
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="worldcover",
+                version="2021-v200",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=catalog,
+    )
+
+    service._restore_missing_remote_assets(source_id)
+
+    restored = catalog.get(record.asset_id)
+    assert restored.status is AssetStatus.VALIDATED
+    assert restored.error_code is None
+    assert restored.error_message is None
+
+
+def test_prepare_run_inventories_only_the_selected_existing_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source_id = "basinatlas_v10"
+    observed: dict[str, object] = {}
+
+    def record_inventory(context, **kwargs):
+        observed["run_id"] = context.run_id
+        observed.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.service.inventory_existing",
+        record_inventory,
+    )
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(
+                LandingSourcePolicy(
+                    source_id=source_id,
+                    mode="shapefile_bundle",
+                    filename_contains="BasinATLAS_v10_lev12.shp",
+                    output_name="basinatlas_l12.zip",
+                ),
+            ),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="existing",
+                version="10",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        fetcher=object(),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+    )
+
+    service.prepare_run(source_id, "run-1")
+
+    rules = observed["rules"]
+    assert observed["run_id"] == "run-1"
+    assert [rule.source_id for rule in rules] == [source_id]
+    assert [rule.glob for rule in rules] == [
+        "BasinATLAS_Data_v10_shp/BasinATLAS_v10_shp/BasinATLAS_v10_lev12.shp"
+    ]
+    assert observed["preserve_cache"] is True
+    assert observed["write_report"] is False
+
+
+def test_prepare_run_skips_legacy_inventory_for_remote_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source_id = "esa_worldcover_2021_v200"
+
+    def fail_inventory(*args, **kwargs):
+        raise AssertionError("remote source must not scan legacy dataset rules")
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.service.inventory_existing",
+        fail_inventory,
+    )
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="worldcover",
+                version="2021-v200",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        fetcher=object(),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+    )
+
+    service.prepare_run(source_id, "run-1")
+
+
+def test_existing_source_preparation_reuses_current_inventory_without_rehashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source_id = "basinatlas_v10"
+    payload = paths.dataset / "BasinATLAS_v10_lev12.shp"
+    payload.write_bytes(b"fixture")
+    record = AssetRecord(
+        asset_id="basinatlas-l12",
+        source_id=source_id,
+        source_version="10",
+        kind=AssetKind.RAW,
+        source_uri=payload.as_uri(),
+        storage_path=str(payload),
+        media_type="application/x-esri-shapefile",
+        size_bytes=payload.stat().st_size,
+        checksum=sha256(payload.read_bytes()).hexdigest(),
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        license_id="fixture",
+        pipeline_run_id="run-1",
+        status=AssetStatus.VALIDATED,
+    )
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.service.inventory_existing",
+        lambda context, **kwargs: [record],
+    )
+
+    def fail_acquire(*args, **kwargs):
+        raise AssertionError("current legacy inventory must not be hashed again")
+
+    def record_preparation(policy, records, **kwargs):
+        observed["records"] = records
+        return ()
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.service.acquire_validated_assets",
+        fail_acquire,
+    )
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.service.prepare_source_objects",
+        record_preparation,
+    )
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(
+                LandingSourcePolicy(
+                    source_id=source_id,
+                    mode="shapefile_bundle",
+                    filename_contains=payload.name,
+                    output_name="basinatlas_l12.zip",
+                ),
+            ),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="existing",
+                version="10",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        fetcher=object(),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+    )
+
+    service.prepare_run(source_id, "run-1")
+    service._prepare_source(source_id, "run-1")
+
+    assert observed["records"] == (record,)
+
+
 def test_committed_remote_raw_is_removed_but_existing_source_is_preserved(tmp_path: Path) -> None:
     paths = ProjectPaths.discover(tmp_path)
     paths.ensure_output_dirs()

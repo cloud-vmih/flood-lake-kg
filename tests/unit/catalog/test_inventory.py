@@ -105,6 +105,26 @@ def test_inventory_cache_uses_path_size_mtime_and_rehash_bypasses_it(
     assert cache["entries"]["legacy/cached.bin"]["mtime_ns"] == payload.stat().st_mtime_ns
 
 
+def test_targeted_inventory_preserves_checksum_cache_for_other_sources(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    first = context.paths.dataset / "first" / "asset.bin"
+    second = context.paths.dataset / "second" / "asset.bin"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    first_rule = _rule("first/asset.bin", source_id="first-source")
+    second_rule = _rule("second/asset.bin", source_id="second-source")
+
+    inventory_existing(context, rules=(first_rule, second_rule))
+    inventory_existing(context, rules=(first_rule,), preserve_cache=True)
+
+    cache = json.loads((context.paths.catalog / "inventory-cache.json").read_text())
+    assert set(cache["entries"]) == {"first/asset.bin", "second/asset.bin"}
+
+
 def test_inventory_registers_discovered_then_validated_and_writes_deterministic_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

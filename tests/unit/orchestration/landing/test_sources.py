@@ -325,3 +325,71 @@ def test_adapter_only_receives_catalog_records_with_verified_local_content(
 
     assert observed == [()]
     assert selected == ()
+
+
+def test_acquisition_verifies_each_unchanged_local_asset_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    record = _record(
+        paths.raw / "osm" / "vietnam.osm.pbf",
+        asset_id="osm-pbf",
+        source_id="geofabrik_vietnam_snapshot",
+        version="20260925",
+    )
+    catalog.upsert(record)
+    remote = RemoteAsset(
+        asset_id=record.asset_id,
+        source_id=record.source_id,
+        source_version=record.source_version,
+        uri=record.source_uri,
+        target_relative_path=Path(record.storage_path).relative_to(paths.dataset),
+        media_type=record.media_type,
+        license_id=record.license_id,
+    )
+
+    class Adapter:
+        def resolve(self, context, available):
+            return [remote]
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.sources.build_adapter",
+        lambda spec: Adapter(),
+    )
+    real_verify = catalog.has_verified_content
+    verification_count = 0
+
+    def count_verification(candidate):
+        nonlocal verification_count
+        verification_count += 1
+        return real_verify(candidate)
+
+    monkeypatch.setattr(catalog, "has_verified_content", count_verification)
+    context = SourceContext(
+        paths=paths,
+        catalog=catalog,
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+        run_id="run-1",
+    )
+    policy = LandingSourcePolicy(
+        source_id="geofabrik_vietnam_snapshot", mode="individual"
+    )
+    spec = SourceSpec(
+        source_id=policy.source_id,
+        adapter="geofabrik_osm",
+        version="20260925",
+        license_id="fixture-license",
+    )
+
+    selected = acquire_validated_assets(
+        policy,
+        spec,
+        context,
+        SimpleNamespace(fetch=lambda remote, run_id: pytest.fail("unexpected download")),
+    )
+
+    assert selected == (record,)
+    assert verification_count == 1

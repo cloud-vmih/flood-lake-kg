@@ -4,13 +4,14 @@ import json
 import shutil
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from flashflood_data.catalog import AssetCatalog, sha256_file
-from flashflood_data.catalog.models import AssetKind, AssetStatus, SourceSpec
+from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.landing.config import StaticLandingConfig
@@ -31,7 +32,7 @@ from flashflood_data.orchestration.landing.sources import (
     prepare_source_objects,
 )
 from flashflood_data.static.sources.base import SourceContext
-from flashflood_data.static.sources.existing import inventory_existing
+from flashflood_data.static.sources.existing import DEFAULT_RULES, inventory_existing
 from flashflood_data.storage.atomic import atomic_target
 from flashflood_data.storage.http import BudgetRejected, DownloadFailed, ExistingAssetConflict
 from flashflood_data.storage.http.fetcher import HttpFetcher
@@ -155,11 +156,13 @@ class StaticSourceLandingService:
         self.environment = environment
         self._custom_source_preparer = source_preparer
         self._contexts: dict[str, SourceContext] = {}
-        self._prepared_runs: set[str] = set()
+        self._inventoried_assets: dict[tuple[str, str], tuple[AssetRecord, ...]] = {}
+        self._prepared_sources: set[tuple[str, str]] = set()
 
-    def prepare_run(self, run_id: str) -> None:
-        """Create run staging and inventory legacy local sources exactly once."""
-        if run_id in self._prepared_runs:
+    def prepare_run(self, source_id: str, run_id: str) -> None:
+        """Create run staging and inventory only the selected local source."""
+        preparation_key = (run_id, source_id)
+        if preparation_key in self._prepared_sources:
             return
         self.staging_root.mkdir(parents=True, exist_ok=True)
         if self._custom_source_preparer is None:
@@ -171,16 +174,38 @@ class StaticSourceLandingService:
                 self.environment,
             ):
                 raise ValueError("default landing preparation dependencies are incomplete")
-            context = SourceContext(
-                paths=self.paths,
-                catalog=self.catalog,
-                study_area=self.study_area,
-                environment=self.environment,
-                run_id=run_id,
-            )
-            inventory_existing(context)
-            self._contexts[run_id] = context
-        self._prepared_runs.add(run_id)
+            context = self._contexts.get(run_id)
+            if context is None:
+                context = SourceContext(
+                    paths=self.paths,
+                    catalog=self.catalog,
+                    study_area=self.study_area,
+                    environment=self.environment,
+                    run_id=run_id,
+                )
+                self._contexts[run_id] = context
+            spec = self.source_specs[source_id]
+            if spec.adapter == "existing":
+                policy = self.config.source(source_id)
+                rules = tuple(
+                    replace(
+                        rule,
+                        glob=str(Path(rule.glob).with_name(policy.filename_contains)),
+                    )
+                    if policy.mode == "shapefile_bundle"
+                    else rule
+                    for rule in DEFAULT_RULES
+                    if rule.source_id == source_id
+                )
+                self._inventoried_assets[preparation_key] = tuple(
+                    inventory_existing(
+                        context,
+                        rules=rules,
+                        preserve_cache=True,
+                        write_report=False,
+                    )
+                )
+        self._prepared_sources.add(preparation_key)
 
     def _prepare_source(self, source_id: str, run_id: str) -> tuple[PreparedObject, ...]:
         if self._custom_source_preparer is not None:
@@ -191,6 +216,14 @@ class StaticSourceLandingService:
             raise SourceLandingError(f"unknown source: {source_id}") from exc
         policy = self.config.source(source_id)
         context = self._contexts[run_id]
+        if spec.adapter == "existing":
+            records = self._inventoried_assets[(run_id, source_id)]
+            return prepare_source_objects(
+                policy,
+                records,
+                staging_root=self.staging_root,
+                run_id=run_id,
+            )
         self._restore_missing_remote_assets(source_id)
         records = acquire_validated_assets(policy, spec, context, self.fetcher)
         return prepare_source_objects(
@@ -205,10 +238,28 @@ class StaticSourceLandingService:
         spec = self.source_specs[source_id]
         if spec.adapter == "existing" or self.paths is None or self.catalog is None:
             return
+        records = self.catalog.raw_assets(source_id)
+        restored_asset_ids: set[str] = set()
+        for record in records:
+            if (
+                record.status is AssetStatus.STALE
+                and record.error_code == "local_payload_missing"
+                and record.duplicate_of_asset_id is None
+                and self.catalog.has_verified_content(record)
+            ):
+                self.catalog.transition(
+                    record.asset_id,
+                    AssetStatus.VALIDATED,
+                    error_code=None,
+                    error_message=None,
+                )
+                restored_asset_ids.add(record.asset_id)
+        records = self.catalog.raw_assets(source_id)
         missing = [
-            record for record in self.catalog.raw_assets(source_id)
+            record for record in records
             if record.status is AssetStatus.VALIDATED
             and record.duplicate_of_asset_id is None
+            and record.asset_id not in restored_asset_ids
             and not self.catalog.has_verified_content(record)
         ]
         if not missing:
@@ -379,8 +430,8 @@ class StaticSourceLandingService:
 
     def publish_source(self, source_id: str, run_id: str) -> PublishedBatch:
         """Acquire, validate, package, and publish one independent source."""
-        self.prepare_run(run_id)
         self.config.source(source_id)
+        self.prepare_run(source_id, run_id)
         prepared_objects = self._prepare_source(source_id, run_id)
         published: list[PublishedObject] = []
         rows: list[SourceObjectRow] = []

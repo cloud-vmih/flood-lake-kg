@@ -473,7 +473,7 @@ Các endpoint local:
 | MinIO S3 API | `127.0.0.1:9000` |
 | Polaris REST API | `127.0.0.1:8181` |
 | Trino | <http://127.0.0.1:8083/> |
-| PostgreSQL | `127.0.0.1:5432` |
+| PostgreSQL | Chỉ nội bộ Docker tại `postgres:5432` |
 
 ## Spark tùy chọn
 

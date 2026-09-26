@@ -224,13 +224,15 @@ def inventory_existing(
     *,
     rules: Sequence[InventoryRule] = DEFAULT_RULES,
     rehash: bool = False,
+    preserve_cache: bool = False,
+    write_report: bool = True,
 ) -> list[AssetRecord]:
     """Register every matching legacy asset in place and preserve duplicates."""
     dataset = context.paths.dataset
     resolved_dataset = dataset.resolve(strict=True)
     cache_path = context.paths.catalog / "inventory-cache.json"
     old_cache = read_checksum_cache(cache_path)
-    new_cache: dict[str, dict[str, int | str]] = {}
+    new_cache: dict[str, dict[str, int | str]] = dict(old_cache) if preserve_cache else {}
     candidates: list[_Candidate] = []
 
     for rule in rules:
@@ -353,7 +355,10 @@ def inventory_existing(
         records.append(record)
 
     write_json_atomic(cache_path, {"entries": dict(sorted(new_cache.items()))})
-    write_json_atomic(context.paths.catalog / "inventory.json", deterministic_report(records))
+    if write_report:
+        write_json_atomic(
+            context.paths.catalog / "inventory.json", deterministic_report(records)
+        )
     return records
 
 

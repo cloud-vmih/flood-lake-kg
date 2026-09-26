@@ -69,8 +69,6 @@ services:
       POSTGRES_PASSWORD: ${LAKEHOUSE_POSTGRES_PASSWORD:?run make lakehouse-init}
       AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?run make lakehouse-init}
       POLARIS_DB_PASSWORD: ${POLARIS_DB_PASSWORD:?run make lakehouse-init}
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - ${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/postgres:/var/lib/postgresql/data:Z
       - ./infra/services/postgres/init-multiple-databases.sh:/docker-entrypoint-initdb.d/10-multiple-databases.sh:ro,Z
