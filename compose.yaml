@@ -82,7 +82,14 @@ services:
     networks: [lakehouse]
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: flood-lakehouse-minio:RELEASE.2025-09-07T16-13-09Z
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: infra/docker/minio/Dockerfile
+      args:
+        MINIO_VERSION: RELEASE.2025-09-07T16-13-09Z
+        MC_VERSION: RELEASE.2025-08-13T08-35-41Z
     mem_limit: 512m
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -103,7 +110,8 @@ services:
     networks: [lakehouse]
 
   minio-bootstrap:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: flood-lakehouse-minio:RELEASE.2025-09-07T16-13-09Z
+    pull_policy: never
     depends_on:
       minio:
         condition: service_healthy

@@ -13,8 +13,10 @@ def services() -> dict:
 def test_storage_services_are_pinned_private_and_persistent() -> None:
     items = services()
     assert items["postgres"]["image"] == "postgres:17.11-bookworm"
-    assert items["minio"]["image"] == "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
-    assert items["minio-bootstrap"]["image"] == "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
+    assert items["minio"]["image"] == "flood-lakehouse-minio:RELEASE.2025-09-07T16-13-09Z"
+    assert items["minio-bootstrap"]["image"] == items["minio"]["image"]
+    assert items["minio"]["pull_policy"] == "never"
+    assert items["minio-bootstrap"]["pull_policy"] == "never"
     assert "ports" not in items["postgres"]
     assert items["minio"]["ports"] == ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
     assert "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/postgres:/var/lib/postgresql/data:Z" in items["postgres"]["volumes"]
@@ -24,6 +26,24 @@ def test_storage_services_are_pinned_private_and_persistent() -> None:
     assert "mb --ignore-existing local/warehouse" in command
     assert "anonymous" not in command
     assert "rm " not in command
+
+
+def test_minio_image_is_built_from_pinned_upstream_source() -> None:
+    service = services()["minio"]
+    dockerfile = ROOT / "infra/docker/minio/Dockerfile"
+
+    assert service["build"]["dockerfile"] == "infra/docker/minio/Dockerfile"
+    assert service["build"]["args"] == {
+        "MINIO_VERSION": "RELEASE.2025-09-07T16-13-09Z",
+        "MC_VERSION": "RELEASE.2025-08-13T08-35-41Z",
+    }
+    assert dockerfile.is_file()
+    text = dockerfile.read_text()
+    assert "github.com/minio/minio@${MINIO_VERSION}" in text
+    assert "github.com/minio/mc@${MC_VERSION}" in text
+    assert "quay.io/minio" not in text
+    makefile = (ROOT / "Makefile").read_text()
+    assert "docker compose build minio" in makefile
 
 
 def test_storage_services_have_health_and_memory_bounds() -> None:

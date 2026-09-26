@@ -54,7 +54,7 @@ lakehouse-python-setup:
 	tools/bootstrap/setup_python_runtime.sh
 
 lakehouse-build: lakehouse-init
-	docker compose build airflow-api-server polaris-bootstrap
+	docker compose build minio airflow-api-server polaris-bootstrap
 
 
 lakehouse-airflow-build: lakehouse-init
@@ -66,6 +66,7 @@ lakehouse-init:
 
 lakehouse-up: lakehouse-init
 	tools/bootstrap/check_docker_access.sh
+	docker compose build minio
 	docker compose up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor
 	docker compose run --no-deps --rm polaris-bootstrap
 

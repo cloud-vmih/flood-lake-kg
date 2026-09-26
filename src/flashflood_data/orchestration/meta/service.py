@@ -1,7 +1,7 @@
 """Write source, run, quality, snapshot and lineage records to Meta Iceberg tables."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
@@ -51,8 +51,6 @@ class MetaRecorder:
         http_status: int | None = None,
         error_code: str | None = None,
     ) -> int:
-        if attempt_no < 1 or status not in {"running", "succeeded", "failed", "skipped"}:
-            raise ValueError("invalid ingest attempt number or status")
         row = {
             "ingest_run_id": ingest_run_id,
             "source_id": source_id,
@@ -65,9 +63,21 @@ class MetaRecorder:
             "ended_at": ended_at,
             "status": status,
         }
-        return self.store.upsert_meta_row(
+        return self.record_attempts((row,))
+
+    def record_attempts(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist one source's object attempts in one Iceberg commit."""
+        requested = [dict(row) for row in rows]
+        if not requested or any(
+            row["attempt_no"] < 1
+            or row["status"] not in {"running", "succeeded", "failed", "skipped"}
+            for row in requested
+        ):
+            raise ValueError("invalid ingest attempt batch")
+        return self.store.upsert_meta_rows(
             (self.meta_namespace, "ingest_attempts"),
-            ("ingest_run_id", "source_id", "asset_id", "attempt_no"), row,
+            ("ingest_run_id", "source_id", "asset_id", "attempt_no"),
+            requested,
         )
 
     def record_run(self, row: Mapping[str, Any]) -> int:
@@ -97,12 +107,6 @@ class MetaRecorder:
         snapshot_table: str | None = None,
         snapshot_id: int | None = None,
     ) -> int:
-        if (snapshot_table is None) != (snapshot_id is None):
-            raise ValueError("snapshot table and snapshot ID must be set together")
-        if check_phase not in {"pre_commit", "post_commit", "pre_publish"}:
-            raise ValueError("unsupported quality check phase")
-        if status not in {"passed", "failed", "error", "skipped"}:
-            raise ValueError("unsupported quality status")
         row = {
             "pipeline_run_id": pipeline_run_id,
             "check_phase": check_phase,
@@ -120,10 +124,31 @@ class MetaRecorder:
             "snapshot_id": snapshot_id,
             "checked_at": checked_at,
         }
-        return self.store.upsert_meta_row(
+        return self.record_qualities((row,))
+
+    def record_qualities(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist one dataset's object quality results in one Iceberg commit."""
+        requested = [dict(row) for row in rows]
+        if not requested:
+            raise ValueError("quality result batch cannot be empty")
+        for row in requested:
+            if (row["snapshot_table"] is None) != (row["snapshot_id"] is None):
+                raise ValueError("snapshot table and snapshot ID must be set together")
+            if row["check_phase"] not in {"pre_commit", "post_commit", "pre_publish"}:
+                raise ValueError("unsupported quality check phase")
+            if row["status"] not in {"passed", "failed", "error", "skipped"}:
+                raise ValueError("unsupported quality status")
+        return self.store.upsert_meta_rows(
             (self.meta_namespace, "quality_results"),
-            ("pipeline_run_id", "check_phase", "dataset_id", "rule_id", "rule_version", "scope_key"),
-            row,
+            (
+                "pipeline_run_id",
+                "check_phase",
+                "dataset_id",
+                "rule_id",
+                "rule_version",
+                "scope_key",
+            ),
+            requested,
         )
 
     def record_snapshot_ref(

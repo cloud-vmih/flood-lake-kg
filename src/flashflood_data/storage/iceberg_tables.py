@@ -7,7 +7,7 @@ from typing import Any
 import pyarrow as pa
 from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import CommitFailedException
-from pyiceberg.expressions import And, EqualTo
+from pyiceberg.expressions import And, EqualTo, Or
 
 from flashflood_data.core.disk_index import DiskUniqueIndex
 from flashflood_data.storage.iceberg_schemas import BRONZE_KEYS, table_schema
@@ -20,6 +20,16 @@ def _filter(key: Mapping[str, Any]) -> EqualTo | And:
     result = clauses[0]
     for clause in clauses[1:]:
         result = And(result, clause)
+    return result
+
+
+def _filters(keys: Sequence[Mapping[str, Any]]) -> EqualTo | And | Or:
+    if not keys:
+        raise ValueError("Iceberg key batch cannot be empty")
+    expressions = [_filter(key) for key in keys]
+    result = expressions[0]
+    for expression in expressions[1:]:
+        result = Or(result, expression)
     return result
 
 
@@ -133,23 +143,56 @@ class IcebergTableStore:
         row: Mapping[str, Any],
     ) -> int:
         """Upsert one Meta row by its full logical key, leaving other keys intact."""
+        return self.upsert_meta_rows(identifier, key_fields, (row,))
+
+    def upsert_meta_rows(
+        self,
+        identifier: tuple[str, str],
+        key_fields: tuple[str, ...],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Upsert many Meta keys in one Iceberg commit."""
         if (identifier[0] != "meta" and not identifier[0].startswith("smoke_")) or identifier[1] == "source_objects":
             raise ValueError("Meta upsert cannot replace source_objects")
-        key = {name: row[name] for name in key_fields}
+        requested = [dict(row) for row in rows]
+        if not requested:
+            raise ValueError("Meta upsert batch cannot be empty")
+        keys = [{name: row[name] for name in key_fields} for row in requested]
+        key_values = [tuple(key.values()) for key in keys]
+        if len(set(key_values)) != len(key_values):
+            raise ValueError(f"duplicate requested Meta key in {identifier[1]}")
         schema = table_schema(identifier)
-        payload = pa.Table.from_pylist([dict(row)], schema=schema)
-        expression = _filter(key)
+        payload = pa.Table.from_pylist(requested, schema=schema)
+        payload_rows = payload.to_pylist()
+        expression = _filters(keys)
         table = self.ensure_table(identifier)
         last_error: CommitFailedException | None = None
         for _attempt in range(3):
             table.refresh()
             existing = table.scan(row_filter=expression).to_arrow().to_pylist()
-            if len(existing) > 1:
+            existing_keys = [tuple(row[name] for name in key_fields) for row in existing]
+            if len(set(existing_keys)) != len(existing_keys):
                 raise ValueError(f"duplicate existing Meta key in {identifier[1]}")
-            if existing == payload.to_pylist():
+            existing_by_key = {
+                tuple(row[name] for name in key_fields): row for row in existing
+            }
+            payload_by_key = {
+                tuple(row[name] for name in key_fields): row for row in payload_rows
+            }
+            changed = any(
+                key in existing_by_key and existing_by_key[key] != row
+                for key, row in payload_by_key.items()
+            )
+            missing = [
+                row for key, row in payload_by_key.items() if key not in existing_by_key
+            ]
+            if not changed and not missing:
                 return _snapshot_id(table)
             try:
-                table.overwrite(payload, overwrite_filter=expression)
+                if changed:
+                    table.overwrite(payload, overwrite_filter=expression)
+                else:
+                    table.append(pa.Table.from_pylist(missing, schema=schema))
             except CommitFailedException as error:
                 last_error = error
                 continue

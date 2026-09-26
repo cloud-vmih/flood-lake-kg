@@ -6,6 +6,7 @@ import os
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 
 from airflow.exceptions import AirflowException
 from airflow.sdk import dag, task, task_group
@@ -174,9 +175,25 @@ def audit_registered_meta(envelope_json: dict[str, object]) -> dict[str, object]
             return envelope.model_dump(mode="json")
         if not isinstance(envelope.batch, RegisteredBatch):
             raise TypeError("raw Meta audit requires a registered batch")
+        started = monotonic()
         meta = build_meta_recorder()
+        LOGGER.info(
+            "raw Meta audit phase complete: source_id=%s phase=catalog_connect duration_s=%.3f",
+            envelope.source_id,
+            monotonic() - started,
+        )
         inventory = SourceObjectInventory(meta.store.catalog)
-        rows = inventory.available_objects(envelope.source_id)
+        started = monotonic()
+        rows = inventory.available_objects(
+            envelope.source_id,
+            object_ids=envelope.batch.object_ids,
+        )
+        LOGGER.info(
+            "raw Meta audit phase complete: source_id=%s phase=source_objects_scan rows=%d duration_s=%.3f",
+            envelope.source_id,
+            len(rows),
+            monotonic() - started,
+        )
         audit_registered_batch(
             envelope.batch, rows, meta, catalog_name=meta.store.catalog.name,
             checked_at=datetime.now(UTC),

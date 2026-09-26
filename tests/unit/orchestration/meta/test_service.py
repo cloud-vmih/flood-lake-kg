@@ -18,6 +18,11 @@ class _Store:
         self.rows[key] = dict(row)
         return len(self.rows)
 
+    def upsert_meta_rows(self, identifier, key_fields, rows):
+        for row in rows:
+            self.upsert_meta_row(identifier, key_fields, row)
+        return len(self.rows)
+
     def get_meta_row(self, identifier, key):
         return self.rows.get((identifier[1], tuple(key.values())))
 

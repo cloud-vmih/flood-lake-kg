@@ -169,3 +169,21 @@ def test_available_objects_filters_status_and_source_for_bronze_discovery() -> N
 
     inventory = SourceObjectInventory(FakeCatalog(DiscoveryTable(existing=[])))
     assert [row.object_id for row in inventory.available_objects("fixture-source")] == ["object-1"]
+
+
+def test_available_objects_can_limit_scan_to_registered_object_ids() -> None:
+    available = _row("object-1").model_dump(mode="python")
+
+    class BatchTable(FakeTable):
+        def scan(self, **kwargs: object):
+            expression = str(kwargs["row_filter"])
+            assert "source_id" in expression
+            assert "status" in expression
+            assert "object_id" in expression
+            return SimpleNamespace(to_arrow=lambda: pa.Table.from_pylist([available]))
+
+    inventory = SourceObjectInventory(FakeCatalog(BatchTable(existing=[])))
+
+    assert inventory.available_objects(
+        "fixture-source", object_ids=("object-1",)
+    ) == (SourceObjectRow.model_validate(available),)

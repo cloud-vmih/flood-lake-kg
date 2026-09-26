@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pytest
 from pyiceberg.exceptions import CommitFailedException
-from pyiceberg.expressions import And, EqualTo
+from pyiceberg.expressions import And, EqualTo, Or
 
 from flashflood_data.storage.iceberg_tables import IcebergTableStore
 
@@ -16,6 +16,8 @@ def _matches(row: dict[str, object], expression: object) -> bool:
         return row[expression.term.name] == expression.literal.value
     if isinstance(expression, And):
         return _matches(row, expression.left) and _matches(row, expression.right)
+    if isinstance(expression, Or):
+        return _matches(row, expression.left) or _matches(row, expression.right)
     raise AssertionError(f"unexpected filter: {expression!r}")
 
 
@@ -35,7 +37,9 @@ class _Table:
         self.rows: list[dict[str, object]] = []
         self.snapshot_id: int | None = None
         self.overwrites = 0
+        self.appends = 0
         self.fail_next_overwrites = 0
+        self.fail_next_appends = 0
 
     def refresh(self) -> None:
         pass
@@ -50,7 +54,15 @@ class _Table:
         self.rows = [row for row in self.rows if not _matches(row, overwrite_filter)]
         self.rows.extend(data.to_pylist())
         self.overwrites += 1
-        self.snapshot_id = self.overwrites
+        self.snapshot_id = (self.snapshot_id or 0) + 1
+
+    def append(self, data: pa.Table) -> None:
+        if self.fail_next_appends:
+            self.fail_next_appends -= 1
+            raise CommitFailedException("concurrent snapshot")
+        self.rows.extend(data.to_pylist())
+        self.appends += 1
+        self.snapshot_id = (self.snapshot_id or 0) + 1
 
     def current_snapshot(self) -> SimpleNamespace | None:
         return None if self.snapshot_id is None else SimpleNamespace(snapshot_id=self.snapshot_id)
@@ -152,12 +164,83 @@ def test_meta_upsert_replaces_one_run_without_touching_another() -> None:
     assert store.get_meta_row(("meta", "pipeline_runs"), {"pipeline_run_id": "run-a"})["status"] == "succeeded"
 
 
+def test_meta_batch_upsert_commits_many_keys_once_and_preserves_other_rows() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("meta", "ingest_attempts")
+
+    def attempt(asset_id: str) -> dict[str, object]:
+        return {
+            "ingest_run_id": "landing-1",
+            "source_id": "soilgrids_2_0",
+            "asset_id": asset_id,
+            "attempt_no": 1,
+            "request_fingerprint": f"fingerprint-{asset_id}",
+            "http_status": None,
+            "error_code": None,
+            "started_at": datetime(2026, 9, 20, tzinfo=UTC),
+            "ended_at": datetime(2026, 9, 20, tzinfo=UTC),
+            "status": "succeeded",
+        }
+
+    keys = ("ingest_run_id", "source_id", "asset_id", "attempt_no")
+    store.upsert_meta_row(identifier, keys, attempt("unrelated"))
+    table = catalog.tables[identifier]
+    before = table.appends
+
+    snapshot = store.upsert_meta_rows(
+        identifier, keys, [attempt("tile-1"), attempt("tile-2")]
+    )
+
+    assert snapshot == table.snapshot_id
+    assert table.appends == before + 1
+    assert {row["asset_id"] for row in table.rows} == {
+        "unrelated",
+        "tile-1",
+        "tile-2",
+    }
+
+
+def test_meta_new_keys_use_one_append_without_planning_an_overwrite() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("meta", "pipeline_runs")
+    rows = [
+        {
+            "pipeline_run_id": run_id,
+            "orchestrator_run_id": None,
+            "job_name": "raw_landing",
+            "code_git_sha": None,
+            "image_digest": None,
+            "config_hash": "config-1",
+            "parameter_set_id": None,
+            "started_at": datetime(2026, 9, 20, tzinfo=UTC),
+            "finished_at": None,
+            "published_at": None,
+            "status": "running",
+            "retry_count": 0,
+            "input_row_count": None,
+            "output_row_count": None,
+            "quality_result_json": None,
+            "metrics_json": None,
+            "error_code": None,
+        }
+        for run_id in ("run-a", "run-b")
+    ]
+
+    store.upsert_meta_rows(identifier, ("pipeline_run_id",), rows)
+
+    table = catalog.tables[identifier]
+    assert table.appends == 1
+    assert table.overwrites == 0
+
+
 def test_meta_upsert_refreshes_and_retries_optimistic_commit_conflict() -> None:
     catalog = _Catalog()
     store = IcebergTableStore(catalog)
     identifier = ("meta", "pipeline_runs")
     table = store.ensure_table(identifier)
-    table.fail_next_overwrites = 1
+    table.fail_next_appends = 1
     row = {
         "pipeline_run_id": "run-a", "orchestrator_run_id": None, "job_name": "bronze_parse",
         "code_git_sha": None, "image_digest": None, "config_hash": "config-1",

@@ -133,12 +133,28 @@ class SourceObjectInventory:
             locations.setdefault(identity, (str(row["object_uri"]), int(row["size_bytes"])))
         return locations
 
-    def available_objects(self, source_id: str) -> tuple[SourceObjectRow, ...]:
+    def available_objects(
+        self,
+        source_id: str,
+        *,
+        object_ids: Sequence[str] | None = None,
+    ) -> tuple[SourceObjectRow, ...]:
         """Discover verified raw objects eligible for source-specific Bronze parsing."""
+        requested_ids = tuple(dict.fromkeys(object_ids or ()))
+        if object_ids is not None and not requested_ids:
+            return ()
+        row_filter = And(
+            EqualTo("source_id", source_id), EqualTo("status", "available")
+        )
+        if requested_ids:
+            object_filter = (
+                EqualTo("object_id", requested_ids[0])
+                if len(requested_ids) == 1
+                else In("object_id", requested_ids)
+            )
+            row_filter = And(row_filter, object_filter)
         self.table.refresh()
-        rows = self.table.scan(
-            row_filter=And(EqualTo("source_id", source_id), EqualTo("status", "available"))
-        ).to_arrow().to_pylist()
+        rows = self.table.scan(row_filter=row_filter).to_arrow().to_pylist()
         return tuple(
             SourceObjectRow.model_validate(row)
             for row in rows if row["source_id"] == source_id and row["status"] == "available"
