@@ -13,8 +13,8 @@ def services() -> dict:
 def test_storage_services_are_pinned_private_and_persistent() -> None:
     items = services()
     assert items["postgres"]["image"] == "postgres:17.11-bookworm"
-    assert items["minio"]["image"] == "minio/minio:RELEASE.2025-09-07T16-13-09Z"
-    assert items["minio-bootstrap"]["image"] == "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+    assert items["minio"]["image"] == "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+    assert items["minio-bootstrap"]["image"] == "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
     assert items["postgres"]["ports"] == ["127.0.0.1:5432:5432"]
     assert items["minio"]["ports"] == ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
     assert "${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/postgres:/var/lib/postgresql/data:Z" in items["postgres"]["volumes"]
