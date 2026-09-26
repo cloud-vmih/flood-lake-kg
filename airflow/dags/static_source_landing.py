@@ -1,7 +1,9 @@
 """Airflow orchestration for immutable static source landing."""
 
 import json
+import logging
 import os
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -41,6 +43,18 @@ EXPECTED_SOURCE_IDS = (
     "esa_worldcover_2021_v200",
 )
 CONFIG_PATH = ProjectPaths.discover().root / "config" / "landing" / "static.yaml"
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_source_failure(source_id: str, phase: str, error: Exception) -> None:
+    """Log failure location without exposing provider URLs or credentials."""
+    LOGGER.error(
+        "static landing source failed: source_id=%s phase=%s error_type=%s\n%s",
+        source_id,
+        phase,
+        type(error).__name__,
+        "".join(traceback.format_tb(error.__traceback__)),
+    )
 
 
 def _staging_root() -> Path:
@@ -83,6 +97,7 @@ def publish_source(source_id: str, landing_run_id: str) -> dict[str, object]:
         batch = service.publish_source(source_id, landing_run_id)
         envelope = LandingTaskEnvelope.succeeded("published", batch)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        _log_source_failure(source_id, "publish", error)
         envelope = LandingTaskEnvelope.failed(
             source_id, StaticSourceLandingService._error_code(error)
         )
@@ -106,6 +121,7 @@ def register_batch(envelope_json: dict[str, object]) -> dict[str, object]:
         registered = service.register_batch(envelope.batch)
         result = LandingTaskEnvelope.succeeded("registered", registered)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        _log_source_failure(source_id, "register", error)
         result = LandingTaskEnvelope.failed(
             source_id, StaticSourceLandingService._error_code(error)
         )
@@ -139,6 +155,7 @@ def cleanup_batch(
         service.cleanup_batch(envelope.batch)
         result = LandingTaskEnvelope.succeeded("cleaned", envelope.batch)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        _log_source_failure(source_id, "cleanup", error)
         document = {
             "source_id": source_id,
             "error_code": StaticSourceLandingService._error_code(error),
@@ -165,6 +182,7 @@ def audit_registered_meta(envelope_json: dict[str, object]) -> dict[str, object]
             checked_at=datetime.now(UTC),
         )
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        _log_source_failure(source_id, "audit", error)
         return LandingTaskEnvelope.failed(
             source_id, StaticSourceLandingService._error_code(error)
         ).model_dump(mode="json")

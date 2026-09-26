@@ -1764,6 +1764,27 @@ def test_second_fetch_without_upstream_checksum_reuses_catalogued_payload(
 
 
 @respx.mock
+def test_uncatalogued_target_is_quarantined_before_a_clean_refetch(
+    fetcher: HttpFetcher, project_paths, remote_asset: RemoteAsset, catalog
+) -> None:
+    target = project_paths.dataset / remote_asset.target_relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"stale-payload")
+    route = respx.get(remote_asset.uri).mock(
+        return_value=httpx.Response(200, content=b"valid-payload")
+    )
+
+    record = fetcher.fetch(remote_asset, "run-recover-untracked")
+
+    evidence = list((project_paths.raw / "_quarantine").rglob("payload.bin.*"))
+    assert route.call_count == 1
+    assert record.status is AssetStatus.FETCHED
+    assert target.read_bytes() == b"valid-payload"
+    assert [path.read_bytes() for path in evidence] == [b"stale-payload"]
+    assert catalog.get(remote_asset.asset_id) == record
+
+
+@respx.mock
 def test_catalog_observes_fetching_then_fetched_lifecycle(
     fetcher: HttpFetcher, remote_asset: RemoteAsset, catalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:

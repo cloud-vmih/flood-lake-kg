@@ -244,25 +244,28 @@ class HttpFetcher(ResumeMixin, TransferMixin, QuarantineMixin):
             raise ExistingAssetConflict(
                 f"existing catalog state requires operator action: {remote.asset_id}"
             )
-        if size_matches and remote.expected_checksum is not None and expected_checksum_matches:
-            discovered = self._record(
-                remote,
-                final_path,
-                run_id,
-                status=AssetStatus.DISCOVERED,
-                size_bytes=0,
-                checksum="",
-            )
-            self.catalog.upsert(discovered)
-            self.catalog.transition(remote.asset_id, AssetStatus.FETCHING)
-            return self.catalog.transition(
-                remote.asset_id,
-                AssetStatus.FETCHED,
-                size_bytes=actual_size,
-                checksum=actual_checksum,
-                retrieved_at=datetime.now(UTC),
-            )
-        raise ExistingAssetConflict(f"target already exists: {remote.asset_id}")
+        if remote.expected_checksum is not None:
+            if size_matches and expected_checksum_matches:
+                discovered = self._record(
+                    remote,
+                    final_path,
+                    run_id,
+                    status=AssetStatus.DISCOVERED,
+                    size_bytes=0,
+                    checksum="",
+                )
+                self.catalog.upsert(discovered)
+                self.catalog.transition(remote.asset_id, AssetStatus.FETCHING)
+                return self.catalog.transition(
+                    remote.asset_id,
+                    AssetStatus.FETCHED,
+                    size_bytes=actual_size,
+                    checksum=actual_checksum,
+                    retrieved_at=datetime.now(UTC),
+                )
+            raise ExistingAssetConflict(f"target already exists: {remote.asset_id}")
+        self._quarantine_stale_target(remote, final_path)
+        return None
 
     def _begin_catalog(self, remote: RemoteAsset, final_path: Path, run_id: str) -> None:
         try:

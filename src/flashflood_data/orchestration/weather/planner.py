@@ -1,7 +1,7 @@
 """Pure planning functions for restart-safe weather ingestion."""
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -148,3 +148,20 @@ def advance_contiguous_cursor(
             break
         cursor = item.window.end if cursor is None else max(cursor, item.window.end)
     return cursor
+
+
+def verify_weather_outcomes(
+    plan: Mapping[str, object], outcomes: Iterable[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """Validate mapped task coverage and return a JSON-serializable concrete list."""
+    missing = plan.get("missing")
+    if not isinstance(missing, list) or not all(isinstance(item, Mapping) for item in missing):
+        raise ValueError("weather plan missing objects must be a list of mappings")
+    materialized = [dict(item) for item in outcomes]
+    expected_missing = {str(item["asset_id"]) for item in missing}
+    actual = {str(item["asset_id"]) for item in materialized}
+    if expected_missing != actual:
+        raise ValueError("weather fetch outcomes do not cover every planned missing object")
+    if any(item.get("status") not in {"available", "no_data"} for item in materialized):
+        raise ValueError("weather coverage contains an unresolved outcome")
+    return materialized

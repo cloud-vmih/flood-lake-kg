@@ -33,7 +33,7 @@ from flashflood_data.orchestration.landing.sources import (
 from flashflood_data.static.sources.base import SourceContext
 from flashflood_data.static.sources.existing import inventory_existing
 from flashflood_data.storage.atomic import atomic_target
-from flashflood_data.storage.http import BudgetRejected
+from flashflood_data.storage.http import BudgetRejected, DownloadFailed, ExistingAssetConflict
 from flashflood_data.storage.http.fetcher import HttpFetcher
 from flashflood_data.storage.http.redaction import redact
 from flashflood_data.storage.iceberg import (
@@ -41,7 +41,11 @@ from flashflood_data.storage.iceberg import (
     SourceObjectConflict,
     SourceObjectInventory,
 )
-from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
+from flashflood_data.storage.object_store import (
+    ObjectConflict,
+    ObjectPublisher,
+    ObjectVerificationError,
+)
 
 SourcePreparer = Callable[[str, str], tuple[PreparedObject, ...]]
 _MANIFEST_RUN_ANNOTATIONS = frozenset(
@@ -213,6 +217,12 @@ class StaticSourceLandingService:
         for record in missing:
             location = locations.get((record.asset_id, record.source_version, record.checksum))
             if location is None:
+                self.catalog.transition(
+                    record.asset_id,
+                    AssetStatus.STALE,
+                    error_code="local_payload_missing",
+                    error_message="validated local payload is unavailable",
+                )
                 continue
             object_uri, size_bytes = location
             uri = urlsplit(object_uri)
@@ -474,12 +484,18 @@ class StaticSourceLandingService:
             return error.code
         if isinstance(error, ObjectConflict):
             return "object_conflict"
+        if isinstance(error, ObjectVerificationError):
+            return "object_verification_failed"
         if isinstance(error, SourceObjectConflict):
             return "iceberg_identity_conflict"
         if isinstance(error, IcebergCommitError):
             return "iceberg_commit_failed"
         if isinstance(error, BudgetRejected):
             return "storage_budget_rejected"
+        if isinstance(error, ExistingAssetConflict):
+            return "existing_asset_conflict"
+        if isinstance(error, DownloadFailed):
+            return "source_download_failed"
         return "unexpected_source_failure"
 
     def run(

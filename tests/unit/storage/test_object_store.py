@@ -1,3 +1,4 @@
+import gzip
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -51,18 +52,35 @@ class MemoryObjectStore:
         return self.data[key]
 
 
+class TimeoutPromoteObjectStore(MemoryObjectStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.uploaded_keys: list[str] = []
+
+    def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None:
+        self.uploaded_keys.append(key)
+        super().upload(local_path, key, metadata)
+
+    def copy(self, source_key: str, destination_key: str) -> None:
+        raise OSError("UploadPart operation: curlCode: 28, Timeout was reached")
+
+
 class TimeoutCopyFilesystem:
     def __init__(self) -> None:
         self.local = fs.LocalFileSystem()
+        self.opened_stream = False
 
     def copy_file(self, source_key: str, destination_key: str) -> None:
         raise OSError("CopyObject timeout")
 
-    def open_input_stream(self, key: str):
-        return self.local.open_input_stream(key)
+    def open_input_stream(self, key: str, compression=None):
+        self.opened_stream = True
+        assert compression is None
+        return self.local.open_input_stream(key, compression=compression)
 
-    def open_output_stream(self, key: str):
-        return self.local.open_output_stream(key)
+    def open_output_stream(self, key: str, compression=None):
+        assert compression is None
+        return self.local.open_output_stream(key, compression=compression)
 
     def delete_file(self, key: str) -> None:
         self.local.delete_file(key)
@@ -76,40 +94,24 @@ class NonTimeoutCopyFilesystem(TimeoutCopyFilesystem):
     def copy_file(self, source_key: str, destination_key: str) -> None:
         raise OSError("AccessDenied")
 
-    def open_input_stream(self, key: str):
+    def open_input_stream(self, key: str, compression=None):
         self.opened_stream = True
-        return super().open_input_stream(key)
+        return super().open_input_stream(key, compression=compression)
 
 
-class InterruptedStreamFilesystem(TimeoutCopyFilesystem):
-    class _InterruptedOutput:
-        def __init__(self, stream) -> None:
-            self.stream = stream
-
-        def __enter__(self):
-            self.stream.__enter__()
-            return self
-
-        def __exit__(self, exc_type, exc, traceback) -> None:
-            self.stream.__exit__(exc_type, exc, traceback)
-
-        def write(self, data: bytes) -> int:
-            self.stream.write(data[:3])
-            raise OSError("stream interrupted")
-
-    def open_output_stream(self, key: str):
-        return self._InterruptedOutput(super().open_output_stream(key))
-
-
-def test_pyarrow_store_streams_copy_when_server_side_copy_times_out(tmp_path: Path) -> None:
+def test_pyarrow_store_returns_copy_timeout_without_s3_stream_fallback(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "source.bin"
     destination = tmp_path / "destination.bin"
     source.write_bytes(b"large-object-fixture")
     store = PyArrowS3ObjectStore(TimeoutCopyFilesystem())
 
-    store.copy(str(source), str(destination))
+    with pytest.raises(OSError, match="CopyObject timeout"):
+        store.copy(str(source), str(destination))
 
-    assert destination.read_bytes() == source.read_bytes()
+    assert store.filesystem.opened_stream is False
+    assert not destination.exists()
 
 
 def test_pyarrow_store_streams_download_to_local_file(tmp_path: Path) -> None:
@@ -122,6 +124,21 @@ def test_pyarrow_store_streams_download_to_local_file(tmp_path: Path) -> None:
     assert destination.read_bytes() == b"raw-source-payload"
 
 
+def test_pyarrow_store_preserves_precompressed_object_bytes(tmp_path: Path) -> None:
+    source = tmp_path / "source.dat.gz"
+    destination = tmp_path / "raw" / "asset.dat.gz"
+    destination.parent.mkdir()
+    with gzip.open(source, "wb") as stream:
+        stream.write(b"source-payload" * 100)
+
+    store = PyArrowS3ObjectStore(fs.LocalFileSystem())
+    store.upload(source, str(destination), {"content-type": "application/gzip"})
+
+    assert destination.read_bytes() == source.read_bytes()
+    assert store.size(str(destination)) == source.stat().st_size
+    assert store.read(str(destination)) == source.read_bytes()
+
+
 def test_pyarrow_store_does_not_stream_for_non_timeout_copy_errors(tmp_path: Path) -> None:
     source = tmp_path / "source.bin"
     destination = tmp_path / "destination.bin"
@@ -132,21 +149,6 @@ def test_pyarrow_store_does_not_stream_for_non_timeout_copy_errors(tmp_path: Pat
         PyArrowS3ObjectStore(filesystem).copy(str(source), str(destination))
 
     assert filesystem.opened_stream is False
-    assert not destination.exists()
-
-
-def test_pyarrow_store_removes_partial_destination_after_stream_failure(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "source.bin"
-    destination = tmp_path / "destination.bin"
-    source.write_bytes(b"large-object-fixture")
-
-    with pytest.raises(OSError, match="stream interrupted"):
-        PyArrowS3ObjectStore(InterruptedStreamFilesystem()).copy(
-            str(source), str(destination)
-        )
-
     assert not destination.exists()
 
 
@@ -232,6 +234,26 @@ def test_retry_replaces_only_run_staging_after_copy_failure(tmp_path: Path) -> N
     )
     assert result.reused is False
     assert store.keys() == {"raw/static/source/1/asset.bin"}
+
+
+def test_publish_uploads_local_file_to_final_when_minio_promotion_times_out(
+    tmp_path: Path,
+) -> None:
+    payload = tmp_path / "large.zip"
+    payload.write_bytes(b"large-source-payload")
+    store = TimeoutPromoteObjectStore()
+
+    result = ObjectPublisher(store, "raw").publish_file(
+        payload,
+        final_key="static/basinatlas/10/basin_level=12/asset/large.zip",
+        run_id="diagnostic-basinatlas",
+        media_type="application/zip",
+    )
+
+    assert result.reused is False
+    assert store.read(result.object_key) == payload.read_bytes()
+    assert store.uploaded_keys[-1] == result.object_key
+    assert store.keys() == {result.object_key}
 
 
 @pytest.mark.parametrize(

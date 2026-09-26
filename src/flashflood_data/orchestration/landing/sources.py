@@ -105,7 +105,14 @@ def acquire_validated_assets(
     adapter = build_adapter(spec)
     while True:
         available = context.catalog.raw_assets(spec.source_id)
-        remotes = adapter.resolve(context, available)
+        verified_available = [
+            record
+            for record in available
+            if record.status is AssetStatus.VALIDATED
+            and record.duplicate_of_asset_id is None
+            and context.catalog.has_verified_content(record)
+        ]
+        remotes = adapter.resolve(context, verified_available)
         pending = [
             remote
             for remote in remotes

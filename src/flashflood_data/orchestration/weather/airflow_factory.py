@@ -11,6 +11,7 @@ from flashflood_data.orchestration.weather.models import (
     FetchedWeatherObject,
     PlannedWeatherObject,
 )
+from flashflood_data.orchestration.weather.planner import verify_weather_outcomes
 
 WEATHER_BRONZE_ASSET = Asset(
     "iceberg://flood_lakehouse/bronze/weather_bronze_updated"
@@ -107,13 +108,7 @@ def build_weather_dag(dag_id: str, config_path: Path):
     def verify_contiguous_coverage(
         plan: dict[str, object], outcomes: list[dict[str, object]]
     ) -> list[dict[str, object]]:
-        expected_missing = {str(item["asset_id"]) for item in plan["missing"]}
-        actual = {str(item["asset_id"]) for item in outcomes}
-        if expected_missing != actual:
-            raise ValueError("weather fetch outcomes do not cover every planned missing object")
-        if any(item.get("status") not in {"available", "no_data"} for item in outcomes):
-            raise ValueError("weather coverage contains an unresolved outcome")
-        return outcomes
+        return verify_weather_outcomes(plan, outcomes)
 
     @task(retries=2, pool="weather_raw_writer")
     def advance_cursor(

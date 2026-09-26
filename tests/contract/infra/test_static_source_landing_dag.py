@@ -120,3 +120,14 @@ def test_failure_envelopes_clean_staging_and_summary_handles_missing_xcoms() -> 
     assert "StaticSourceLandingService._error_code(error)" in text
     assert "source_ids: tuple[str, ...]" in text
     assert '"upstream_task_failed"' in text
+
+
+def test_source_failures_log_the_pipeline_phase_and_traceback() -> None:
+    text = DAG_PATH.read_text(encoding="utf-8")
+
+    assert "def _log_source_failure(" in text
+    assert "traceback.format_tb" in text
+    assert text.count("_log_source_failure(") >= 5
+    assert {"publish", "register", "cleanup", "audit"} <= _string_literals(
+        ast.parse(text)
+    )

@@ -29,7 +29,7 @@ hướng dẫn chạy lại pipeline đó.
 
 ## Trạng thái hiện tại
 
-Cập nhật ngày **23/09/2026**:
+Cập nhật ngày **24/09/2026**:
 
 | Hạng mục | Trạng thái |
 | --- | --- |
@@ -40,27 +40,32 @@ Cập nhật ngày **23/09/2026**:
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
 | Spark/Iceberg | Đã có profile tùy chọn và smoke test ghi–đọc bảng tạm |
 | Silver L12 | Chưa triển khai |
-| GSMaP, ERA5-Land và IFS | Đã có ba DAG Raw → Bronze; chờ cấu hình credential rồi chạy backfill |
+| GSMaP, ERA5-Land và IFS | Code và ba DAG Raw → Meta → Bronze đã hoàn tất; sample GSMaP Standard/NOW đã chạy trọn luồng, ERA5-Land và IFS chưa chạy provider thật; cả ba DAG đang pause |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
 Snapshot Iceberg được kiểm tra gần nhất:
 
 | Bảng | Số dòng | Nội dung |
 | --- | ---: | --- |
-| `meta.source_objects` | 207 | Raw object bất biến của 10 nguồn static đang hoạt động và 1 source flood-event legacy |
-| `meta.pipeline_runs` | 210 | Run landing/parse và quyết định publish |
-| `meta.quality_results` | 1.209 | Kết quả quality rule theo run/object/snapshot |
-| `meta.table_snapshot_ref` | 202 | Liên kết run với Iceberg snapshot |
-| `meta.lineage_edges` | 202 | Lineage Raw object → Bronze snapshot |
+| `meta.source_objects` | 209 | Raw object bất biến, gồm hai object GSMaP sample và dữ liệu static/legacy |
+| `meta.pipeline_runs` | 212 | Run landing/parse và quyết định publish |
+| `meta.quality_results` | 1.211 | Kết quả quality rule theo run/object/snapshot |
+| `meta.table_snapshot_ref` | 204 | Liên kết run với Iceberg snapshot |
+| `meta.lineage_edges` | 204 | Lineage Raw object → Bronze snapshot |
 | `bronze.basin_polygon_raw` | 1.194.591 | HydroBASINS L12 và BasinATLAS L12 |
 | `bronze.river_reach_raw` | 1.428.959 | HydroRIVERS Asia |
 | `bronze.admin_boundary_raw` | 12.012 | Địa giới Sơn La và GADM lịch sử |
 | `bronze.raster_coverage` | 111 | Metadata raster; pixel vẫn nằm trong MinIO |
 | `bronze.historical_event_raw` | 32 | Dữ liệu legacy được giữ lại; static DAG không còn cập nhật bảng này |
 | `bronze.osm_feature_raw` | 763.704 | Nhóm OSM phục vụ lũ và facility thiết yếu |
+| `bronze.weather_grid_value` | 800 | Hai lát GSMaP Standard/NOW lúc 00:00 UTC ngày 20/09/2026, 400 ô AOI mỗi lát |
 
 Các số trên là snapshot, không phải hằng số. Dùng Trino hoặc `bronze reconcile` để kiểm tra trạng
 thái thực tế sau mỗi lần chạy DAG.
+
+Sample GSMaP là backfill có giới hạn nên không đẩy `meta.ingest_watermarks`. Hai payload Raw đã
+đăng ký trong `meta.source_objects`; 800 row Bronze có `quality_status='passed'`. ERA5-Land và IFS
+vẫn cần sample provider thật trước khi chạy catch-up lớn.
 
 ## Yêu cầu môi trường
 
@@ -354,13 +359,16 @@ Gauge NOW có cửa sổ mưa một giờ nhưng phát hành mỗi 30 phút, nê
 Trong mỗi DAG có hai TaskGroup:
 
 ```text
+register_dynamic_registry
+
 landing_raw
   load_cursor → determine_available_end → plan_expected_windows
-  → fetch_missing_or_revised → register_raw_and_meta
+  → extract_missing_objects → fetch_missing_or_revised
+  → register_raw_and_meta
   → verify_contiguous_coverage → advance_cursor
 
 bronze
-  discover_unparsed_objects → parse_bronze
+  discover_unparsed_objects → parse_bronze → publish_bronze_update
 ```
 
 Raw được lưu bất biến theo checksum dưới:
@@ -412,6 +420,12 @@ docker compose exec -T airflow-scheduler airflow dags trigger gsmap_ingest \
 sẽ được xử lý qua các lần catch-up tiếp theo; không truyền hàng chục nghìn object qua một XCom.
 ERA5-Land và IFS dùng `hydrological_aoi.geoparquet`; GSMaP giữ file provider trong Raw và chỉ
 phát sinh các row Bronze nằm trong bbox AOI này.
+
+Ba DAG được tạo với `is_paused_upon_creation=True` và `max_active_runs=1`. Fetch dùng pool
+`weather_fetch` có bốn slot, retry exponential backoff tối đa 30 phút; ghi Raw/Meta và Bronze dùng
+hai pool một slot riêng để tránh nhiều writer cùng commit Iceberg. Hiện `publish_bronze_update`
+vẫn chạy sau khi nhóm Bronze thành công kể cả khi danh sách object cần parse rỗng; downstream về
+sau phải dựa vào snapshot/lineage hoặc reconciliation, không dùng asset event làm nguồn sự thật.
 
 ## Xem log Airflow
 
@@ -517,10 +531,14 @@ retry, mapping và pool; logic dữ liệu nằm trong package để test và CL
 
 Thứ tự triển khai dự kiến:
 
-1. `static_bronze_to_silver`: schema chuẩn L12, topology, raster/OSM aggregate theo basin.
-2. `flood_event_landing` và `flood_event_to_bronze`: tách sự kiện lũ khỏi static pipeline.
-3. Silver dynamic và basin-hour dataset đọc `bronze.weather_grid_value`.
-4. Threat B0–B3, Knowledge Graph, routing, API và dashboard.
+1. Chạy sample thật cho GSMaP, ERA5-Land và IFS; xác minh credential, quota, format, latency và
+   kích thước trước khi backfill lớn.
+2. `static_bronze_to_silver`: schema chuẩn L12, topology, raster/OSM aggregate theo basin.
+3. `flood_event_landing`, `flood_event_to_bronze` và `flood_event_harmonize`: tách sự kiện lũ
+   khỏi static pipeline.
+4. `weather_bronze_to_silver` và `weather_silver_to_gold`: map grid → basin L12, chọn
+   final/provisional và tạo basin-hour forcing.
+5. Threat B0–B3, Knowledge Graph, routing, API và dashboard.
 
 Schema contract hiện tại nằm tại [docs/schema_contract/data.md](docs/schema_contract/data.md).
 Tổng quan pipeline và kế hoạch tiếp theo nằm tại

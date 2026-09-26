@@ -271,3 +271,57 @@ def test_soilgrids_acquisition_returns_only_selected_raw_version(
     selected = acquire_validated_assets(policy, spec, context, fetcher)
 
     assert {record.asset_id for record in selected} == {records[0].asset_id, chosen.asset_id}
+
+
+def test_adapter_only_receives_catalog_records_with_verified_local_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    missing_path = paths.raw / "osm" / "vietnam.osm.pbf.md5"
+    missing = _record(
+        missing_path,
+        asset_id="osm-md5",
+        source_id="geofabrik_vietnam_snapshot",
+        version="20260925",
+    )
+    catalog.upsert(missing)
+    missing_path.unlink()
+    observed: list[tuple[AssetRecord, ...]] = []
+
+    class Adapter:
+        def resolve(self, context, available):
+            observed.append(tuple(available))
+            return []
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.sources.build_adapter",
+        lambda spec: Adapter(),
+    )
+    context = SourceContext(
+        paths=paths,
+        catalog=catalog,
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+        run_id="run-1",
+    )
+    policy = LandingSourcePolicy(
+        source_id="geofabrik_vietnam_snapshot", mode="individual"
+    )
+    spec = SourceSpec(
+        source_id=policy.source_id,
+        adapter="geofabrik_osm",
+        version="20260925",
+        license_id="fixture-license",
+    )
+
+    selected = acquire_validated_assets(
+        policy,
+        spec,
+        context,
+        SimpleNamespace(fetch=lambda remote, run_id: pytest.fail("unexpected download")),
+    )
+
+    assert observed == [()]
+    assert selected == ()

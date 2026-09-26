@@ -24,8 +24,12 @@ from flashflood_data.orchestration.landing.config import (
 from flashflood_data.orchestration.landing.models import PreparedObject, RegisteredBatch
 from flashflood_data.orchestration.landing.service import StaticSourceLandingService
 from flashflood_data.orchestration.landing.sources import SourceLandingError
-from flashflood_data.storage.http import BudgetRejected
-from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
+from flashflood_data.storage.http import BudgetRejected, DownloadFailed, ExistingAssetConflict
+from flashflood_data.storage.object_store import (
+    ObjectConflict,
+    ObjectPublisher,
+    ObjectVerificationError,
+)
 
 
 class MemoryObjectStore:
@@ -219,6 +223,69 @@ def test_storage_budget_rejection_has_an_actionable_error_code() -> None:
     error = BudgetRejected("minimum_free_space")
 
     assert StaticSourceLandingService._error_code(error) == "storage_budget_rejected"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ExistingAssetConflict("fixture"), "existing_asset_conflict"),
+        (DownloadFailed("fixture"), "source_download_failed"),
+        (ObjectVerificationError("fixture"), "object_verification_failed"),
+    ],
+)
+def test_source_failures_have_actionable_error_codes(
+    error: Exception, expected: str
+) -> None:
+    assert StaticSourceLandingService._error_code(error) == expected
+
+
+def test_missing_validated_remote_without_inventory_is_marked_stale(
+    tmp_path: Path,
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    missing = paths.raw / "worldcover" / "grid.geojson"
+    record = AssetRecord(
+        asset_id="worldcover-grid",
+        source_id="esa_worldcover_2021_v200",
+        source_version="2021-v200",
+        kind=AssetKind.RAW,
+        source_uri="https://example.invalid/grid.geojson",
+        storage_path=str(missing),
+        media_type="application/geo+json",
+        size_bytes=12,
+        checksum="0" * 64,
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        license_id="fixture",
+        pipeline_run_id="run-1",
+        status=AssetStatus.VALIDATED,
+    )
+    catalog.upsert(record)
+    source_id = record.source_id
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="worldcover",
+                version="2021-v200",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=catalog,
+    )
+
+    service._restore_missing_remote_assets(source_id)
+
+    assert catalog.get(record.asset_id).status is AssetStatus.STALE
 
 
 def test_committed_remote_raw_is_removed_but_existing_source_is_preserved(tmp_path: Path) -> None:

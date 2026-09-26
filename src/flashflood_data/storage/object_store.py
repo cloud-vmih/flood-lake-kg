@@ -26,6 +26,10 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_copy_timeout(error: OSError) -> bool:
+    return any(marker in str(error).lower() for marker in _COPY_TIMEOUT_MARKERS)
+
+
 class ObjectConflict(RuntimeError):
     """Raised when an immutable final key contains different bytes."""
 
@@ -85,44 +89,30 @@ class PyArrowS3ObjectStore:
 
     def sha256(self, key: str) -> str:
         digest = sha256()
-        with self.filesystem.open_input_stream(key) as stream:
+        with self.filesystem.open_input_stream(key, compression=None) as stream:
             for chunk in iter(lambda: stream.read(_CHUNK_SIZE), b""):
                 digest.update(chunk)
         return digest.hexdigest()
 
     def read(self, key: str) -> bytes:
-        with self.filesystem.open_input_stream(key) as stream:
+        with self.filesystem.open_input_stream(key, compression=None) as stream:
             return stream.read()
 
     def download(self, key: str, local_path: Path) -> None:
         """Stream an object into a caller-owned temporary local file."""
-        with self.filesystem.open_input_stream(key) as source, local_path.open("wb") as destination:
+        with self.filesystem.open_input_stream(
+            key, compression=None
+        ) as source, local_path.open("wb") as destination:
             shutil.copyfileobj(source, destination, length=_CHUNK_SIZE)
 
     def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None:
         with local_path.open("rb") as source, self.filesystem.open_output_stream(
-            key, metadata=dict(metadata)
+            key, compression=None, metadata=dict(metadata)
         ) as destination:
             shutil.copyfileobj(source, destination, length=_CHUNK_SIZE)
 
     def copy(self, source_key: str, destination_key: str) -> None:
-        try:
-            self.filesystem.copy_file(source_key, destination_key)
-        except OSError as error:
-            if not any(marker in str(error).lower() for marker in _COPY_TIMEOUT_MARKERS):
-                raise
-            try:
-                with (
-                    self.filesystem.open_input_stream(source_key) as source,
-                    self.filesystem.open_output_stream(destination_key) as destination,
-                ):
-                    shutil.copyfileobj(source, destination, length=_CHUNK_SIZE)
-            except Exception:
-                try:
-                    self.filesystem.delete_file(destination_key)
-                except OSError:
-                    pass
-                raise
+        self.filesystem.copy_file(source_key, destination_key)
 
     def delete(self, key: str) -> None:
         if self.exists(key):
@@ -222,7 +212,26 @@ class ObjectPublisher:
             {"sha256": checksum, "content-type": media_type},
         )
         _assert_verified_match(self.store, staging_key, size_bytes, checksum)
-        self.store.copy(staging_key, qualified_final)
+        try:
+            self.store.copy(staging_key, qualified_final)
+        except OSError as error:
+            if not _is_copy_timeout(error):
+                raise
+            if self.store.exists(qualified_final):
+                try:
+                    _assert_verified_match(
+                        self.store, qualified_final, size_bytes, checksum
+                    )
+                except ObjectVerificationError as exc:
+                    raise ObjectConflict(
+                        f"immutable object conflict after copy timeout: {final_key}"
+                    ) from exc
+            else:
+                self.store.upload(
+                    local_path,
+                    qualified_final,
+                    {"sha256": checksum, "content-type": media_type},
+                )
         _assert_verified_match(self.store, qualified_final, size_bytes, checksum)
         self.store.delete(staging_key)
         return self._published(
