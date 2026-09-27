@@ -269,7 +269,7 @@ flowchart LR
 
 ### `bronze.basin_polygon_raw` — một dòng / `(object_id, source_feature_id)`; đích
 
-**Vai trò:** Lưu từng polygon HydroBASINS/BasinATLAS L12 đã parse. Tên và giá trị field được giữ theo nguồn; BasinATLAS chỉ đọc allowlist phục vụ topology, area, terrain QA, hồ/đập, land cover, runoff/discharge QA và exposure để tránh nhân toàn bộ hơn 300 thuộc tính vào Bronze. File nguồn đầy đủ vẫn nằm ở Raw/MinIO.
+**Vai trò:** Lưu từng polygon HydroBASINS/BasinATLAS L12 trong subset Việt Nam + một hop thượng nguồn. Tên và giá trị field được giữ theo nguồn; BasinATLAS chỉ đọc allowlist phục vụ topology, area, terrain QA, hồ/đập, land cover, runoff/discharge QA và exposure để tránh nhân toàn bộ hơn 300 thuộc tính vào Bronze. Provider archive đầy đủ nằm ở local `dataset/`; Raw/MinIO giữ ZIP subset cùng manifest chứa checksum nguồn và AOI.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
@@ -290,7 +290,7 @@ flowchart LR
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
-| `object_id` | string ! PK/FK | File HydroRIVERS/nguồn sông gốc. |
+| `object_id` | string ! PK/FK | ZIP subset HydroRIVERS giao AOI Việt Nam thủy văn; geometry của reach được giữ nguyên, không clip theo biên AOI. |
 | `source_feature_id` | string ! PK | Reach ID trong file. |
 | `source_fields_json` | json ! | Thuộc tính gốc. |
 | `geometry_wkb` | binary ! | LineString raw. |

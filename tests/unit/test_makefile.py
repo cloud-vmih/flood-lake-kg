@@ -37,3 +37,13 @@ def test_readme_documents_linux_and_wsl_bootstrap() -> None:
     assert "Windows + WSL2" in readme
     assert "make setup PYTHON=" in readme
     assert "không đặt repository dưới `/mnt/c/`" in readme
+
+
+def test_readme_documents_national_hydro_subset_and_explicit_reset() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "vietnam_hydrological_aoi.geoparquet" in readme
+    assert "hydrobasins_l12_vietnam_h1.zip" in readme
+    assert "hydrorivers_vietnam_h1.zip" in readme
+    assert "docker compose down -v --remove-orphans" in readme
+    assert "make lakehouse-aoi" in readme

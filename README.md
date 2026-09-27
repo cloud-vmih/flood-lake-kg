@@ -8,7 +8,7 @@ weather động:
 
 ```mermaid
 flowchart LR
-    A[make lakehouse-aoi] --> B[4 AOI L12]
+    A[make lakehouse-aoi] --> B[5 AOI L12]
     B --> C[static_source_landing]
     C --> D[MinIO raw]
     C --> E[Iceberg meta]
@@ -29,12 +29,12 @@ hướng dẫn chạy lại pipeline đó.
 
 ## Trạng thái hiện tại
 
-Cập nhật ngày **24/09/2026**:
+Cập nhật ngày **27/09/2026**:
 
 | Hạng mục | Trạng thái |
 | --- | --- |
 | PostgreSQL, MinIO, Polaris và Airflow 3 | Đã vận hành bằng Docker Compose |
-| AOI | Đã dựng đủ Core, Hydrological, Environmental và Exposure theo L12 |
+| AOI | Đã dựng bốn AOI Sơn La và `vietnam_hydrological_aoi` theo L12 + một hop thượng nguồn |
 | Static Source Landing | 10 nguồn đang hoạt động; source flood-event legacy đã gỡ khỏi DAG nhưng dữ liệu cũ vẫn được giữ |
 | Static Bronze | Sáu bảng Bronze đã có dữ liệu; parser chạy idempotent theo `object_id` |
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
@@ -128,7 +128,7 @@ và AOI ở `dataset/harmonized/aoi/` được giữ lại để Landing có th�
 > Không chạy khi cần giữ snapshot Iceberg, object MinIO hoặc lịch sử DAG hiện tại.
 
 ```bash
-make lakehouse-down
+docker compose down -v --remove-orphans
 
 set -a
 . ./.env
@@ -210,7 +210,7 @@ make lakehouse-status
 make lakehouse-aoi
 ```
 
-Lệnh tạo bốn file trong `dataset/harmonized/aoi/`:
+Lệnh tạo năm file trong `dataset/harmonized/aoi/`:
 
 | AOI | Ý nghĩa |
 | --- | --- |
@@ -218,6 +218,7 @@ Lệnh tạo bốn file trong `dataset/harmonized/aoi/`:
 | `hydrological_aoi.geoparquet` | Core và các basin L12 thượng nguồn được chọn |
 | `environmental_aoi.geoparquet` | Hydrological AOI cộng buffer để lấy dữ liệu môi trường |
 | `exposure_aoi.geoparquet` | Core cộng buffer và giới hạn trong Việt Nam |
+| `vietnam_hydrological_aoi.geoparquet` | Toàn bộ basin L12 giao Việt Nam và một hop thượng nguồn; dùng để cắt các vector hydro lớn và đăng ký grid weather toàn quốc |
 
 Các DAG không tự dựng AOI. Cần chạy lại bước này khi thay đổi basin level, upstream hops hoặc
 buffer trong `config/study_area.yaml`.
@@ -281,8 +282,13 @@ s3://raw/static/<source_id>/<source_version>/<selection>/<asset_id>/<filename>
 s3://raw/static/<source_id>/<source_version>/<selection>/<asset_id>/manifest.json
 ```
 
-MinIO giữ byte nguồn. Iceberg giữ URI, checksum, selection, audit và lineage; GeoTIFF/ZIP không
-được đăng ký trực tiếp làm data file của bảng Iceberg.
+MinIO giữ byte nguồn đối với raster và các nguồn đã đúng phạm vi. Riêng HydroBASINS,
+BasinATLAS và HydroRIVERS được lọc trong run staging trước khi vào Raw: provider archive đầy đủ
+vẫn ở `dataset/`, còn MinIO giữ `hydrobasins_l12_vietnam_h1.zip`,
+`basinatlas_l12_vietnam_h1.zip` và `hydrorivers_vietnam_h1.zip`. Manifest giữ checksum file
+provider, checksum subset, AOI hash và số feature để replay/audit. Iceberg giữ URI, checksum,
+selection, audit và lineage; GeoTIFF/ZIP không được đăng ký trực tiếp làm data file của bảng
+Iceberg.
 
 ### Chạy Landing DAG
 

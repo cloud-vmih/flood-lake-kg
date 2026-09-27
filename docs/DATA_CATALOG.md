@@ -75,6 +75,7 @@ Một geometry phạm vi lõi Sơn La, dùng cho địa giới, dân số và s�
 | File | Cột | Vai trò |
 |---|---|---|
 | `hydrological_aoi.geoparquet` | `aoi`, `geometry` | Core AOI cộng phạm vi thượng nguồn cần cho basin, sông, DEM và đất. |
+| `vietnam_hydrological_aoi.geoparquet` | `aoi`, `geometry` | Basin L12 giao Việt Nam cộng một hop thượng nguồn; dùng tạo subset HydroBASINS/BasinATLAS/HydroRIVERS trước MinIO Raw. |
 | `environmental_aoi.geoparquet` | `aoi`, `geometry` | Phạm vi tải/cắt raster môi trường. |
 | `exposure_aoi.geoparquet` | `aoi`, `geometry` | Phạm vi trích OSM: đường, cầu, cơ sở, khu dân cư và mặt nước. |
 

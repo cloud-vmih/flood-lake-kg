@@ -115,7 +115,7 @@
         <mxCell id="bt" value="BRONZE — PARSED SOURCE TABLES" style="text;html=1;fontSize=26;fontStyle=1;align=left;" vertex="1" parent="1">
           <mxGeometry x="50" y="30" width="900" height="45" as="geometry" />
         </mxCell>
-        <mxCell id="bn" value="Raw bytes remain in MinIO; exact parsed fields: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
+        <mxCell id="bn" value="Raw keeps scoped provider payloads; Hydro vectors use the Vietnam L12 + one-upstream subset. Exact fields: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
           <mxGeometry x="50" y="75" width="1200" height="30" as="geometry" />
         </mxCell>
         <mxCell id="b-basin-raw" value="bronze.basin_polygon_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">

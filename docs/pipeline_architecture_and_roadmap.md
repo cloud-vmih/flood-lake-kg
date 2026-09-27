@@ -239,9 +239,11 @@ Ví dụ một file HydroBASINS:
 ```text
 Provider/archive hoặc file local
   → adapter resolve/fetch/validate
-  → chọn .shp + .dbf + .shx + .prj
-  → đóng ZIP xác định trong staging
-  → raw/static/hydrobasins_v1c/.../hydrobasins_l12.zip trên MinIO
+  → chọn basin L12 giao Việt Nam + một hop thượng nguồn
+  → giữ nguyên polygon được chọn và lọc BasinATLAS theo allowlist
+  → chọn HydroRIVERS giao AOI nhưng giữ nguyên toàn bộ reach
+  → ghi Shapefile subset + đóng ZIP xác định trong staging
+  → raw/static/hydrobasins_v1c/.../hydrobasins_l12_vietnam_h1.zip trên MinIO
   → manifest.json trên MinIO
   → meta.source_objects(object_id, URI, checksum, selection, ...)
   → BronzeService tải ZIP từ MinIO
@@ -252,6 +254,9 @@ Provider/archive hoặc file local
   → meta.table_snapshot_ref
   → meta.lineage_edges
 ```
+
+AOI `vietnam_hydrological_aoi.geoparquet` và checksum của nó nằm trong selection/manifest.
+Provider archive đầy đủ ở local `dataset/` không được copy vào MinIO cho ba nguồn hydro này.
 
 Ví dụ raster DEM/SoilGrids:
 
