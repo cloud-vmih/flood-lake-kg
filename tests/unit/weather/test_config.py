@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[3]
 @pytest.mark.parametrize(
     ("filename", "source_id", "provider"),
     [
-        ("gsmap.yaml", "gsmap", "gsmap"),
+        ("gsmap_now.yaml", "gsmap", "gsmap"),
+        ("gsmap_standard.yaml", "gsmap", "gsmap"),
         ("era5_land.yaml", "era5_land", "era5_land"),
         ("ifs.yaml", "ifs_openmeteo", "ifs_openmeteo"),
     ],
@@ -27,6 +28,10 @@ def test_dynamic_source_configs_are_operational_and_credential_free(
     assert config.provider == provider
     assert config.schedule
     assert config.aoi_path.as_posix().endswith("hydrological_aoi.geoparquet")
+    assert config.grid_scope_path.as_posix().endswith(
+        "vietnam_hydrological_aoi.geoparquet"
+    )
+    assert config.spatial_scope_name == "sonla-l12-h1"
     assert config.streams
     assert all(stream.start_at.tzinfo is UTC for stream in config.streams)
     assert all(stream.variables for stream in config.streams)
@@ -36,23 +41,37 @@ def test_dynamic_source_configs_are_operational_and_credential_free(
 
 
 def test_configs_cover_the_approved_dynamic_variables() -> None:
-    gsmap = load_weather_config(ROOT / "config/dynamic/gsmap.yaml")
+    standard = load_weather_config(ROOT / "config/dynamic/gsmap_standard.yaml")
+    now = load_weather_config(ROOT / "config/dynamic/gsmap_now.yaml")
     era5 = load_weather_config(ROOT / "config/dynamic/era5_land.yaml")
     ifs = load_weather_config(ROOT / "config/dynamic/ifs.yaml")
 
-    assert {stream.product for stream in gsmap.streams} == {
-        "gauge_standard_v8",
-        "gauge_now_v8",
+    assert standard.schedule == "27 */6 * * *"
+    assert standard.retention_class == "durable"
+    assert standard.retention_days is None
+    assert now.schedule == "7,37 * * * *"
+    assert now.retention_class == "transient_7d"
+    assert now.retention_days == 7
+    assert {stream.product for stream in (*standard.streams, *now.streams)} == {
+        "gauge_standard_v8", "gauge_now_v8",
     }
-    standard, now = gsmap.streams
-    assert (standard.step_minutes, standard.chunk_minutes) == (60, 60)
-    assert (now.step_minutes, now.chunk_minutes) == (30, 60)
-    assert all(stream.options["dtype"] == "<f4" for stream in gsmap.streams)
+    standard_stream = standard.streams[0]
+    now_stream = now.streams[0]
+    assert (standard_stream.step_minutes, standard_stream.chunk_minutes) == (60, 60)
+    assert (now_stream.step_minutes, now_stream.chunk_minutes) == (30, 60)
+    assert all(
+        stream.options["dtype"] == "<f4"
+        for stream in (*standard.streams, *now.streams)
+    )
     assert all(
         tuple(stream.options["missing_values"]) == (-4.0, -8.0, -99.0)
-        for stream in gsmap.streams
+        for stream in (*standard.streams, *now.streams)
     )
-    assert {variable for stream in gsmap.streams for variable in stream.variables} == {
+    assert {
+        variable
+        for stream in (*standard.streams, *now.streams)
+        for variable in stream.variables
+    } == {
         "precipitation"
     }
     assert set(era5.streams[0].variables) == {
@@ -62,6 +81,7 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
         "volumetric_soil_water_layer_3",
         "volumetric_soil_water_layer_4",
         "surface_runoff",
+        "sub_surface_runoff",
     }
     assert set(ifs.streams[0].variables) == {
         "precipitation",
@@ -72,6 +92,9 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
         "runoff",
     }
     assert ifs.streams[0].options["model"] == "ecmwf_ifs"
+    assert era5.retention_class == "durable"
+    assert ifs.retention_class == "transient_7d"
+    assert ifs.retention_days == 7
 
 
 def test_weather_window_rejects_naive_or_empty_ranges() -> None:

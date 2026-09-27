@@ -1,10 +1,14 @@
-contract_version: "1.0"
+contract_version: "2.0"
 source_id: ifs_openmeteo
 source_version: ifs-hres-single-runs-v1
 provider: ifs_openmeteo
 schedule: "12 */6 * * *"
 aoi_path: dataset/harmonized/aoi/hydrological_aoi.geoparquet
-parser_version: ifs-openmeteo-v1
+grid_scope_path: dataset/harmonized/aoi/vietnam_hydrological_aoi.geoparquet
+spatial_scope_name: sonla-l12-h1
+retention_class: transient_7d
+retention_days: 7
+parser_version: ifs-openmeteo-raster-slice-v2
 license_id: open-meteo-ecmwf-terms
 license_uri: https://open-meteo.com/en/terms
 max_objects_per_run: 28

@@ -8,6 +8,8 @@ from pydantic import Field, field_validator, model_validator
 
 from flashflood_data.catalog.models import ImmutableModel
 
+RetentionClass = Literal["durable", "transient_7d"]
+
 
 class WeatherWindow(ImmutableModel):
     """Half-open UTC interval represented by one expected provider object."""
@@ -74,6 +76,10 @@ class WeatherPipelineConfig(ImmutableModel):
     provider: Literal["gsmap", "era5_land", "ifs_openmeteo"]
     schedule: str
     aoi_path: Path
+    grid_scope_path: Path
+    spatial_scope_name: str
+    retention_class: RetentionClass
+    retention_days: int | None = Field(default=None, gt=0)
     parser_version: str
     license_id: str
     license_uri: str
@@ -85,6 +91,15 @@ class WeatherPipelineConfig(ImmutableModel):
         identities = [stream.stream_id for stream in self.streams]
         if not identities or len(identities) != len(set(identities)):
             raise ValueError("weather stream IDs must be non-empty and unique")
+        if self.retention_class == "transient_7d" and self.retention_days != 7:
+            raise ValueError("transient_7d weather sources require retention_days=7")
+        if self.retention_class == "durable" and self.retention_days is not None:
+            raise ValueError("durable weather sources cannot expire")
+        for path in (self.aoi_path, self.grid_scope_path):
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError("weather scope paths must be project-relative")
+        if not self.spatial_scope_name.strip():
+            raise ValueError("weather spatial_scope_name cannot be empty")
         return self
 
 
