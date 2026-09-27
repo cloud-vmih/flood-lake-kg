@@ -10,6 +10,11 @@ from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.meta.service import MetaRecorder
 from flashflood_data.orchestration.weather.bronze import WeatherBronzeService
 from flashflood_data.orchestration.weather.config import load_weather_config
+from flashflood_data.orchestration.weather.grids import (
+    GridRegistration,
+    WeatherGridRegistry,
+    grid_definition_for_provider,
+)
 from flashflood_data.orchestration.weather.landing import WeatherLandingService
 from flashflood_data.orchestration.weather.models import (
     FetchedWeatherObject,
@@ -107,6 +112,24 @@ class WeatherRuntime:
             return next(stream for stream in self.config.streams if stream.stream_id == stream_id)
         except StopIteration as error:
             raise ValueError(f"unknown weather stream: {stream_id}") from error
+
+    def ensure_source_grid(self) -> GridRegistration:
+        """Register the provider's stable national grid and current AOI membership."""
+        resolutions = {
+            float(stream.options.get("grid_resolution_degrees", 0.1))
+            for stream in self.config.streams
+        }
+        if len(resolutions) != 1:
+            raise ValueError("all streams in one weather source must share a grid")
+        definition = grid_definition_for_provider(
+            self.config.provider, resolutions.pop()
+        )
+        return WeatherGridRegistry(self.table_store, self.root).ensure_grid(
+            definition=definition,
+            grid_scope_path=self.config.grid_scope_path,
+            aoi_path=self.config.aoi_path,
+            spatial_scope_name=self.config.spatial_scope_name,
+        )
 
     def register_meta(self) -> dict[str, int]:
         valid_from = min(stream.start_at for stream in self.config.streams)

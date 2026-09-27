@@ -76,6 +76,19 @@ class IcebergTableStore:
             raise ValueError(f"duplicate existing Meta key in {identifier[1]}")
         return None if not rows else rows[0]
 
+    def get_keyed_rows(
+        self, identifier: tuple[str, str], key: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Read rows from a mutable Meta or Silver table by a shared key prefix."""
+        if (
+            identifier[0] not in {"meta", "silver"}
+            and not identifier[0].startswith("smoke_")
+        ) or identifier == ("meta", "source_objects"):
+            raise ValueError("keyed reads require a mutable Meta or Silver table")
+        table = self.ensure_table(identifier)
+        table.refresh()
+        return table.scan(row_filter=_filter(key)).to_arrow().to_pylist()
+
     def replace_object_rows(
         self,
         identifier: tuple[str, str],
