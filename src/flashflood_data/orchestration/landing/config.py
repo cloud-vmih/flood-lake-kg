@@ -13,7 +13,7 @@ class LandingSourcePolicy(ImmutableModel):
     """Selection and packaging policy for one configured source."""
 
     source_id: str
-    mode: Literal["individual", "shapefile_bundle"]
+    mode: Literal["individual", "shapefile_bundle", "hydro_subset_bundle"]
     filename_contains: str | None = None
     output_name: str | None = None
     selection: dict[str, object] = Field(default_factory=dict)
@@ -27,7 +27,7 @@ class LandingSourcePolicy(ImmutableModel):
 
     @model_validator(mode="after")
     def bundle_has_selection_fields(self) -> "LandingSourcePolicy":
-        if self.mode == "shapefile_bundle" and (
+        if self.mode in {"shapefile_bundle", "hydro_subset_bundle"} and (
             not self.filename_contains or not self.output_name
         ):
             raise ValueError("shapefile bundles require filename_contains and output_name")

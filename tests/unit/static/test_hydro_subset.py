@@ -50,6 +50,7 @@ def test_hydrobasins_subset_is_sorted_and_records_selection(tmp_path: Path) -> N
     assert result.selected_hybas_ids == (101, 102)
     assert result.selection_version == "vietnam-l12-h1-v1"
     assert len(result.aoi_checksum) == 64
+    assert result.path.with_suffix(".dbf").read_bytes()[1:4] == bytes((80, 1, 1))
 
 
 def test_basinatlas_uses_hydrobasins_ids_and_allowlisted_fields(tmp_path: Path) -> None:

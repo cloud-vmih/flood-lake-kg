@@ -7,20 +7,20 @@ sources:
     mode: individual
     selection: {country: VNM, role: historical_administration}
   - source_id: hydrobasins_v1c
-    mode: shapefile_bundle
+    mode: hydro_subset_bundle
     filename_contains: hybas_as_lev12_v1c.shp
-    output_name: hydrobasins_l12.zip
+    output_name: hydrobasins_l12_vietnam_h1.zip
     selection: {basin_level: 12}
   - source_id: basinatlas_v10
-    mode: shapefile_bundle
+    mode: hydro_subset_bundle
     filename_contains: BasinATLAS_v10_lev12.shp
-    output_name: basinatlas_l12.zip
+    output_name: basinatlas_l12_vietnam_h1.zip
     selection: {basin_level: 12}
   - source_id: hydrorivers_v10
-    mode: shapefile_bundle
+    mode: hydro_subset_bundle
     filename_contains: HydroRIVERS_v10_as.shp
-    output_name: hydrorivers_asia.zip
-    selection: {region: asia}
+    output_name: hydrorivers_vietnam_h1.zip
+    selection: {region: vietnam_hydrological_l12_h1}
   - source_id: worldpop_vnm_2025
     mode: individual
     selection: {country: VNM, year: 2025, population_model: constrained}

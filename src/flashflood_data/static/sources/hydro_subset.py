@@ -64,6 +64,16 @@ def _integer_ids(frame: gpd.GeoDataFrame, name: str) -> pd.Series:
     return values
 
 
+def _normalize_dbf_date(path: Path) -> None:
+    """Remove the current date from a staged dBASE header for byte-stable bundles."""
+    with path.open("r+b") as stream:
+        header = stream.read(4)
+        if len(header) != 4:
+            raise ValueError("curated Shapefile has a truncated dBASE header")
+        stream.seek(1)
+        stream.write(bytes((80, 1, 1)))
+
+
 def build_hydro_subset(
     source_id: str,
     source_path: Path,
@@ -109,6 +119,7 @@ def build_hydro_subset(
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / _OUTPUT_NAMES[source_id]
     frame.to_file(target, driver="ESRI Shapefile", index=False)
+    _normalize_dbf_date(target.with_suffix(".dbf"))
     hybas_ids = (
         tuple(int(value) for value in frame["HYBAS_ID"])
         if "HYBAS_ID" in frame.columns

@@ -131,6 +131,60 @@ def test_bundle_selection_rejects_multiple_canonical_records(tmp_path: Path) -> 
         )
 
 
+def test_hydro_subset_bundle_records_scope_and_source_provenance(tmp_path: Path) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source = paths.dataset / "hybas_as_lev01-12_v1c" / "hybas_as_lev12_v1c.shp"
+    source.parent.mkdir(parents=True)
+    gpd.GeoDataFrame(
+        {"HYBAS_ID": [102, 101, 999], "NEXT_DOWN": [101, 0, 0]},
+        geometry=[
+            box(103.1, 20.0, 103.2, 20.1),
+            box(103.0, 20.0, 103.1, 20.1),
+            box(110.0, 20.0, 110.1, 20.1),
+        ],
+        crs="EPSG:4326",
+    ).to_file(source)
+    members = sorted(path for path in source.parent.glob(f"{source.stem}.*") if path.is_file())
+    aoi_path = paths.harmonized / "aoi" / "vietnam_hydrological_aoi.geoparquet"
+    aoi_path.parent.mkdir(parents=True)
+    gpd.GeoDataFrame(
+        {"aoi": ["vietnam_hydrological_aoi"]},
+        geometry=[box(103.0, 20.0, 103.2, 20.2)],
+        crs="EPSG:4326",
+    ).to_parquet(aoi_path, index=False)
+    record = _record(
+        source,
+        asset_id="hydro-l12",
+        metadata={"bundle_members": [path.as_posix() for path in members]},
+    )
+    policy = LandingSourcePolicy(
+        source_id="hydrobasins_v1c",
+        mode="hydro_subset_bundle",
+        filename_contains=source.name,
+        output_name="hydrobasins_l12_vietnam_h1.zip",
+        selection={"basin_level": 12},
+    )
+
+    prepared = prepare_source_objects(
+        policy,
+        (record,),
+        staging_root=paths.dataset / "_staging",
+        run_id="run-1",
+        paths=paths,
+    )
+
+    assert len(prepared) == 1
+    item = prepared[0]
+    assert item.filename == "hydrobasins_l12_vietnam_h1.zip"
+    assert item.selection["spatial_scope_id"].startswith("vietnam-l12-h1-")
+    assert item.selection["source_feature_count"] == 3
+    assert item.selection["selected_feature_count"] == 2
+    assert item.selection["selection_version"] == "vietnam-l12-h1-v1"
+    assert item.source_archive_checksum == record.checksum
+    assert len(str(item.selection["selected_hybas_ids_checksum"])) == 64
+
+
 def test_soilgrids_selects_exact_canonical_scope(tmp_path: Path) -> None:
     properties = ("clay", "sand", "silt", "bdod", "cfvo", "soc", "wv0033", "wv1500")
     depths = ("0-5cm", "5-15cm", "15-30cm")

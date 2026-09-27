@@ -192,7 +192,7 @@ class StaticSourceLandingService:
                         rule,
                         glob=str(Path(rule.glob).with_name(policy.filename_contains)),
                     )
-                    if policy.mode == "shapefile_bundle"
+                    if policy.mode in {"shapefile_bundle", "hydro_subset_bundle"}
                     else rule
                     for rule in DEFAULT_RULES
                     if rule.source_id == source_id
@@ -223,6 +223,7 @@ class StaticSourceLandingService:
                 records,
                 staging_root=self.staging_root,
                 run_id=run_id,
+                paths=self.paths,
             )
         self._restore_missing_remote_assets(source_id)
         records = acquire_validated_assets(policy, spec, context, self.fetcher)
@@ -231,6 +232,7 @@ class StaticSourceLandingService:
             records,
             staging_root=self.staging_root,
             run_id=run_id,
+            paths=self.paths,
         )
 
     def _restore_missing_remote_assets(self, source_id: str) -> None:

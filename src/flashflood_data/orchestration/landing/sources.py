@@ -2,11 +2,13 @@
 
 import json
 from collections.abc import Callable, Sequence
+from hashlib import sha256
 from pathlib import Path
 
 import geopandas as gpd
 
 from flashflood_data.catalog.models import AssetRecord, AssetStatus, RemoteAsset, SourceSpec
+from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.landing.bundle import (
     build_deterministic_zip,
     shapefile_members,
@@ -14,6 +16,7 @@ from flashflood_data.orchestration.landing.bundle import (
 from flashflood_data.orchestration.landing.config import LandingSourcePolicy
 from flashflood_data.orchestration.landing.models import PreparedObject
 from flashflood_data.static.sources.base import SourceAdapter, SourceContext
+from flashflood_data.static.sources.hydro_subset import build_hydro_subset
 from flashflood_data.static.sources.registry import build_adapter
 from flashflood_data.storage.http.fetcher import HttpFetcher
 
@@ -56,6 +59,24 @@ def ensure_environmental_aoi(context: SourceContext) -> None:
             raise ValueError
     except (OSError, ValueError):
         raise SourcePreconditionError("environmental_aoi_invalid") from None
+
+
+def _national_hydrological_aoi(paths: ProjectPaths) -> Path:
+    path = paths.harmonized / "aoi" / "vietnam_hydrological_aoi.geoparquet"
+    if not path.is_file():
+        raise SourcePreconditionError("vietnam_hydrological_aoi_missing")
+    try:
+        layer = gpd.read_parquet(path)
+        if (
+            layer.empty
+            or layer.crs is None
+            or layer.geometry.is_empty.any()
+            or layer.geometry.union_all().is_empty
+        ):
+            raise ValueError
+    except (OSError, ValueError):
+        raise SourcePreconditionError("vietnam_hydrological_aoi_invalid") from None
+    return path
 
 
 def _reusable(
@@ -249,6 +270,96 @@ def _prepare_shapefile_bundle(
     )
 
 
+def _selected_record(
+    policy: LandingSourcePolicy, records: Sequence[AssetRecord]
+) -> AssetRecord:
+    selected = [
+        record
+        for record in records
+        if record.source_id == policy.source_id
+        and record.status is AssetStatus.VALIDATED
+        and record.duplicate_of_asset_id is None
+        and policy.filename_contains in Path(record.storage_path).name
+    ]
+    if not selected:
+        raise MissingSourceAssets(f"no canonical validated source for {policy.source_id}")
+    if len(selected) != 1:
+        raise AmbiguousSourceSelection(policy.source_id)
+    return selected[0]
+
+
+def _ids_checksum(ids: Sequence[int]) -> str:
+    payload = ",".join(map(str, ids)).encode("ascii")
+    return sha256(payload).hexdigest()
+
+
+def _prepare_hydro_subset(
+    policy: LandingSourcePolicy,
+    records: Sequence[AssetRecord],
+    staging_root: Path,
+    run_id: str,
+    paths: ProjectPaths,
+) -> tuple[PreparedObject, ...]:
+    record = _selected_record(policy, records)
+    aoi_path = _national_hydrological_aoi(paths)
+    output_dir = staging_root / run_id / policy.source_id / "subset"
+    selected_ids = None
+    if policy.source_id == "basinatlas_v10":
+        hydro_path = (
+            paths.dataset
+            / "hybas_as_lev01-12_v1c"
+            / "hybas_as_lev12_v1c.shp"
+        )
+        hydro_result = build_hydro_subset(
+            "hydrobasins_v1c", hydro_path, aoi_path, output_dir / "hydrobasins"
+        )
+        selected_ids = hydro_result.selected_hybas_ids
+    result = build_hydro_subset(
+        policy.source_id,
+        Path(record.storage_path),
+        aoi_path,
+        output_dir,
+        selected_hybas_ids=selected_ids,
+    )
+    candidates = tuple(result.path.parent.glob(f"{result.path.stem}.*"))
+    members = shapefile_members(result.path, candidates)
+    output = staging_root / run_id / policy.source_id / str(policy.output_name)
+    bundle = build_deterministic_zip(members, output)
+    hybas_checksum = _ids_checksum(result.selected_hybas_ids)
+    selection = {
+        **dict(policy.selection),
+        "upstream_hops": 1,
+        "spatial_scope_id": f"vietnam-l12-h1-{result.aoi_checksum[:12]}",
+        "aoi_checksum": result.aoi_checksum,
+        "selection_version": result.selection_version,
+        "source_feature_count": result.source_feature_count,
+        "selected_feature_count": result.selected_feature_count,
+        "selected_hybas_ids_checksum": hybas_checksum,
+    }
+    return (
+        PreparedObject(
+            source_id=record.source_id,
+            source_version=record.source_version,
+            asset_id=record.asset_id,
+            path=bundle.path,
+            filename=bundle.path.name,
+            media_type="application/zip",
+            source_uri=record.source_uri,
+            license_id=record.license_id,
+            retrieved_at=record.retrieved_at,
+            source_valid_time=record.source_valid_time,
+            selection=selection,
+            members=bundle.members,
+            source_archive_checksum=record.checksum,
+            source_archive_size_bytes=record.size_bytes,
+            provider_metadata={
+                **json.loads(record.metadata_json),
+                "curated_subset_checksum": bundle.checksum,
+            },
+        ),
+    )
+
+
 def _prepare_soilgrids(
     policy: LandingSourcePolicy, records: Sequence[AssetRecord]
 ) -> tuple[PreparedObject, ...]:
@@ -308,10 +419,15 @@ def prepare_source_objects(
     *,
     staging_root: Path,
     run_id: str,
+    paths: ProjectPaths | None = None,
 ) -> tuple[PreparedObject, ...]:
     """Select exact canonical objects and package multi-file source formats."""
     if policy.mode == "shapefile_bundle":
         return _prepare_shapefile_bundle(policy, records, staging_root, run_id)
+    if policy.mode == "hydro_subset_bundle":
+        if paths is None:
+            raise ValueError("hydro subset preparation requires project paths")
+        return _prepare_hydro_subset(policy, records, staging_root, run_id, paths)
     if policy.source_id == "soilgrids_2_0":
         return _prepare_soilgrids(policy, records)
     selected = [

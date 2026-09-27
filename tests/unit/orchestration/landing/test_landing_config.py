@@ -35,9 +35,9 @@ def test_static_landing_config_is_l12_and_has_exact_soil_scope() -> None:
     } == {
         "sonla_admin_2025": "individual",
         "gadm_vnm_4_1": "individual",
-        "hydrobasins_v1c": "shapefile_bundle",
-        "basinatlas_v10": "shapefile_bundle",
-        "hydrorivers_v10": "shapefile_bundle",
+        "hydrobasins_v1c": "hydro_subset_bundle",
+        "basinatlas_v10": "hydro_subset_bundle",
+        "hydrorivers_v10": "hydro_subset_bundle",
         "worldpop_vnm_2025": "individual",
         "geofabrik_vietnam_snapshot": "individual",
         "cop_dem_glo30_2024_1": "individual",
@@ -69,6 +69,11 @@ def test_static_landing_config_rejects_duplicate_sources_and_non_l12() -> None:
         StaticLandingConfig(basin_level=10, sources=(source,))
     with pytest.raises(ValidationError):
         StaticLandingConfig(basin_level=12, sources=(source, source))
+
+
+def test_hydro_subset_policy_requires_bundle_selection_fields() -> None:
+    with pytest.raises(ValidationError):
+        LandingSourcePolicy(source_id="hydrobasins_v1c", mode="hydro_subset_bundle")
 
 
 def test_policy_rejects_credential_like_metadata() -> None:
