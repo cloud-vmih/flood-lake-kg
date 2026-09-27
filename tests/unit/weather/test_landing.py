@@ -7,9 +7,10 @@ import pytest
 
 from flashflood_data.orchestration.landing.models import RegisteredBatch
 from flashflood_data.orchestration.weather.landing import WeatherLandingService
+from flashflood_data.orchestration.weather.lifecycle import ObjectLifecycleStore
 from flashflood_data.orchestration.weather.models import (
-    FetchedWeatherObject,
     PlannedWeatherObject,
+    ScopedWeatherObject,
     WeatherWindow,
 )
 from flashflood_data.storage.object_store import ObjectPublisher
@@ -71,7 +72,30 @@ class MemoryMeta:
         return 1
 
 
-def _fetched(tmp_path: Path, payload: bytes = b"weather") -> FetchedWeatherObject:
+class MemoryLifecycleBackend:
+    def __init__(self) -> None:
+        self.rows = {}
+
+    def get_meta_row(self, identifier, key):
+        assert identifier == ("meta", "object_lifecycle")
+        return self.rows.get(key["object_id"])
+
+    def get_keyed_rows(self, identifier, key):
+        assert identifier == ("meta", "object_lifecycle")
+        return [
+            row for row in self.rows.values() if all(row[name] == value for name, value in key.items())
+        ]
+
+    def upsert_meta_row(self, identifier, key_fields, row):
+        assert identifier == ("meta", "object_lifecycle")
+        assert key_fields == ("object_id",)
+        self.rows[row["object_id"]] = dict(row)
+        return 13
+
+
+def _scoped(tmp_path: Path, payload: bytes = b"weather") -> ScopedWeatherObject:
+    from hashlib import sha256
+
     path = tmp_path / "rain.json"
     path.write_bytes(payload)
     start = datetime(2026, 9, 1, 0, tzinfo=UTC)
@@ -86,7 +110,7 @@ def _fetched(tmp_path: Path, payload: bytes = b"weather") -> FetchedWeatherObjec
         request_fingerprint="f" * 64,
         source_cycle_id="20260901T0000Z",
     )
-    return FetchedWeatherObject(
+    return ScopedWeatherObject(
         planned=planned,
         path=path,
         filename=path.name,
@@ -95,6 +119,24 @@ def _fetched(tmp_path: Path, payload: bytes = b"weather") -> FetchedWeatherObjec
         retrieved_at=start.replace(hour=2),
         available_at=start.replace(hour=1),
         provider_metadata={"provider": "fixture"},
+        spatial_scope_id="sonla-l12-h1-deadbeef",
+        source_grid_version="grid-v1",
+        cell_indices=(101, 102),
+        provider_payload_checksum="a" * 64,
+        provider_payload_size_bytes=10_000,
+        scoped_payload_checksum=sha256(payload).hexdigest(),
+        scoped_payload_size_bytes=len(payload),
+    )
+
+
+def _service(object_store, inventory, meta, lifecycle_backend, retention_class="durable"):
+    return WeatherLandingService(
+        publisher=ObjectPublisher(object_store, "raw"),
+        inventory=inventory,
+        meta=meta,
+        lifecycle=ObjectLifecycleStore(lifecycle_backend),
+        retention_class=retention_class,
+        license_id="provider-terms",
     )
 
 
@@ -102,14 +144,10 @@ def test_publish_registers_dynamic_raw_payload_and_credential_free_manifest(tmp_
     object_store = MemoryObjectStore()
     inventory = MemoryInventory()
     meta = MemoryMeta()
-    service = WeatherLandingService(
-        publisher=ObjectPublisher(object_store, "raw"),
-        inventory=inventory,
-        meta=meta,
-        license_id="provider-terms",
-    )
+    lifecycle = MemoryLifecycleBackend()
+    service = _service(object_store, inventory, meta, lifecycle)
 
-    result = service.publish_and_register(_fetched(tmp_path), run_id="run-1")
+    result = service.publish_and_register(_scoped(tmp_path), run_id="run-1")
 
     assert result.status == "available"
     assert result.snapshot_id == 9
@@ -121,41 +159,40 @@ def test_publish_registers_dynamic_raw_payload_and_credential_free_manifest(tmp_
     manifest_key = row.manifest_uri.removeprefix("s3://")
     manifest = json.loads(object_store.data[manifest_key])
     assert manifest["request_fingerprint"] == "f" * 64
+    assert manifest["selection"]["spatial_scope_id"] == "sonla-l12-h1-deadbeef"
+    assert manifest["selection"]["cell_count"] == 2
+    assert manifest["provider_metadata"]["provider_payload_checksum"] == "a" * 64
     assert "password" not in json.dumps(manifest).lower()
     assert meta.attempts[-1]["status"] == "succeeded"
     assert not (tmp_path / "rain.json").exists()
+    assert lifecycle.rows[result.object_id]["retention_class"] == "durable"
+    assert lifecycle.rows[result.object_id]["expires_at"] is None
 
 
 def test_rerun_reuses_identical_raw_object_without_duplicate_inventory(tmp_path: Path) -> None:
     object_store = MemoryObjectStore()
     inventory = MemoryInventory()
-    service = WeatherLandingService(
-        publisher=ObjectPublisher(object_store, "raw"),
-        inventory=inventory,
-        meta=MemoryMeta(),
-        license_id="provider-terms",
-    )
+    lifecycle = MemoryLifecycleBackend()
+    service = _service(object_store, inventory, MemoryMeta(), lifecycle)
 
-    first = service.publish_and_register(_fetched(tmp_path), run_id="run-1")
-    second = service.publish_and_register(_fetched(tmp_path), run_id="run-2")
+    first = service.publish_and_register(_scoped(tmp_path), run_id="run-1")
+    second = service.publish_and_register(_scoped(tmp_path), run_id="run-2")
 
     assert first.object_id == second.object_id
     assert second.reused is True
     assert len(inventory.rows) == 1
+    assert len(lifecycle.rows) == 1
 
 
 def test_revised_payload_gets_a_new_immutable_object(tmp_path: Path) -> None:
     object_store = MemoryObjectStore()
     inventory = MemoryInventory()
-    service = WeatherLandingService(
-        publisher=ObjectPublisher(object_store, "raw"),
-        inventory=inventory,
-        meta=MemoryMeta(),
-        license_id="provider-terms",
+    service = _service(
+        object_store, inventory, MemoryMeta(), MemoryLifecycleBackend()
     )
 
-    first = service.publish_and_register(_fetched(tmp_path, b"old"), run_id="run-1")
-    second = service.publish_and_register(_fetched(tmp_path, b"revised"), run_id="run-2")
+    first = service.publish_and_register(_scoped(tmp_path, b"old"), run_id="run-1")
+    second = service.publish_and_register(_scoped(tmp_path, b"revised"), run_id="run-2")
 
     assert first.object_id != second.object_id
     assert len(inventory.rows) == 2
@@ -163,17 +200,35 @@ def test_revised_payload_gets_a_new_immutable_object(tmp_path: Path) -> None:
 
 def test_staging_read_failure_is_audited(tmp_path: Path) -> None:
     meta = MemoryMeta()
-    service = WeatherLandingService(
-        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
-        inventory=MemoryInventory(),
-        meta=meta,
-        license_id="provider-terms",
+    service = _service(
+        MemoryObjectStore(),
+        MemoryInventory(),
+        meta,
+        MemoryLifecycleBackend(),
     )
-    fetched = _fetched(tmp_path)
-    fetched.path.unlink()
+    scoped = _scoped(tmp_path)
+    scoped.path.unlink()
 
     with pytest.raises(FileNotFoundError):
-        service.publish_and_register(fetched, run_id="run-1", attempt_no=2)
+        service.publish_and_register(scoped, run_id="run-1", attempt_no=2)
 
     assert meta.attempts[-1]["status"] == "failed"
     assert meta.attempts[-1]["attempt_no"] == 2
+
+
+def test_now_publication_registers_seven_day_lifecycle(tmp_path: Path) -> None:
+    lifecycle = MemoryLifecycleBackend()
+    service = _service(
+        MemoryObjectStore(),
+        MemoryInventory(),
+        MemoryMeta(),
+        lifecycle,
+        retention_class="transient_7d",
+    )
+    scoped = _scoped(tmp_path)
+
+    published = service.publish_and_register(scoped, run_id="run-1")
+
+    row = lifecycle.rows[published.object_id]
+    assert row["expires_at"] == scoped.retrieved_at.replace(day=8)
+    assert row["storage_status"] == "available"

@@ -11,8 +11,9 @@ from flashflood_data.orchestration.landing.models import (
     SourceObjectRow,
 )
 from flashflood_data.orchestration.weather.models import (
-    FetchedWeatherObject,
     PublishedWeatherObject,
+    RetentionClass,
+    ScopedWeatherObject,
 )
 from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
 
@@ -23,6 +24,16 @@ class _Inventory(Protocol):
 
 class _Meta(Protocol):
     def record_attempt(self, **values): ...
+
+
+class _Lifecycle(Protocol):
+    def register(
+        self,
+        object_id: str,
+        retention_class: RetentionClass,
+        published_at: datetime,
+        run_id: str,
+    ) -> int: ...
 
 
 def _checksum(path: Path) -> str:
@@ -46,58 +57,69 @@ class WeatherLandingService:
         publisher: ObjectPublisher,
         inventory: _Inventory,
         meta: _Meta,
+        lifecycle: _Lifecycle,
+        retention_class: RetentionClass,
         license_id: str,
     ) -> None:
         self.publisher = publisher
         self.inventory = inventory
         self.meta = meta
+        self.lifecycle = lifecycle
+        self.retention_class = retention_class
         self.license_id = license_id
 
     @staticmethod
-    def _object_id(fetched: FetchedWeatherObject, checksum: str) -> str:
+    def _object_id(scoped: ScopedWeatherObject, checksum: str) -> str:
         identity = (
-            f"{fetched.planned.source_id}\0{fetched.planned.source_version}\0"
-            f"{fetched.planned.asset_id}\0{checksum}"
+            f"{scoped.planned.source_id}\0{scoped.planned.source_version}\0"
+            f"{scoped.planned.asset_id}\0{checksum}"
         )
         return sha256(identity.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _prefix(fetched: FetchedWeatherObject, checksum: str) -> str:
-        when = fetched.planned.window.start.astimezone(UTC)
+    def _prefix(scoped: ScopedWeatherObject, checksum: str) -> str:
+        when = scoped.planned.window.start.astimezone(UTC)
         return "/".join(
             (
                 "weather",
-                fetched.planned.source_id,
-                fetched.planned.product,
+                scoped.planned.source_id,
+                scoped.planned.product,
                 when.strftime("%Y"),
                 when.strftime("%m"),
                 when.strftime("%d"),
-                fetched.planned.asset_id,
+                scoped.planned.asset_id,
                 checksum,
             )
         )
 
     def publish_and_register(
-        self, fetched: FetchedWeatherObject, *, run_id: str, attempt_no: int = 1
+        self, scoped: ScopedWeatherObject, *, run_id: str, attempt_no: int = 1
     ) -> PublishedWeatherObject:
         """Commit payload, manifest, then Iceberg inventory; delete staging last."""
         started = datetime.now(UTC)
-        planned = fetched.planned
+        planned = scoped.planned
         try:
-            checksum = _checksum(fetched.path)
-            prefix = self._prefix(fetched, checksum)
+            checksum = _checksum(scoped.path)
+            if checksum != scoped.scoped_payload_checksum:
+                raise ValueError("scoped weather payload checksum changed before publication")
+            if scoped.path.stat().st_size != scoped.scoped_payload_size_bytes:
+                raise ValueError("scoped weather payload size changed before publication")
+            prefix = self._prefix(scoped, checksum)
             payload = self.publisher.publish_file(
-                fetched.path,
-                final_key=f"{prefix}/{fetched.filename}",
+                scoped.path,
+                final_key=f"{prefix}/{scoped.filename}",
                 run_id=run_id,
-                media_type=fetched.media_type,
+                media_type=scoped.media_type,
             )
-            object_id = self._object_id(fetched, checksum)
+            object_id = self._object_id(scoped, checksum)
             selection = {
                 "stream_id": planned.stream_id,
                 "window_start": _utc_text(planned.window.start),
                 "window_end": _utc_text(planned.window.end),
                 "variables": list(planned.variables),
+                "spatial_scope_id": scoped.spatial_scope_id,
+                "source_grid_version": scoped.source_grid_version,
+                "cell_count": len(scoped.cell_indices),
                 "source_cycle_id": planned.source_cycle_id,
                 "source_revision": (
                     planned.source_revision
@@ -113,20 +135,26 @@ class WeatherLandingService:
                 source_version=planned.source_version,
                 source_type="dynamic",
                 product=planned.product,
-                media_type=fetched.media_type,
+                media_type=scoped.media_type,
                 selection=selection,
-                source_uri=fetched.source_uri,
+                source_uri=scoped.source_uri,
                 request_fingerprint=planned.request_fingerprint,
                 license_id=self.license_id,
                 retrieval_run_id=run_id,
-                retrieved_at=fetched.retrieved_at,
+                retrieved_at=scoped.retrieved_at,
                 source_valid_time=_utc_text(planned.window.start),
                 object_uri=payload.object_uri,
                 size_bytes=payload.size_bytes,
                 checksum=payload.checksum,
-                provider_metadata=dict(fetched.provider_metadata),
+                source_archive_checksum=scoped.provider_payload_checksum,
+                source_archive_size_bytes=scoped.provider_payload_size_bytes,
+                provider_metadata={
+                    **dict(scoped.provider_metadata),
+                    "provider_payload_checksum": scoped.provider_payload_checksum,
+                    "provider_payload_size_bytes": scoped.provider_payload_size_bytes,
+                },
             )
-            manifest_key = f"{prefix}/{fetched.filename}.manifest.json"
+            manifest_key = f"{prefix}/{scoped.filename}.manifest.json"
             existing = self.publisher.find_existing(manifest_key, "application/json")
             if existing is not None:
                 stored = LandingManifest.model_validate_json(
@@ -142,7 +170,7 @@ class WeatherLandingService:
                 published_manifest = existing
             else:
                 manifest = expected_manifest
-                manifest_path = fetched.path.parent / f"manifest-{fetched.filename}.json"
+                manifest_path = scoped.path.parent / f"manifest-{scoped.filename}.json"
                 manifest_path.write_text(manifest.model_dump_json(), encoding="utf-8")
                 try:
                     published_manifest = self.publisher.publish_file(
@@ -162,23 +190,29 @@ class WeatherLandingService:
                 product=planned.product,
                 object_uri=payload.object_uri,
                 manifest_uri=published_manifest.object_uri,
-                media_type=fetched.media_type,
+                media_type=scoped.media_type,
                 size_bytes=payload.size_bytes,
                 checksum=payload.checksum,
-                source_uri=fetched.source_uri,
-                provider_issued_at=_utc_text(fetched.provider_issued_at),
+                source_uri=scoped.source_uri,
+                provider_issued_at=_utc_text(scoped.provider_issued_at),
                 model_run_time=_utc_text(planned.model_run_time),
                 valid_time=_utc_text(planned.window.start),
-                available_at=_utc_text(fetched.available_at),
+                available_at=_utc_text(scoped.available_at),
                 retrieved_at=manifest.retrieved_at,
                 first_seen_at=manifest.retrieved_at,
                 ingest_run_id=run_id,
                 selection_json=json.dumps(selection, sort_keys=True, separators=(",", ":")),
                 provider_metadata_json=json.dumps(
-                    dict(fetched.provider_metadata), sort_keys=True, separators=(",", ":")
+                    dict(manifest.provider_metadata), sort_keys=True, separators=(",", ":")
                 ),
             )
             batch = self.inventory.register_many([row])
+            self.lifecycle.register(
+                object_id,
+                self.retention_class,
+                manifest.retrieved_at,
+                run_id,
+            )
             self.meta.record_attempt(
                 ingest_run_id=run_id,
                 source_id=planned.source_id,
@@ -189,7 +223,7 @@ class WeatherLandingService:
                 started_at=started,
                 ended_at=datetime.now(UTC),
             )
-            fetched.path.unlink(missing_ok=True)
+            scoped.path.unlink(missing_ok=True)
             return PublishedWeatherObject(
                 source_id=planned.source_id,
                 stream_id=planned.stream_id,

@@ -16,6 +16,7 @@ from flashflood_data.orchestration.weather.grids import (
     grid_definition_for_provider,
 )
 from flashflood_data.orchestration.weather.landing import WeatherLandingService
+from flashflood_data.orchestration.weather.lifecycle import ObjectLifecycleStore
 from flashflood_data.orchestration.weather.models import (
     FetchedWeatherObject,
     IngestWatermark,
@@ -329,6 +330,8 @@ class WeatherRuntime:
             publisher=ObjectPublisher(self.object_store, self.settings.raw_bucket),
             inventory=self.inventory,
             meta=self.meta,
+            lifecycle=ObjectLifecycleStore(self.table_store),
+            retention_class=self.config.retention_class,
             license_id=self.config.license_id,
         )
 
