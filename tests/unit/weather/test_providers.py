@@ -3,6 +3,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from flashflood_data.orchestration.weather.config import load_weather_config
+from flashflood_data.orchestration.weather.grids import GridDefinition, GridRegistration
 from flashflood_data.orchestration.weather.planner import plan_expected_objects
 from flashflood_data.orchestration.weather.providers.era5_land import Era5LandProvider
 from flashflood_data.orchestration.weather.providers.gsmap import GsmapProvider
@@ -46,7 +47,7 @@ class FakeHttpClient:
 
 
 def test_gsmap_resolves_template_and_keeps_credentials_out_of_metadata(tmp_path: Path) -> None:
-    config, stream, plan = _first_plan("config/dynamic/gsmap.yaml")
+    config, stream, plan = _first_plan("config/dynamic/gsmap_standard.yaml")
     client = FakeHttpClient(FakeHttpResponse(b"compressed-rain"))
     provider = GsmapProvider(
         config,
@@ -91,7 +92,7 @@ class FakeFtp:
 
 
 def test_gsmap_supports_jaxa_ftp_without_embedding_credentials(tmp_path: Path) -> None:
-    config, stream, plan = _first_plan("config/dynamic/gsmap.yaml")
+    config, stream, plan = _first_plan("config/dynamic/gsmap_standard.yaml")
     clients = []
 
     def ftp_factory(host: str):
@@ -170,10 +171,25 @@ def test_ifs_requests_explicit_cycle_and_combines_point_batches(tmp_path: Path) 
             }
         )
     )
+    definition = GridDefinition.create(
+        source_id="ifs_openmeteo",
+        resolution_x=0.1,
+        resolution_y=0.1,
+        north=90.0,
+        west=-180.0,
+        width=3600,
+        height=1800,
+    )
+    grid = GridRegistration(
+        source_grid_version=definition.source_grid_version,
+        scope_id="sonla-v1",
+        cell_index_by_grid_id={"row=689,col=2840": 689 * 3600 + 2840},
+        definition=definition,
+    )
     provider = IfsOpenMeteoProvider(
         config,
         stream.model_copy(update={"options": {**stream.options, "point_batch_size": 2}}),
-        aoi_bounds=(104.0, 21.0, 104.1, 21.1),
+        grid=grid,
         environment={},
         client=client,
     )
@@ -185,5 +201,7 @@ def test_ifs_requests_explicit_cycle_and_combines_point_batches(tmp_path: Path) 
     assert all(call[1]["params"]["run"] == "2024-03-01T00:00" for call in client.calls)
     assert all(call[1]["params"]["models"] == "ecmwf_ifs" for call in client.calls)
     assert all("precipitation" in call[1]["params"]["hourly"] for call in client.calls)
+    assert client.calls[0][1]["params"]["latitude"] == "21.05"
+    assert client.calls[0][1]["params"]["longitude"] == "104.05"
     assert document["source_cycle_id"] == "20240301T0000Z"
     assert document["responses"]

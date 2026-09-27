@@ -137,6 +137,27 @@ class FetchedWeatherObject(ImmutableModel):
     provider_metadata: dict[str, object] = Field(default_factory=dict)
 
 
+class ScopedWeatherObject(ImmutableModel):
+    """AOI-only provider payload with evidence for the discarded source response."""
+
+    planned: PlannedWeatherObject
+    path: Path
+    filename: str
+    media_type: str
+    source_uri: str
+    retrieved_at: datetime
+    available_at: datetime
+    provider_issued_at: datetime | None = None
+    provider_metadata: dict[str, object] = Field(default_factory=dict)
+    spatial_scope_id: str
+    source_grid_version: str
+    cell_indices: tuple[int, ...]
+    provider_payload_checksum: str
+    provider_payload_size_bytes: int = Field(ge=0)
+    scoped_payload_checksum: str
+    scoped_payload_size_bytes: int = Field(ge=0)
+
+
 class PublishedWeatherObject(ImmutableModel):
     """Registered Raw object summarized for coverage and cleanup tasks."""
 

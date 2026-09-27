@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from flashflood_data.orchestration.weather.grids import GridRegistration, grid_cell_center
 from flashflood_data.orchestration.weather.models import (
     FetchedWeatherObject,
     PlannedWeatherObject,
@@ -15,11 +16,6 @@ from flashflood_data.orchestration.weather.models import (
     WeatherStreamConfig,
 )
 from flashflood_data.orchestration.weather.providers.base import target_path
-
-
-def _axis(start: float, end: float, step: float) -> list[float]:
-    count = max(1, round((end - start) / step) + 1)
-    return [round(start + index * step, 6) for index in range(count)]
 
 
 class IfsOpenMeteoProvider:
@@ -30,20 +26,21 @@ class IfsOpenMeteoProvider:
         config: WeatherPipelineConfig,
         stream: WeatherStreamConfig,
         *,
-        aoi_bounds: tuple[float, float, float, float],
+        grid: GridRegistration,
         environment: Mapping[str, str] | None = None,
         client: object | None = None,
     ) -> None:
         self.config = config
         self.stream = stream
-        self.aoi_bounds = aoi_bounds
+        self.grid = grid
         self.environment = os.environ if environment is None else environment
         self.client = httpx.Client(timeout=180, follow_redirects=True) if client is None else client
 
     def _points(self) -> list[tuple[float, float]]:
-        west, south, east, north = self.aoi_bounds
-        step = float(self.stream.options.get("grid_resolution_degrees", 0.1))
-        return [(lat, lon) for lat in _axis(south, north, step) for lon in _axis(west, east, step)]
+        cells = sorted(
+            self.grid.cell_index_by_grid_id.items(), key=lambda item: item[1]
+        )
+        return [grid_cell_center(self.grid.definition, grid_id) for grid_id, _ in cells]
 
     def fetch(
         self, planned: PlannedWeatherObject, target_dir: Path

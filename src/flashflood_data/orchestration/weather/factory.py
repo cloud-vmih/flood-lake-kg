@@ -20,6 +20,7 @@ from flashflood_data.orchestration.weather.models import (
     FetchedWeatherObject,
     IngestWatermark,
     PlannedWeatherObject,
+    ScopedWeatherObject,
     WeatherPipelineConfig,
 )
 from flashflood_data.orchestration.weather.planner import (
@@ -32,6 +33,7 @@ from flashflood_data.orchestration.weather.planner import (
 from flashflood_data.orchestration.weather.providers.era5_land import Era5LandProvider
 from flashflood_data.orchestration.weather.providers.gsmap import GsmapProvider
 from flashflood_data.orchestration.weather.providers.ifs_openmeteo import IfsOpenMeteoProvider
+from flashflood_data.orchestration.weather.subset import scope_fetched_object
 from flashflood_data.orchestration.weather.watermarks import IngestWatermarkStore
 from flashflood_data.storage.iceberg import SourceObjectInventory, load_polaris_catalog
 from flashflood_data.storage.iceberg_tables import IcebergTableStore
@@ -267,7 +269,7 @@ class WeatherRuntime:
             )
         return {"mode": mode, "streams": stream_documents, "missing": all_missing}
 
-    def provider(self, stream_id: str):
+    def provider(self, stream_id: str, grid: GridRegistration | None = None):
         stream = self.stream(stream_id)
         if self.config.provider == "gsmap":
             return GsmapProvider(self.config, stream)
@@ -275,11 +277,18 @@ class WeatherRuntime:
         if self.config.provider == "era5_land":
             return Era5LandProvider(self.config, stream, aoi_bounds=bounds)
         if self.config.provider == "ifs_openmeteo":
-            return IfsOpenMeteoProvider(self.config, stream, aoi_bounds=bounds)
+            return IfsOpenMeteoProvider(
+                self.config, stream, grid=grid or self.ensure_source_grid()
+            )
         raise ValueError(f"unsupported weather provider: {self.config.provider}")
 
     def fetch(
-        self, planned: PlannedWeatherObject, run_id: str, *, attempt_no: int = 1
+        self,
+        planned: PlannedWeatherObject,
+        run_id: str,
+        *,
+        attempt_no: int = 1,
+        grid: GridRegistration | None = None,
     ) -> FetchedWeatherObject:
         target = self.settings.staging_root / "weather" / run_id / planned.source_id
         started_at = datetime.now(UTC)
@@ -293,7 +302,12 @@ class WeatherRuntime:
         }
         self.meta.record_attempt(**attempt, status="running")
         try:
-            return self.provider(planned.stream_id).fetch(planned, target)
+            provider = (
+                self.provider(planned.stream_id)
+                if grid is None
+                else self.provider(planned.stream_id, grid)
+            )
+            return provider.fetch(planned, target)
         except Exception as error:
             response = getattr(error, "response", None)
             self.meta.record_attempt(
@@ -304,6 +318,11 @@ class WeatherRuntime:
                 error_code=type(error).__name__,
             )
             raise
+
+    def scope_fetched(
+        self, fetched: FetchedWeatherObject, grid: GridRegistration
+    ) -> ScopedWeatherObject:
+        return scope_fetched_object(fetched, self.config, grid)
 
     def landing_service(self) -> WeatherLandingService:
         return WeatherLandingService(

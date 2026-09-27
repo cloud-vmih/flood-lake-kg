@@ -63,6 +63,7 @@ class GridRegistration:
     source_grid_version: str
     scope_id: str
     cell_index_by_grid_id: Mapping[str, int]
+    definition: GridDefinition
 
 
 class _GridWriter(Protocol):
@@ -169,6 +170,23 @@ def build_grid_rows(
                 }
             )
     return sorted(rows, key=lambda item: int(item["cell_index"]))
+
+
+def grid_cell_center(
+    definition: GridDefinition, source_grid_id: str
+) -> tuple[float, float]:
+    """Return `(latitude, longitude)` for a stable row/column cell ID."""
+    try:
+        row_text, column_text = source_grid_id.split(",")
+        row = int(row_text.removeprefix("row="))
+        column = int(column_text.removeprefix("col="))
+    except (ValueError, AttributeError) as error:
+        raise ValueError(f"invalid source grid ID: {source_grid_id}") from error
+    if not 0 <= row < definition.height or not 0 <= column < definition.width:
+        raise ValueError(f"source grid ID is outside its definition: {source_grid_id}")
+    longitude = definition.west + (column + 0.5) * definition.resolution_x
+    latitude = definition.north - (row + 0.5) * definition.resolution_y
+    return round(latitude, 10), round(longitude, 10)
 
 
 def _scope_id(name: str, geometry: BaseGeometry) -> str:
@@ -279,4 +297,5 @@ class WeatherGridRegistry:
             source_grid_version=definition.source_grid_version,
             scope_id=local_scope_id,
             cell_index_by_grid_id=current,
+            definition=definition,
         )
