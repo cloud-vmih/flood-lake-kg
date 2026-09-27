@@ -189,11 +189,7 @@ class MetaRecorder:
         input_table: str | None = None,
         input_snapshot_id: int | None = None,
     ) -> str:
-        raw = input_object_id is not None
-        table = input_table is not None and input_snapshot_id is not None
-        if raw == table or (input_table is None) != (input_snapshot_id is None):
-            raise ValueError("lineage requires exactly one raw object or input snapshot")
-        identity = {
+        return self.record_lineages(({
             "pipeline_run_id": pipeline_run_id,
             "input_object_id": input_object_id,
             "input_table": input_table,
@@ -202,22 +198,52 @@ class MetaRecorder:
             "output_snapshot_id": output_snapshot_id,
             "transform_role": transform_role,
             "mapping_version": mapping_version,
-        }
-        edge_id = sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
-        self.store.upsert_meta_row(
-            (self.meta_namespace, "lineage_edges"), ("lineage_edge_id",),
-            {
+            "created_at": created_at,
+        },))[0]
+
+    def record_lineages(self, rows: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+        """Persist several lineage edges in one Iceberg commit."""
+        requested: list[dict[str, Any]] = []
+        edge_ids: list[str] = []
+        for source in rows:
+            row = dict(source)
+            input_object_id = row.get("input_object_id")
+            input_table = row.get("input_table")
+            input_snapshot_id = row.get("input_snapshot_id")
+            raw = input_object_id is not None
+            table = input_table is not None and input_snapshot_id is not None
+            if raw == table or (input_table is None) != (input_snapshot_id is None):
+                raise ValueError("lineage requires exactly one raw object or input snapshot")
+            identity = {
+                "pipeline_run_id": row["pipeline_run_id"],
+                "input_object_id": input_object_id,
+                "input_table": input_table,
+                "input_snapshot_id": input_snapshot_id,
+                "output_table": row["output_table"],
+                "output_snapshot_id": row["output_snapshot_id"],
+                "transform_role": row["transform_role"],
+                "mapping_version": row.get("mapping_version"),
+            }
+            edge_id = sha256(
+                json.dumps(identity, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            edge_ids.append(edge_id)
+            requested.append({
                 "lineage_edge_id": edge_id,
-                "pipeline_run_id": pipeline_run_id,
+                "pipeline_run_id": row["pipeline_run_id"],
                 "input_kind": "raw_object" if raw else "iceberg_snapshot",
                 "input_object_id": input_object_id,
                 "input_table": input_table,
                 "input_snapshot_id": input_snapshot_id,
-                "output_table": output_table,
-                "output_snapshot_id": output_snapshot_id,
-                "transform_role": transform_role,
-                "mapping_version": mapping_version,
-                "created_at": created_at,
-            },
+                "output_table": row["output_table"],
+                "output_snapshot_id": row["output_snapshot_id"],
+                "transform_role": row["transform_role"],
+                "mapping_version": row.get("mapping_version"),
+                "created_at": row["created_at"],
+            })
+        if not requested:
+            raise ValueError("lineage edge batch cannot be empty")
+        self.store.upsert_meta_rows(
+            (self.meta_namespace, "lineage_edges"), ("lineage_edge_id",), requested
         )
-        return edge_id
+        return tuple(edge_ids)

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pytest
 from pyiceberg.exceptions import CommitFailedException
-from pyiceberg.expressions import And, EqualTo, Or
+from pyiceberg.expressions import And, EqualTo, In, Or
 
 from flashflood_data.storage.iceberg_tables import IcebergTableStore
 
@@ -18,6 +18,8 @@ def _matches(row: dict[str, object], expression: object) -> bool:
         return _matches(row, expression.left) and _matches(row, expression.right)
     if isinstance(expression, Or):
         return _matches(row, expression.left) or _matches(row, expression.right)
+    if isinstance(expression, In):
+        return row[expression.term.name] in expression.literals
     raise AssertionError(f"unexpected filter: {expression!r}")
 
 
@@ -304,4 +306,34 @@ def test_batched_object_replacement_rejects_duplicate_keys_across_batches() -> N
         store.replace_object_batches(
             ("bronze", "basin_polygon_raw"), "a",
             iter([[_basin("a", feature_id="1")], [_basin("a", feature_id="1")]]),
+        )
+
+
+def test_multi_object_replacement_commits_one_snapshot_and_preserves_other_objects() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    table_id = ("bronze", "basin_polygon_raw")
+    store.replace_object_rows(table_id, "other", [_basin("other")])
+    before = catalog.tables[table_id].snapshot_id
+
+    snapshot = store.replace_objects_rows(
+        table_id,
+        ("a", "b"),
+        [_basin("a", feature_id="1"), _basin("b", feature_id="2")],
+    )
+
+    table = catalog.tables[table_id]
+    assert snapshot == before + 1
+    assert {(row["object_id"], row["source_feature_id"]) for row in table.rows} == {
+        ("other", "42"), ("a", "1"), ("b", "2"),
+    }
+
+
+def test_multi_object_replacement_requires_rows_for_every_requested_object() -> None:
+    store = IcebergTableStore(_Catalog())
+    with pytest.raises(ValueError, match="every requested object"):
+        store.replace_objects_rows(
+            ("bronze", "basin_polygon_raw"),
+            ("a", "b"),
+            [_basin("a", feature_id="1")],
         )

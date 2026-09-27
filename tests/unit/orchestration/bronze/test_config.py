@@ -14,6 +14,9 @@ def test_static_bronze_policy_pins_parser_versions_and_enables_osm() -> None:
     assert config.target_table("hydrobasins_v1c") == "basin_polygon_raw"
     assert config.parser_version("soilgrids_2_0") == "v1"
     assert config.target_table("soilgrids_2_0") == "raster_coverage"
+    assert config.batch_size("soilgrids_2_0") == 16
+    assert config.batch_size("sonla_admin_2025") == 25
+    assert config.batch_size("hydrobasins_v1c") == 1
     assert config.status("geofabrik_vietnam_snapshot") == "ready"
     assert config.parser_version("geofabrik_vietnam_snapshot") == "v1"
     assert "geofabrik_vietnam_snapshot" in config.ready_source_ids()

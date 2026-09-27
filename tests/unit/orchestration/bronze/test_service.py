@@ -19,21 +19,22 @@ from flashflood_data.orchestration.landing.models import SourceObjectRow
 
 
 class _Inventory:
-    def __init__(self, row: SourceObjectRow) -> None:
-        self.row = row
+    def __init__(self, row: SourceObjectRow | tuple[SourceObjectRow, ...]) -> None:
+        self.rows = row if isinstance(row, tuple) else (row,)
 
     def available_objects(self, source_id: str):
-        return (self.row,) if source_id == self.row.source_id else ()
+        return tuple(row for row in self.rows if source_id == row.source_id)
 
 
 class _ObjectStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path | dict[str, Path]) -> None:
         self.path = path
         self.downloads: list[str] = []
 
     def download(self, key: str, local_path: Path) -> None:
         self.downloads.append(key)
-        copyfile(self.path, local_path)
+        source = self.path[key] if isinstance(self.path, dict) else self.path
+        copyfile(source, local_path)
 
 
 class _MockTable:
@@ -77,6 +78,13 @@ class _Writer:
             self.events.append("bronze_commit")
         return result
 
+    def replace_objects_rows(self, identifier, object_ids, rows):
+        self.records.append((identifier, tuple(object_ids), list(rows)))
+        self.tables.setdefault(identifier, _MockTable()).rows.extend(rows)
+        if self.events is not None:
+            self.events.append("bronze_commit")
+        return 92
+
     def ensure_table(self, identifier: tuple[str, str]) -> _MockTable:
         return self.tables.setdefault(identifier, _MockTable())
 
@@ -95,8 +103,17 @@ class _Meta:
         if self.events is not None:
             self.events.append("quality_audit")
 
+    def record_qualities(self, rows):
+        self.quality.extend(dict(row) for row in rows)
+        if self.events is not None:
+            self.events.append("quality_audit")
+
     def record_lineage(self, **kwargs):
         self.lineage.append(kwargs)
+
+    def record_lineages(self, rows):
+        self.lineage.extend(dict(row) for row in rows)
+        return tuple(f"edge-{index}" for index, _row in enumerate(rows))
 
     def record_snapshot_ref(self, **kwargs):
         self.snapshots.append(kwargs)
@@ -148,6 +165,126 @@ def test_process_object_parses_registered_raw_and_records_bronze_provenance(tmp_
     assert meta.lineage[0]["input_object_id"] == "raw-1"
     assert meta.lineage[0]["output_snapshot_id"] == 91
     assert meta.runs[-1]["published_at"] is not None
+
+
+def test_process_batch_commits_soil_objects_once_and_keeps_per_object_lineage(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "soil.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", width=2, height=2, count=1, dtype="uint16",
+        crs="EPSG:4326", transform=from_origin(103, 22, 0.5, 0.5),
+    ) as output:
+        output.write(np.ones((2, 2), dtype="uint16"), 1)
+    first = _raster_row(path)
+    second = first.model_copy(update={
+        "object_id": "raw-2",
+        "asset_id": "soil-clay",
+        "object_uri": "s3://raw/static/soilgrids_2_0/clay_0-5cm_mean.tif",
+    })
+    writer = _Writer()
+    meta = _Meta()
+    service = BronzeService(
+        inventory=_Inventory((first, second)), object_store=_ObjectStore(path),
+        writer=writer, meta=meta, raw_bucket="raw", staging_root=tmp_path / "staging",
+    )
+
+    result = service.process_batch(
+        "soilgrids_2_0", ("raw-1", "raw-2"),
+        run_id="bronze-run-1", parser_version="v1",
+    )
+
+    assert result["object_ids"] == ["raw-1", "raw-2"]
+    assert result["snapshot_id"] == 92
+    assert result["row_count"] == 2
+    assert len(writer.records) == 1
+    assert writer.records[0][1] == ("raw-1", "raw-2")
+    assert {row["object_id"] for row in writer.records[0][2]} == {"raw-1", "raw-2"}
+    assert {row["input_object_id"] for row in meta.lineage} == {"raw-1", "raw-2"}
+    assert len(meta.snapshots) == 1
+    assert meta.runs[-1]["input_row_count"] == 2
+    assert meta.runs[-1]["output_row_count"] == 2
+
+
+def test_process_batch_commits_admin_geometries_once(tmp_path: Path) -> None:
+    paths: list[Path] = []
+    rows: list[SourceObjectRow] = []
+    source_paths: dict[str, Path] = {}
+    for index in range(2):
+        path = tmp_path / f"admin-{index}.geojson"
+        gpd.GeoDataFrame(
+            {"MaXa": [f"commune-{index}"]},
+            geometry=[box(103 + index, 21, 104 + index, 22)],
+            crs="EPSG:4326",
+        ).to_file(path, driver="GeoJSON")
+        paths.append(path)
+        key = f"raw/static/sonla_admin_2025/admin-{index}.geojson"
+        source_paths[key] = path
+        rows.append(_raster_row(path).model_copy(update={
+            "object_id": f"admin-{index}",
+            "asset_id": f"admin-{index}",
+            "source_id": "sonla_admin_2025",
+            "object_uri": f"s3://{key}",
+        }))
+    writer = _Writer()
+    meta = _Meta()
+    service = BronzeService(
+        inventory=_Inventory(tuple(rows)), object_store=_ObjectStore(source_paths),
+        writer=writer, meta=meta, raw_bucket="raw", staging_root=tmp_path / "staging",
+    )
+
+    result = service.process_batch(
+        "sonla_admin_2025", ("admin-0", "admin-1"),
+        run_id="bronze-run-1", parser_version="v1",
+    )
+
+    assert result["table_name"] == "flood_lakehouse.bronze.admin_boundary_raw"
+    assert result["row_count"] == 2
+    assert len(writer.records) == 1
+    assert {row["source_feature_id"] for row in writer.records[0][2]} == {
+        "commune-0", "commune-1",
+    }
+
+
+def test_process_batch_does_not_commit_when_one_object_fails_quality(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    path = tmp_path / "soil.tif"
+    path.write_bytes(b"raw fixture")
+    first = _raster_row(path)
+    second = first.model_copy(update={
+        "object_id": "raw-2",
+        "asset_id": "soil-clay",
+        "object_uri": "s3://raw/static/soilgrids_2_0/clay_0-5cm_mean.tif",
+    })
+    writer = _Writer()
+    meta = _Meta()
+    service = BronzeService(
+        inventory=_Inventory((first, second)), object_store=_ObjectStore(path),
+        writer=writer, meta=meta, raw_bucket="raw", staging_root=tmp_path / "staging",
+    )
+
+    def parsed(row, *_args):
+        bounds = [103.0, 21.0, 104.0, 22.0]
+        if row.object_id == "raw-2":
+            bounds = [104.0, 22.0, 103.0, 21.0]
+        return "raster_coverage", [{
+            "object_id": row.object_id,
+            "band_or_layer": "band-1",
+            "bbox_wgs84": bounds,
+        }]
+
+    monkeypatch.setattr("flashflood_data.orchestration.bronze.service._table_for", parsed)
+
+    with pytest.raises(ValueError, match="quality"):
+        service.process_batch(
+            "soilgrids_2_0", ("raw-1", "raw-2"),
+            run_id="bronze-run-1", parser_version="v1",
+        )
+
+    assert writer.records == []
+    assert any(row["status"] == "failed" for row in meta.quality)
+    assert meta.runs[-1]["status"] == "failed"
 
 
 def test_process_object_rejects_unregistered_id_without_downloading(tmp_path: Path) -> None:

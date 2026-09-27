@@ -7,7 +7,7 @@ from typing import Any
 import pyarrow as pa
 from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import CommitFailedException
-from pyiceberg.expressions import And, EqualTo, Or
+from pyiceberg.expressions import And, EqualTo, In, Or
 
 from flashflood_data.core.disk_index import DiskUniqueIndex
 from flashflood_data.storage.iceberg_schemas import BRONZE_KEYS, table_schema
@@ -135,6 +135,49 @@ class IcebergTableStore:
             if count == 0:
                 raise ValueError("Bronze parse produced no rows")
         return _snapshot_id(table), count
+
+    def replace_objects_rows(
+        self,
+        identifier: tuple[str, str],
+        object_ids: Sequence[str],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Replace several complete raw-object slices in one Iceberg commit."""
+        if (
+            identifier[0] != "bronze" and not identifier[0].startswith("smoke_")
+        ) or identifier[1] not in BRONZE_KEYS:
+            raise ValueError("object replacement requires a Bronze contract table")
+        requested_ids = tuple(object_ids)
+        if not requested_ids or len(set(requested_ids)) != len(requested_ids):
+            raise ValueError("requested Bronze object IDs must be non-empty and unique")
+        requested = [dict(row) for row in rows]
+        present_ids = {str(row.get("object_id")) for row in requested}
+        if present_ids != set(requested_ids):
+            raise ValueError("Bronze rows are required for every requested object")
+        keys = ("object_id", *BRONZE_KEYS[identifier[1]])
+        record_keys = [tuple(row.get(name) for name in keys) for row in requested]
+        if any(None in key for key in record_keys) or len(set(record_keys)) != len(record_keys):
+            raise ValueError("duplicate or missing Bronze business key in object batch")
+
+        schema = table_schema(identifier)
+        payload = pa.Table.from_pylist(requested, schema=schema)
+        table = self.ensure_table(identifier)
+        expression = (
+            EqualTo("object_id", requested_ids[0])
+            if len(requested_ids) == 1
+            else In("object_id", requested_ids)
+        )
+        table.refresh()
+        stored = table.scan(row_filter=expression).to_arrow().to_pylist()
+        if _canonical_rows(stored, keys) == _canonical_rows(payload.to_pylist(), keys):
+            return _snapshot_id(table)
+        if not stored:
+            table.append(payload)
+            return _snapshot_id(table)
+        with table.transaction() as transaction:
+            transaction.delete(expression)
+            transaction.append(payload)
+        return _snapshot_id(table)
 
     def upsert_meta_row(
         self,

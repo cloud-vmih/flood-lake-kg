@@ -13,8 +13,9 @@ def test_bronze_dag_maps_registered_raw_ids_to_parse_tasks() -> None:
     assert "static_source_to_bronze" in source
     assert "schedule=None" in source
     assert "max_active_runs=1" in source
-    assert "discover_objects" in source
-    assert "process_object" in source
+    assert "discover_batches" in source
+    assert "process_batch" in source
+    assert "batch_object_refs" in source
     assert "load_bronze_config" in source
     assert "requested_source_id" in source
     assert "dag_run.conf.get('source_id'" in source

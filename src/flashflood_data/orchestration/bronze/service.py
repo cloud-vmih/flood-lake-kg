@@ -36,6 +36,7 @@ _RASTER_SOURCES = frozenset({
 })
 _EVENT_SOURCE = "historical_flood_evidence_2020_2026"
 _OSM_SOURCE = "geofabrik_vietnam_snapshot"
+_BATCHED_SOURCES = frozenset({"sonla_admin_2025", "soilgrids_2_0"})
 _SOURCE_TO_TABLE = {
     "hydrobasins_v1c": "basin_polygon_raw",
     "basinatlas_v10": "basin_polygon_raw",
@@ -86,6 +87,35 @@ def eligible_raw_object(row: SourceObjectRow) -> bool:
         or row.source_id == _EVENT_SOURCE and suffix in {".xlsx", ".xls", ".csv"}
         or row.source_id == _OSM_SOURCE and suffix == ".pbf"
     )
+
+
+def _quality_row(
+    *,
+    pipeline_run_id: str,
+    dataset_id: str,
+    object_id: str,
+    result: QualityResult,
+    checked_at: datetime,
+    phase: str,
+    snapshot_id: int | None = None,
+) -> dict[str, object]:
+    return {
+        "pipeline_run_id": pipeline_run_id,
+        "check_phase": phase,
+        "dataset_id": dataset_id,
+        "rule_id": result.rule_id,
+        "rule_version": "v1",
+        "scope_key": object_id,
+        "severity": result.severity,
+        "status": result.status,
+        "observed_value_json": json.dumps(result.observed_value, sort_keys=True),
+        "expected_value_json": None,
+        "failed_row_count": result.failed_row_count,
+        "sample_uri": None,
+        "snapshot_table": dataset_id if snapshot_id is not None else None,
+        "snapshot_id": snapshot_id,
+        "checked_at": checked_at,
+    }
 
 
 class BronzeService:
@@ -203,6 +233,167 @@ class BronzeService:
             return eligible
         published = self._published_object_ids(source_id, eligible, parser_version)
         return tuple(object_id for object_id in eligible if object_id not in published)
+
+    def process_batch(
+        self,
+        source_id: str,
+        object_ids: tuple[str, ...],
+        *,
+        run_id: str,
+        parser_version: str,
+    ) -> dict[str, object]:
+        """Parse several small raw objects and publish one atomic Bronze snapshot."""
+        if source_id not in _BATCHED_SOURCES:
+            raise ValueError(f"source does not support Bronze object batching: {source_id}")
+        if not object_ids or len(set(object_ids)) != len(object_ids):
+            raise ValueError("Bronze batch object IDs must be non-empty and unique")
+        available = {
+            row.object_id: row for row in self.inventory.available_objects(source_id)
+        }
+        if any(object_id not in available for object_id in object_ids):
+            raise LookupError("Bronze batch contains an unavailable raw object")
+        rows = [available[object_id] for object_id in object_ids]
+        if any(not eligible_raw_object(row) for row in rows):
+            raise ValueError("Bronze batch contains an ineligible raw object")
+
+        started_at = datetime.now(UTC)
+        mapping_version = self._mapping_version(source_id, parser_version)
+        identity = json.dumps(
+            {
+                "run_id": run_id,
+                "source_id": source_id,
+                "object_ids": list(object_ids),
+                "mapping_version": mapping_version,
+            },
+            sort_keys=True,
+        )
+        pipeline_run_id = sha256(identity.encode("utf-8")).hexdigest()
+        run_record: dict[str, object] = {
+            "pipeline_run_id": pipeline_run_id,
+            "orchestrator_run_id": run_id,
+            "job_name": f"bronze_parse:{source_id}",
+            "code_git_sha": None,
+            "image_digest": None,
+            "config_hash": sha256(mapping_version.encode("utf-8")).hexdigest(),
+            "parameter_set_id": None,
+            "started_at": started_at,
+            "finished_at": None,
+            "published_at": None,
+            "status": "running",
+            "retry_count": 0,
+            "input_row_count": len(rows),
+            "output_row_count": None,
+            "quality_result_json": None,
+            "metrics_json": json.dumps({"object_count": len(rows)}, sort_keys=True),
+            "error_code": None,
+        }
+        self.meta.record_run(run_record)
+        table_name = _SOURCE_TO_TABLE[source_id]
+        dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.{table_name}"
+        precommit_quality: list[dict[str, object]] = []
+        parsed_rows: list[dict[str, object]] = []
+        quality_by_object: dict[str, list[QualityResult]] = {}
+        try:
+            self.staging_root.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix="bronze-batch-", dir=self.staging_root) as temporary:
+                temporary_root = Path(temporary)
+                for index, row in enumerate(rows):
+                    key, filename = _raw_key(row, self.raw_bucket)
+                    object_root = temporary_root / f"object-{index:04d}"
+                    object_root.mkdir()
+                    local = object_root / filename
+                    self.object_store.download(key, local)
+                    if (
+                        local.stat().st_size != row.size_bytes
+                        or sha256_file(local) != row.checksum
+                    ):
+                        raise ValueError("raw object size/checksum differs from source_objects")
+                    parsed_table, current_rows = _table_for(
+                        row, local, run_id, parser_version
+                    )
+                    if parsed_table != table_name:
+                        raise ValueError("Bronze batch resolved to multiple target tables")
+                    results = check_parsed_rows(table_name, current_rows)
+                    quality_by_object[row.object_id] = results
+                    checked_at = datetime.now(UTC)
+                    precommit_quality.extend(
+                        _quality_row(
+                            pipeline_run_id=pipeline_run_id,
+                            dataset_id=dataset_id,
+                            object_id=row.object_id,
+                            result=result,
+                            checked_at=checked_at,
+                            phase="pre_commit",
+                        )
+                        for result in results
+                    )
+                    if fatal_failures(results):
+                        self.meta.record_qualities(precommit_quality)
+                        raise ValueError("Bronze quality gate failed")
+                    parsed_rows.extend(current_rows)
+
+            self.meta.record_qualities(precommit_quality)
+            snapshot_id = self.writer.replace_objects_rows(
+                (self.bronze_namespace, table_name), object_ids, parsed_rows
+            )
+            now = datetime.now(UTC)
+            self.meta.record_snapshot_ref(
+                pipeline_run_id=pipeline_run_id,
+                table_name=dataset_id,
+                iceberg_snapshot_id=snapshot_id,
+                role="output",
+                quality_status="passed",
+                created_at=now,
+            )
+            self.meta.record_qualities([
+                _quality_row(
+                    pipeline_run_id=pipeline_run_id,
+                    dataset_id=dataset_id,
+                    object_id=object_id,
+                    result=result,
+                    checked_at=now,
+                    phase="post_commit",
+                    snapshot_id=snapshot_id,
+                )
+                for object_id, results in quality_by_object.items()
+                for result in results
+            ])
+            self.meta.record_lineages([
+                {
+                    "pipeline_run_id": pipeline_run_id,
+                    "input_object_id": object_id,
+                    "output_table": dataset_id,
+                    "output_snapshot_id": snapshot_id,
+                    "transform_role": "source",
+                    "mapping_version": mapping_version,
+                    "created_at": now,
+                }
+                for object_id in object_ids
+            ])
+            self.meta.record_run({
+                **run_record,
+                "status": "succeeded",
+                "finished_at": now,
+                "published_at": now,
+                "output_row_count": len(parsed_rows),
+                "quality_result_json": '{"status":"passed"}',
+            })
+            return {
+                "pipeline_run_id": pipeline_run_id,
+                "object_ids": list(object_ids),
+                "table_name": dataset_id,
+                "snapshot_id": snapshot_id,
+                "row_count": len(parsed_rows),
+                "status": "succeeded",
+            }
+        except Exception as error:
+            self.meta.record_run({
+                **run_record,
+                "status": "failed",
+                "finished_at": datetime.now(UTC),
+                "error_code": type(error).__name__,
+            })
+            raise
 
     def process_object(
         self, source_id: str, object_id: str, *, run_id: str, parser_version: str

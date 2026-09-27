@@ -175,23 +175,28 @@ Cùng identity và bytes sẽ được tái sử dụng. Cùng identity nhưng b
 
 ### 4.1. Nhiệm vụ
 
-DAG đọc inventory Raw, chỉ chọn object cần xử lý, tải object từ MinIO vào temporary directory, parse, chạy quality gate rồi thay thế atomically lát Bronze của object đó.
+DAG đọc inventory Raw, chỉ chọn object cần xử lý và chia thành work batch theo source. Sơn La
+admin dùng 25 object/batch, SoilGrids dùng 16 object/batch; source khác mặc định một object.
+Task tải object từ MinIO vào temporary directory, parse, chạy quality gate rồi thay thế atomically
+toàn bộ lát Bronze của batch trong một snapshot. Quality và lineage vẫn có scope theo từng object.
 
 ### 4.2. Luồng task
 
 ```mermaid
 flowchart LR
-  C["config/bronze/static.yaml"] --> D["discover_objects(source_id)"]
+  C["config/bronze/static.yaml"] --> D["discover_batches(source_id)"]
   SO["meta.source_objects"] --> D
-  D -->|"danh sách object_id"| M["dynamic mapped process_object"]
+  D -->|"danh sách batch object_id"| M["dynamic mapped process_batch"]
   M --> DL["download + verify checksum"]
   DL --> P["parser theo source"]
   P --> QA["pre-commit quality"]
-  QA --> W["replace object slice trong Iceberg"]
+  QA --> W["replace nhiều object trong một Iceberg transaction"]
   W --> PM["snapshot + quality + lineage + succeeded run"]
 ```
 
-Mỗi `source_id` luôn có task discover. Chỉ object chưa có kết quả publish hợp lệ mới tạo mapped parse task.
+Mỗi `source_id` luôn có task discover. Chỉ object chưa có kết quả publish hợp lệ mới được đưa
+vào batch. Batch size không đổi grain của dữ liệu và không làm mất khả năng retry theo object ở
+lần discover tiếp theo.
 
 ### 4.3. Điều kiện để một object được skip
 
@@ -208,21 +213,21 @@ Thay parser version, thay OSM policy hoặc dùng `force_reprocess=true` sẽ x�
 | Thứ tự | Hàm/lớp | File | Vai trò |
 | ---: | --- | --- | --- |
 | 1 | `static_source_to_bronze_dag()` | [`airflow/dags/static_source_to_bronze.py`](../airflow/dags/static_source_to_bronze.py) | Tạo discover task cho từng source và mapped parse tasks. |
-| 2 | `load_bronze_config()` | [`src/flashflood_data/orchestration/bronze/config.py`](../src/flashflood_data/orchestration/bronze/config.py) | Validate target table, parser version và source status. |
+| 2 | `load_bronze_config()` | [`src/flashflood_data/orchestration/bronze/config.py`](../src/flashflood_data/orchestration/bronze/config.py) | Validate target table, parser version, batch size và source status. |
 | 3 | `build_bronze_service()` | [`src/flashflood_data/orchestration/bronze/factory.py`](../src/flashflood_data/orchestration/bronze/factory.py) | Ghép inventory, MinIO, Iceberg writer, Meta recorder và OSM policy. |
 | 4 | `BronzeService.discover()` | [`src/flashflood_data/orchestration/bronze/service.py`](../src/flashflood_data/orchestration/bronze/service.py) | Đối chiếu raw object, run, lineage và lát Bronze. |
-| 5 | `BronzeService.process_object()` | cùng file | Ghi run đang chạy, download, verify, parse, QA, commit và publish Meta. |
+| 5 | `BronzeService.process_batch()` / `process_object()` | cùng file | Batch Admin/SoilGrids hoặc xử lý một object; download, verify, parse, QA, commit và publish Meta. |
 | 6 | parser vector/raster/event | [`src/flashflood_data/orchestration/bronze/parsers.py`](../src/flashflood_data/orchestration/bronze/parsers.py) | Chuyển raw payload thành row source-faithful. |
 | 7 | parser OSM | [`src/flashflood_data/orchestration/bronze/osm.py`](../src/flashflood_data/orchestration/bronze/osm.py) | Stream PBF theo batch và lọc nhóm phục vụ lũ. |
 | 8 | `check_parsed_rows()` | [`src/flashflood_data/orchestration/bronze/quality.py`](../src/flashflood_data/orchestration/bronze/quality.py) | Kiểm tra nonempty, key, geometry, bbox và raster metadata. |
-| 9 | `IcebergTableStore` | [`src/flashflood_data/storage/iceberg_tables.py`](../src/flashflood_data/storage/iceberg_tables.py) | Ensure table và replace rows/batches theo object. |
+| 9 | `IcebergTableStore` | [`src/flashflood_data/storage/iceberg_tables.py`](../src/flashflood_data/storage/iceberg_tables.py) | Ensure table và replace atomically một hoặc nhiều object trong một snapshot. |
 | 10 | `MetaRecorder` | [`src/flashflood_data/orchestration/meta/service.py`](../src/flashflood_data/orchestration/meta/service.py) | Ghi pipeline run, quality, snapshot reference và lineage edge. |
 
 ### 4.5. Cấu hình và schema
 
 | File | Chức năng |
 | --- | --- |
-| [`config/bronze/static.yaml`](../config/bronze/static.yaml) | `source_id → target_table`, parser version và QA rules. |
+| [`config/bronze/static.yaml`](../config/bronze/static.yaml) | `source_id → target_table`, parser version, batch size và QA rules. |
 | [`config/bronze/osm.yaml`](../config/bronze/osm.yaml) | Các tag hydrology, hydraulic structure, transport và critical facility được giữ. |
 | [`src/flashflood_data/storage/iceberg_schemas.py`](../src/flashflood_data/storage/iceberg_schemas.py) | Arrow schema và business key của Meta/Bronze. |
 | [`src/flashflood_data/storage/iceberg_tables.py`](../src/flashflood_data/storage/iceberg_tables.py) | Tạo/ghi bảng Iceberg qua Polaris. |

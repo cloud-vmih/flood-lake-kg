@@ -1,6 +1,6 @@
 contract_version: v1
 sources:
-  sonla_admin_2025: {target_table: admin_boundary_raw, parser_version: v1, status: ready}
+  sonla_admin_2025: {target_table: admin_boundary_raw, parser_version: v1, batch_size: 25, status: ready}
   gadm_vnm_4_1: {target_table: admin_boundary_raw, parser_version: v1, status: ready}
   hydrobasins_v1c: {target_table: basin_polygon_raw, parser_version: v1, status: ready}
   basinatlas_v10: {target_table: basin_polygon_raw, parser_version: v1, status: ready}
@@ -8,7 +8,7 @@ sources:
   worldpop_vnm_2025: {target_table: raster_coverage, parser_version: v1, status: ready}
   geofabrik_vietnam_snapshot: {target_table: osm_feature_raw, parser_version: v1, status: ready}
   cop_dem_glo30_2024_1: {target_table: raster_coverage, parser_version: v1, status: ready}
-  soilgrids_2_0: {target_table: raster_coverage, parser_version: v1, status: ready}
+  soilgrids_2_0: {target_table: raster_coverage, parser_version: v1, batch_size: 16, status: ready}
   esa_worldcover_2021_v200: {target_table: raster_coverage, parser_version: v1, status: ready}
 rules:
   raw_object_available: {severity: fatal, description: "Raw object is available in source_objects and MinIO"}

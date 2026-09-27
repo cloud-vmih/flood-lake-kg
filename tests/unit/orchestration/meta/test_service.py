@@ -61,6 +61,28 @@ def test_lineage_has_one_input_kind_and_stable_identity() -> None:
         )
 
 
+def test_lineages_are_written_in_one_meta_batch() -> None:
+    store = _Store()
+    recorder = MetaRecorder(store)
+
+    edge_ids = recorder.record_lineages([
+        {
+            "pipeline_run_id": "parse-batch",
+            "input_object_id": object_id,
+            "output_table": "bronze.raster_coverage",
+            "output_snapshot_id": 11,
+            "transform_role": "source",
+            "mapping_version": "v1",
+            "created_at": NOW,
+        }
+        for object_id in ("raw-1", "raw-2")
+    ])
+
+    assert len(edge_ids) == 2
+    assert len({edge_id for edge_id in edge_ids}) == 2
+    assert len([key for key in store.rows if key[0] == "lineage_edges"]) == 2
+
+
 def test_registry_seed_conflict_fails_closed() -> None:
     recorder = MetaRecorder(_Store())
     source = {

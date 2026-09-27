@@ -119,6 +119,35 @@ dataset/lakehouse/airflow/logs/
 dataset/lakehouse/staging/
 ```
 
+### Xóa lakehouse local và chạy lại từ đầu
+
+Lệnh dưới đây xóa toàn bộ MinIO Raw/Warehouse, catalog Polaris, database và lịch sử Airflow
+trong lakehouse local. Các file nguồn ở `dataset/raw/`, catalog file local ở `dataset/catalog/`
+và AOI ở `dataset/harmonized/aoi/` được giữ lại để Landing có thể đăng ký và publish lại.
+
+> Không chạy khi cần giữ snapshot Iceberg, object MinIO hoặc lịch sử DAG hiện tại.
+
+```bash
+make lakehouse-down
+
+set -a
+. ./.env
+set +a
+lakehouse_state_root="${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}"
+case "$lakehouse_state_root" in
+  ""|/|.|..) echo "Refusing unsafe LAKEHOUSE_DATA_ROOT: $lakehouse_state_root"; exit 1 ;;
+esac
+rm -rf -- "$lakehouse_state_root"
+
+make lakehouse-up
+make lakehouse-aoi
+```
+
+Sau đó trigger `static_source_landing`. Chỉ trigger `static_source_to_bronze` sau khi Landing
+hoàn tất thành công. Vì cả PostgreSQL và MinIO đã bị xóa, lần chạy này tạo lại toàn bộ bảng Meta,
+object Raw và bảng Bronze. `docker compose down -v` không đủ vì state của project dùng bind mount
+trên host thay vì Docker named volume.
+
 Có thể đặt `LAKEHOUSE_DATA_ROOT=/duong/dan/tuyet/doi` trong `.env` để chuyển state sang ổ Linux
 khác. Không commit `.env`.
 
@@ -277,7 +306,9 @@ Sau khi sửa nguyên nhân, trigger lại DAG; không xóa bucket Raw hoặc b�
 ## Bước 3 — DAG `static_source_to_bronze`
 
 DAG Bronze đọc `meta.source_objects`, tải object từ MinIO, parse định dạng nguồn, chạy quality
-gate và ghi Iceberg theo từng `object_id`:
+gate và ghi Iceberg theo từng `object_id`. Hai nguồn có nhiều object nhỏ được commit theo batch:
+`sonla_admin_2025` dùng 25 object/task và `soilgrids_2_0` dùng 16 object/task. Mỗi object
+vẫn giữ quality và lineage riêng; một batch chỉ tạo một snapshot Bronze:
 
 | Bảng Bronze | Nguồn |
 | --- | --- |
@@ -305,6 +336,8 @@ skip khi đồng thời có:
 
 Object mới từ Landing được parse và thêm slice mới. Object cũ hợp lệ không tạo parse task. Bật
 `force_reprocess` sẽ xử lý lại object và replace đúng slice của object đó, không append trùng.
+Danh sách còn thiếu được chia theo `batch_size` trong `config/bronze/static.yaml`; các source
+khác mặc định một object/task.
 
 ### Chạy Bronze DAG
 

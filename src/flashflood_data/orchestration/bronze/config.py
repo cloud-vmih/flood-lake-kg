@@ -8,7 +8,7 @@ import yaml
 
 @dataclass(frozen=True)
 class BronzeConfig:
-    sources: dict[str, dict[str, str]]
+    sources: dict[str, dict[str, object]]
     contract_version: str = "v1"
     rules: dict[str, dict[str, str]] | None = None
 
@@ -46,7 +46,14 @@ class BronzeConfig:
         return self.sources[source_id]["parser_version"]
 
     def target_table(self, source_id: str) -> str:
-        return self.sources[source_id].get("target_table", "")
+        return str(self.sources[source_id].get("target_table", ""))
+
+    def batch_size(self, source_id: str) -> int:
+        """Return the number of raw objects handled by one mapped task."""
+        value = self.sources[source_id].get("batch_size", 1)
+        if type(value) is not int or value < 1:
+            raise ValueError(f"invalid Bronze batch size for {source_id}")
+        return value
 
 
 def load_bronze_config(path: Path) -> BronzeConfig:
@@ -58,6 +65,8 @@ def load_bronze_config(path: Path) -> BronzeConfig:
         or details.get("status") not in {"ready", "benchmark_required"}
         or not isinstance(details.get("parser_version"), str)
         or not details["parser_version"]
+        or type(details.get("batch_size", 1)) is not int
+        or details.get("batch_size", 1) < 1
         for source_id, details in sources.items()
     ):
         raise ValueError("invalid static Bronze parser policy")
