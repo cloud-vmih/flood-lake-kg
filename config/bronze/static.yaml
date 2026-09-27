@@ -2,9 +2,9 @@ contract_version: v1
 sources:
   sonla_admin_2025: {target_table: admin_boundary_raw, parser_version: v1, batch_size: 25, status: ready}
   gadm_vnm_4_1: {target_table: admin_boundary_raw, parser_version: v1, status: ready}
-  hydrobasins_v1c: {target_table: basin_polygon_raw, parser_version: v1, status: ready}
-  basinatlas_v10: {target_table: basin_polygon_raw, parser_version: v1, status: ready}
-  hydrorivers_v10: {target_table: river_reach_raw, parser_version: v1, status: ready}
+  hydrobasins_v1c: {target_table: basin_polygon_raw, parser_version: v2-vietnam-l12-h1, status: ready}
+  basinatlas_v10: {target_table: basin_polygon_raw, parser_version: v2-vietnam-l12-h1, status: ready}
+  hydrorivers_v10: {target_table: river_reach_raw, parser_version: v2-vietnam-l12-h1, status: ready}
   worldpop_vnm_2025: {target_table: raster_coverage, parser_version: v1, status: ready}
   geofabrik_vietnam_snapshot: {target_table: osm_feature_raw, parser_version: v1, status: ready}
   cop_dem_glo30_2024_1: {target_table: raster_coverage, parser_version: v1, status: ready}

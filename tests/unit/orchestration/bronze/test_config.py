@@ -10,7 +10,9 @@ ROOT = Path(__file__).parents[4]
 def test_static_bronze_policy_pins_parser_versions_and_enables_osm() -> None:
     config = load_bronze_config(ROOT / "config" / "bronze" / "static.yaml")
     assert config.contract_version == "v1"
-    assert config.parser_version("hydrobasins_v1c") == "v1"
+    assert config.parser_version("hydrobasins_v1c") == "v2-vietnam-l12-h1"
+    assert config.parser_version("basinatlas_v10") == "v2-vietnam-l12-h1"
+    assert config.parser_version("hydrorivers_v10") == "v2-vietnam-l12-h1"
     assert config.target_table("hydrobasins_v1c") == "basin_polygon_raw"
     assert config.parser_version("soilgrids_2_0") == "v1"
     assert config.target_table("soilgrids_2_0") == "raster_coverage"

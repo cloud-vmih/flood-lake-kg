@@ -14,6 +14,8 @@ import pyogrio
 import rasterio
 from rasterio.warp import transform_bounds
 
+from flashflood_data.static.sources.hydro_fields import BASINATLAS_RAW_FIELDS
+
 _VECTOR_SOURCES = {
     "hydrobasins_v1c": ("basin_polygon_raw", "HYBAS_ID"),
     "basinatlas_v10": ("basin_polygon_raw", "HYBAS_ID"),
@@ -28,14 +30,6 @@ _RASTER_PROPERTIES = {
 }
 _SOIL_PROPERTIES = ("clay", "sand", "silt", "bdod", "cfvo", "soc", "wv0033", "wv1500")
 _BOUND_EDGE_TOLERANCE_DEGREES = 1e-3
-_BASINATLAS_FIELDS = (
-    "HYBAS_ID", "NEXT_DOWN", "NEXT_SINK", "MAIN_BAS", "DIST_SINK", "DIST_MAIN",
-    "SUB_AREA", "UP_AREA", "PFAF_ID", "SORT", "ele_mt_sav", "ele_mt_smn", "ele_mt_smx",
-    "slp_dg_sav", "sgr_dk_sav", "lka_pc_sse", "dor_pc_pva", "rev_mc_usu",
-    "for_pc_sse", "crp_pc_sse", "glc_pc_s22", "wet_pc_sg1", "wet_pc_sg2",
-    "inu_pc_slt", "gwt_cm_sav", "run_mm_syr", "dis_m3_pyr", "dis_m3_pmx",
-    "pop_ct_ssu", "ppd_pk_sav",
-)
 
 
 def _native(value: object) -> object:
@@ -162,7 +156,7 @@ def iter_vector_batches(
         selected_columns = None
         if source_id == "basinatlas_v10":
             available = set(pyogrio.read_info(layer_path)["fields"])
-            selected_columns = [name for name in _BASINATLAS_FIELDS if name in available]
+            selected_columns = [name for name in BASINATLAS_RAW_FIELDS if name in available]
         with pyogrio.open_arrow(
             layer_path, use_pyarrow=True, batch_size=batch_size, columns=selected_columns
         ) as (_, reader):

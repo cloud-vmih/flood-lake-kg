@@ -19,6 +19,7 @@ from flashflood_data.orchestration.bronze.parsers import (
     parse_raster,
     parse_vector,
 )
+from flashflood_data.static.sources.hydro_fields import BASINATLAS_RAW_FIELDS
 
 
 def _zip_shapefile(tmp_path: Path, geometry: object, *, field: str, value: int) -> Path:
@@ -65,6 +66,7 @@ def test_basinatlas_reads_only_curated_source_fields(tmp_path: Path) -> None:
     assert fields["HYBAS_ID"] == 42
     assert fields["NEXT_DOWN"] == 7
     assert "UNUSED" not in fields
+    assert set(fields) <= set(BASINATLAS_RAW_FIELDS)
 
 
 def test_vector_parser_yields_bounded_batches_without_losing_records(
