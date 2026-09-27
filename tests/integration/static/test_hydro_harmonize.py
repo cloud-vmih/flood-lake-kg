@@ -34,7 +34,13 @@ def test_harmonize_hydro_writes_deterministic_scope_and_hydro_products(
     basin_atlas.to_file(atlas_path, driver="GeoJSON")
     rivers.to_file(rivers_path, driver="GeoJSON")
     core = box(103.01, 20.01, 103.09, 20.09)
-    areas = build_study_areas(core, l10.iloc[:2], box(103.0, 20.0, 103.15, 20.15), StudyAreaConfig())
+    areas = build_study_areas(
+        core,
+        l10.iloc[:2],
+        box(103.0, 20.0, 103.15, 20.15),
+        l10,
+        StudyAreaConfig(),
+    )
 
     outputs = harmonize_hydro(
         project_paths,
@@ -53,6 +59,7 @@ def test_harmonize_hydro_writes_deterministic_scope_and_hydro_products(
         "hydrological_aoi.geoparquet",
         "environmental_aoi.geoparquet",
         "exposure_aoi.geoparquet",
+        "vietnam_hydrological_aoi.geoparquet",
         "subbasin_l10.geoparquet",
         "subbasin_hierarchy.parquet",
         "basinatlas_l10.geoparquet",
@@ -178,7 +185,7 @@ def test_three_hydro_source_specs_build_one_checksum_stable_composite(
     }
     second = pipeline.run([Stage.HARMONIZE])
 
-    assert first.harmonized == 7
+    assert first.harmonized == 8
     assert second.harmonized == 0
     assert before == {
         path.relative_to(project_paths.dataset).as_posix(): sha256_file(path)
@@ -204,5 +211,5 @@ def test_three_hydro_source_specs_build_one_checksum_stable_composite(
     changed = pipeline.run([Stage.HARMONIZE])
     steady = pipeline.run([Stage.HARMONIZE])
 
-    assert changed.harmonized == 7
+    assert changed.harmonized == 8
     assert steady.harmonized == 0

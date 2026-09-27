@@ -36,8 +36,10 @@ def test_lakehouse_aoi_reads_l12_without_l10(project_paths: ProjectPaths) -> Non
 
     assert summary.status == "completed"
     assert summary.metrics["selected_l12"] == 2
+    assert summary.metrics["selected_vietnam_l12"] == 3
     assert (aoi_dir / "environmental_aoi.geoparquet").is_file()
     assert (aoi_dir / "hydrological_aoi.geoparquet").is_file()
+    assert (aoi_dir / "vietnam_hydrological_aoi.geoparquet").is_file()
 
 
 def test_make_has_only_l12_aoi_target() -> None:

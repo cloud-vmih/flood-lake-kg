@@ -211,14 +211,24 @@ class StaticPipeline:
         selected = select_basins_with_upstream(
             basins, core, hops=self.study_area.upstream_hops
         )
-        areas = build_study_areas(core, selected, vietnam, self.study_area)
+        vietnam_selected = select_basins_with_upstream(
+            basins, vietnam, hops=self.study_area.upstream_hops
+        )
+        areas = build_study_areas(
+            core, selected, vietnam, vietnam_selected, self.study_area
+        )
         write_study_areas(
             areas,
             self.paths.harmonized / "aoi",
             self.study_area.storage_crs,
             include_core=False,
         )
-        summary.metrics.update({f"selected_l{level}": len(selected)})
+        summary.metrics.update(
+            {
+                f"selected_l{level}": len(selected),
+                f"selected_vietnam_l{level}": len(vietnam_selected),
+            }
+        )
         self._run_handler(Stage.AOI, "aoi", context, summary)
 
     def _run_bootstrap(
@@ -510,6 +520,9 @@ class StaticPipeline:
         inputs = default_hydro_inputs(self.paths)
         l10 = gpd.read_file(inputs.l10)
         selected = select_l10_with_upstream(l10, core, hops=self.study_area.upstream_hops)
+        vietnam_selected = select_l10_with_upstream(
+            l10, vietnam, hops=self.study_area.upstream_hops
+        )
         intersecting = int(l10.geometry.intersects(core).sum())
         self._latest_hydro_metrics = {
             "intersecting_l10": intersecting,
@@ -518,7 +531,9 @@ class StaticPipeline:
         }
         outputs = harmonize_hydro(
             self.paths,
-            build_study_areas(core, selected, vietnam, self.study_area),
+            build_study_areas(
+                core, selected, vietnam, vietnam_selected, self.study_area
+            ),
             inputs=inputs,
             hops=self.study_area.upstream_hops,
         )

@@ -223,7 +223,12 @@ def test_validated_inventory_bundle_is_reused_when_every_member_matches(
 class BootstrapAoiAdapter(FixtureAdapter):
     def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
         if self.spec.source_id == "downstream":
-            for name in ("hydrological_aoi", "environmental_aoi", "exposure_aoi"):
+            for name in (
+                "hydrological_aoi",
+                "environmental_aoi",
+                "exposure_aoi",
+                "vietnam_hydrological_aoi",
+            ):
                 assert (context.paths.harmonized / "aoi" / f"{name}.geoparquet").is_file()
             return []
         return super().resolve(context, available)
@@ -279,7 +284,13 @@ def test_bootstrap_then_aoi_writes_downstream_aoi_inputs(project_paths: Path) ->
 
     assert summary.status == "completed"
     assert summary.metrics["selected_l12"] == 2
-    for name in ("hydrological_aoi", "environmental_aoi", "exposure_aoi"):
+    assert summary.metrics["selected_vietnam_l12"] == 3
+    for name in (
+        "hydrological_aoi",
+        "environmental_aoi",
+        "exposure_aoi",
+        "vietnam_hydrological_aoi",
+    ):
         assert (project_paths.harmonized / "aoi" / f"{name}.geoparquet").is_file()
 
 

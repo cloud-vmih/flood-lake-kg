@@ -21,6 +21,7 @@ class StudyAreas:
     environmental: BaseGeometry
     exposure: BaseGeometry
     vietnam: BaseGeometry
+    vietnam_hydrological: BaseGeometry
 
 
 def _project_geometry(geometry: BaseGeometry, source_crs: str, target_crs: str) -> BaseGeometry:
@@ -31,19 +32,26 @@ def build_study_areas(
     core: BaseGeometry,
     selected_basins: gpd.GeoDataFrame,
     vietnam: BaseGeometry,
+    vietnam_selected_basins: gpd.GeoDataFrame,
     config: StudyAreaConfig,
 ) -> StudyAreas:
-    """Build the four approved AOIs with all metric buffering done in processing CRS."""
+    """Build Son La AOIs and the national hydrological AOI in the storage CRS."""
     if selected_basins.empty:
         raise ValueError("cannot construct study areas from an empty basin selection")
+    if vietnam_selected_basins.empty:
+        raise ValueError("cannot construct national hydrological AOI from an empty selection")
     if selected_basins.crs is None:
         raise ValueError("selected basins must have a CRS")
+    if vietnam_selected_basins.crs is None:
+        raise ValueError("nationally selected basins must have a CRS")
 
     source_crs = selected_basins.crs.to_string()
     core_metric = _project_geometry(core, source_crs, config.processing_crs)
     vietnam_metric = _project_geometry(vietnam, source_crs, config.processing_crs)
     selected_metric = selected_basins.to_crs(config.processing_crs)
+    vietnam_selected_metric = vietnam_selected_basins.to_crs(config.processing_crs)
     hydrological_metric = selected_metric.geometry.union_all()
+    vietnam_hydrological_metric = vietnam_selected_metric.geometry.union_all()
     environmental_metric = hydrological_metric.buffer(config.raster_buffer_km * 1_000)
     exposure_metric = core_metric.buffer(config.exposure_buffer_km * 1_000).intersection(vietnam_metric)
 
@@ -53,6 +61,9 @@ def build_study_areas(
         environmental=_project_geometry(environmental_metric, config.processing_crs, config.storage_crs),
         exposure=_project_geometry(exposure_metric, config.processing_crs, config.storage_crs),
         vietnam=_project_geometry(vietnam_metric, config.processing_crs, config.storage_crs),
+        vietnam_hydrological=_project_geometry(
+            vietnam_hydrological_metric, config.processing_crs, config.storage_crs
+        ),
     )
 
 
@@ -69,6 +80,7 @@ def write_study_areas(
         "hydrological_aoi": areas.hydrological,
         "environmental_aoi": areas.environmental,
         "exposure_aoi": areas.exposure,
+        "vietnam_hydrological_aoi": areas.vietnam_hydrological,
     }
     paths: list[Path] = []
     for name, geometry in layers.items():
