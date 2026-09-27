@@ -3,12 +3,12 @@
 import pyarrow as pa
 
 from flashflood_data.storage.iceberg import source_objects_arrow_schema
-from flashflood_data.storage.iceberg_schemas import table_schema
+from flashflood_data.storage.iceberg_schemas import BRONZE_KEYS, table_schema
 
 META_TABLES = (
     "source_registry", "source_objects", "ingest_attempts", "pipeline_runs",
     "table_snapshot_ref", "parameter_sets", "dataset_registry", "quality_results",
-    "lineage_edges", "ingest_watermarks",
+    "lineage_edges", "ingest_watermarks", "object_lifecycle",
 )
 STATIC_BRONZE_TABLES = (
     "basin_polygon_raw", "river_reach_raw", "osm_feature_raw",
@@ -23,7 +23,11 @@ def test_meta_contract_has_every_target_table_and_preserves_source_objects() -> 
     assert table_schema(("meta", "lineage_edges")).field("output_snapshot_id").type == pa.int64()
     watermark = table_schema(("meta", "ingest_watermarks"))
     assert watermark.field("cursor_time").type == pa.timestamp("us", tz="UTC")
+    assert watermark.field("spatial_scope_id").nullable is False
     assert watermark.field("detail_json").nullable is False
+    lifecycle = table_schema(("meta", "object_lifecycle"))
+    assert lifecycle.field("object_id").nullable is False
+    assert lifecycle.field("bronze_snapshot_id").type == pa.int64()
 
 
 def test_static_bronze_contract_has_raw_geometry_and_raster_fields() -> None:
@@ -37,6 +41,33 @@ def test_static_bronze_contract_has_raw_geometry_and_raster_fields() -> None:
     raster = table_schema(("bronze", "raster_coverage"))
     assert raster.field("resolution_x").type == pa.float64()
     assert raster.field("object_uri").nullable is False
+
+
+def test_weather_slice_uses_parallel_arrays_and_full_business_key() -> None:
+    schema = table_schema(("bronze", "weather_raster_slice"))
+
+    assert schema.field("cell_indices").type == pa.list_(pa.int64())
+    assert schema.field("values").type == pa.list_(pa.float32())
+    assert "weather_grid_value" not in BRONZE_KEYS
+    assert BRONZE_KEYS["weather_raster_slice"] == (
+        "source_grid_version",
+        "spatial_scope_id",
+        "variable",
+        "vertical_level",
+        "source_cycle_id",
+        "valid_time",
+        "window_start",
+        "window_end",
+        "source_revision",
+    )
+
+
+def test_source_grid_preserves_stable_cell_identity_and_scope_membership() -> None:
+    schema = table_schema(("silver", "source_grid"))
+
+    assert schema.field("cell_index").type == pa.int64()
+    assert schema.field("scope_ids").type == pa.list_(pa.string())
+    assert schema.field("geometry_wkb").nullable is False
 
 
 def test_unknown_table_is_rejected() -> None:

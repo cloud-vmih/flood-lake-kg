@@ -13,18 +13,23 @@ class _MetaStore(Protocol):
 class IngestWatermarkStore:
     """Read and atomically replace one cursor identified by source/product/stream."""
 
-    KEY_FIELDS = ("source_id", "product", "stream_id")
+    KEY_FIELDS = ("source_id", "product", "stream_id", "spatial_scope_id")
 
     def __init__(self, store: _MetaStore, namespace: str = "meta") -> None:
         self.store = store
         self.identifier = (namespace, "ingest_watermarks")
 
     def load(
-        self, source_id: str, product: str, stream_id: str
+        self, source_id: str, product: str, stream_id: str, spatial_scope_id: str
     ) -> IngestWatermark | None:
         row = self.store.get_meta_row(
             self.identifier,
-            {"source_id": source_id, "product": product, "stream_id": stream_id},
+            {
+                "source_id": source_id,
+                "product": product,
+                "stream_id": stream_id,
+                "spatial_scope_id": spatial_scope_id,
+            },
         )
         return None if row is None else IngestWatermark.model_validate(row)
 
@@ -34,4 +39,3 @@ class IngestWatermarkStore:
             self.KEY_FIELDS,
             watermark.model_dump(mode="python"),
         )
-

@@ -197,13 +197,27 @@ class IcebergTableStore:
         """Upsert many Meta keys in one Iceberg commit."""
         if (identifier[0] != "meta" and not identifier[0].startswith("smoke_")) or identifier[1] == "source_objects":
             raise ValueError("Meta upsert cannot replace source_objects")
+        return self.upsert_keyed_rows(identifier, key_fields, rows)
+
+    def upsert_keyed_rows(
+        self,
+        identifier: tuple[str, str],
+        key_fields: tuple[str, ...],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Upsert unique keys in a mutable Meta or Silver dimension table."""
+        if (
+            identifier[0] not in {"meta", "silver"}
+            and not identifier[0].startswith("smoke_")
+        ) or identifier == ("meta", "source_objects"):
+            raise ValueError("keyed upsert requires a mutable Meta or Silver table")
         requested = [dict(row) for row in rows]
         if not requested:
-            raise ValueError("Meta upsert batch cannot be empty")
+            raise ValueError("keyed upsert batch cannot be empty")
         keys = [{name: row[name] for name in key_fields} for row in requested]
         key_values = [tuple(key.values()) for key in keys]
         if len(set(key_values)) != len(key_values):
-            raise ValueError(f"duplicate requested Meta key in {identifier[1]}")
+            raise ValueError(f"duplicate requested key in {identifier[1]}")
         schema = table_schema(identifier)
         payload = pa.Table.from_pylist(requested, schema=schema)
         payload_rows = payload.to_pylist()
@@ -215,7 +229,7 @@ class IcebergTableStore:
             existing = table.scan(row_filter=expression).to_arrow().to_pylist()
             existing_keys = [tuple(row[name] for name in key_fields) for row in existing]
             if len(set(existing_keys)) != len(existing_keys):
-                raise ValueError(f"duplicate existing Meta key in {identifier[1]}")
+                raise ValueError(f"duplicate existing key in {identifier[1]}")
             existing_by_key = {
                 tuple(row[name] for name in key_fields): row for row in existing
             }
@@ -241,5 +255,5 @@ class IcebergTableStore:
                 continue
             return _snapshot_id(table)
         raise CommitFailedException(
-            f"Meta upsert conflict after 3 attempts: {identifier[1]}"
+            f"keyed upsert conflict after 3 attempts: {identifier[1]}"
         ) from last_error

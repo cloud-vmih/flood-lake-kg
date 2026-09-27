@@ -149,7 +149,10 @@ class WeatherRuntime:
             stream.stream_id: (
                 None
                 if (watermark := self.watermarks.load(
-                    self.config.source_id, stream.product, stream.stream_id
+                    self.config.source_id,
+                    stream.product,
+                    stream.stream_id,
+                    self.config.spatial_scope_name,
                 )) is None
                 else watermark.model_dump(mode="json")
             )
@@ -322,6 +325,7 @@ class WeatherRuntime:
                     source_id=self.config.source_id,
                     product=str(document["product"]),
                     stream_id=str(document["stream_id"]),
+                    spatial_scope_id=self.config.spatial_scope_name,
                     cursor_time=cursor,
                     last_safe_end=_datetime(document["safe_end"]),
                     last_run_id=run_id,

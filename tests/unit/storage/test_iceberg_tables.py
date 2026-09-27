@@ -98,7 +98,7 @@ class _Catalog:
         self.tables: dict[tuple[str, str], _Table] = {}
 
     def create_namespace_if_not_exists(self, namespace: tuple[str]) -> None:
-        assert namespace[0] in {"meta", "bronze"}
+        assert namespace[0] in {"meta", "bronze", "silver"}
 
     def create_table_if_not_exists(
         self, identifier: tuple[str, str], *, schema: pa.Schema, properties: dict[str, str]
@@ -235,6 +235,38 @@ def test_meta_new_keys_use_one_append_without_planning_an_overwrite() -> None:
     table = catalog.tables[identifier]
     assert table.appends == 1
     assert table.overwrites == 0
+
+
+def test_keyed_silver_upsert_merges_grid_scope_without_duplicate_cells() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("silver", "source_grid")
+    base = {
+        "source_id": "gsmap",
+        "source_grid_version": "v1",
+        "source_grid_id": "row=1110,col=2830",
+        "cell_index": 11102830,
+        "row_index": 1110,
+        "column_index": 2830,
+        "geometry_wkb": b"polygon",
+        "bbox_wgs84": [103.0, 21.0, 103.1, 21.1],
+        "centroid_lon": 103.05,
+        "centroid_lat": 21.05,
+        "resolution_x": 0.1,
+        "resolution_y": 0.1,
+        "crs": "EPSG:4326",
+        "scope_ids": ["vietnam-l12-h1"],
+    }
+    keys = ("source_id", "source_grid_version", "source_grid_id")
+
+    store.upsert_keyed_rows(identifier, keys, [base])
+    store.upsert_keyed_rows(
+        identifier, keys, [{**base, "scope_ids": ["sonla-l12-h1", "vietnam-l12-h1"]}]
+    )
+
+    table = catalog.tables[identifier]
+    assert len(table.rows) == 1
+    assert table.rows[0]["scope_ids"] == ["sonla-l12-h1", "vietnam-l12-h1"]
 
 
 def test_meta_upsert_refreshes_and_retries_optimistic_commit_conflict() -> None:

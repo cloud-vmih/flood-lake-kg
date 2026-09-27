@@ -9,6 +9,9 @@ from pydantic import Field, field_validator, model_validator
 from flashflood_data.catalog.models import ImmutableModel
 
 RetentionClass = Literal["durable", "transient_7d"]
+StorageStatus = Literal[
+    "available", "eligible_for_expiry", "expired", "delete_failed"
+]
 
 
 class WeatherWindow(ImmutableModel):
@@ -155,6 +158,7 @@ class IngestWatermark(ImmutableModel):
     source_id: str
     product: str
     stream_id: str
+    spatial_scope_id: str
     cursor_time: datetime
     last_safe_end: datetime
     last_run_id: str
@@ -162,9 +166,106 @@ class IngestWatermark(ImmutableModel):
     updated_at: datetime
     detail_json: str = "{}"
 
+    @field_validator("spatial_scope_id")
+    @classmethod
+    def spatial_scope_must_not_be_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("watermark spatial_scope_id cannot be empty")
+        return value
+
     @field_validator("cursor_time", "last_safe_end", "updated_at")
     @classmethod
     def timestamps_must_be_utc(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
             raise ValueError("watermark timestamps must be timezone-aware UTC")
         return value
+
+
+class ObjectLifecycleRow(ImmutableModel):
+    """Current storage state for an immutable Raw provenance object."""
+
+    object_id: str
+    retention_class: RetentionClass
+    storage_status: StorageStatus
+    expires_at: datetime | None = None
+    bronze_snapshot_id: int | None = Field(default=None, ge=0)
+    quality_status: str
+    lineage_edge_id: str | None = None
+    deleted_at: datetime | None = None
+    last_checked_at: datetime
+    reason: str | None = None
+
+    @field_validator("expires_at", "deleted_at", "last_checked_at")
+    @classmethod
+    def lifecycle_timestamps_must_be_utc(
+        cls, value: datetime | None
+    ) -> datetime | None:
+        if value is not None and (
+            value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value)
+        ):
+            raise ValueError("lifecycle timestamps must be timezone-aware UTC")
+        return value
+
+    @model_validator(mode="after")
+    def validate_expiry_policy(self) -> "ObjectLifecycleRow":
+        if self.retention_class == "transient_7d" and self.expires_at is None:
+            raise ValueError("transient lifecycle requires expires_at")
+        if self.retention_class == "durable" and self.expires_at is not None:
+            raise ValueError("durable lifecycle cannot expire")
+        return self
+
+
+class WeatherRasterSlice(ImmutableModel):
+    """One weather field and validity window stored as parallel cell arrays."""
+
+    slice_id: str
+    object_id: str
+    source_id: str
+    source_product: str
+    source_grid_version: str
+    spatial_scope_id: str
+    variable: str
+    vertical_level: str
+    source_cycle_id: str
+    model_run_time: datetime | None = None
+    valid_time: datetime
+    window_start: datetime
+    window_end: datetime
+    source_revision: int = Field(ge=0)
+    cell_indices: tuple[int, ...]
+    values: tuple[float, ...]
+    unit: str
+    value_kind: str
+    available_at: datetime | None = None
+    ingest_run_id: str
+    parser_version: str
+    quality_status: Literal["passed", "warning", "failed"]
+
+    @field_validator(
+        "model_run_time", "valid_time", "window_start", "window_end", "available_at"
+    )
+    @classmethod
+    def slice_timestamps_must_be_utc(
+        cls, value: datetime | None
+    ) -> datetime | None:
+        if value is not None and (
+            value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value)
+        ):
+            raise ValueError("weather slice timestamps must be timezone-aware UTC")
+        return value
+
+    @model_validator(mode="after")
+    def validate_parallel_arrays_and_window(self) -> "WeatherRasterSlice":
+        if len(self.cell_indices) != len(self.values):
+            raise ValueError("cell_indices and values must have the same length")
+        if not self.cell_indices:
+            raise ValueError("weather raster slice cannot be empty")
+        if any(index < 0 for index in self.cell_indices):
+            raise ValueError("cell_indices cannot be negative")
+        if tuple(sorted(set(self.cell_indices))) != self.cell_indices:
+            raise ValueError("cell_indices must be sorted and unique")
+        if self.window_end <= self.window_start:
+            raise ValueError("weather slice window_end must be after window_start")
+        if not self.window_start <= self.valid_time <= self.window_end:
+            raise ValueError("valid_time must fall within the weather slice window")
+        return self
