@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from shapely.geometry import box
 
+from flashflood_data.static.spatial import raster as raster_module
 from flashflood_data.static.spatial.raster import (
     RasterExpectation,
     inspect_raster,
@@ -53,3 +54,41 @@ def test_validate_raster_returns_failed_readability_for_truncated_tiff(tmp_path:
     assert result.passed is False
     assert result.checks["readable"] is False
     assert result.messages
+
+
+def test_validate_raster_never_reads_a_full_band(
+    raster_fixtures: dict[str, Path], monkeypatch
+) -> None:
+    original_open = raster_module.rasterio.open
+
+    class WindowOnlyDataset:
+        def __init__(self, path):
+            self.dataset = original_open(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.dataset.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.dataset, name)
+
+        def read(self, *args, **kwargs):
+            assert kwargs.get("window") is not None
+            return self.dataset.read(*args, **kwargs)
+
+        def read_masks(self, *args, **kwargs):
+            assert kwargs.get("window") is not None
+            return self.dataset.read_masks(*args, **kwargs)
+
+    monkeypatch.setattr(
+        raster_module.rasterio, "open", lambda path: WindowOnlyDataset(path)
+    )
+    expectation = RasterExpectation(
+        ("uint8",), "EPSG:4326", (0.5, 1.5), box(0, 0, 4, 4)
+    )
+
+    result = validate_raster(raster_fixtures["partial"], expectation)
+
+    assert result.passed is True

@@ -111,17 +111,18 @@ def _failed_validation(message: str, *, exists: bool, non_empty: bool) -> Valida
 
 
 def _nodata_semantics(dataset: rasterio.io.DatasetReader) -> bool:
-    """Ensure every band can expose a valid-data mask consistent with its values."""
-    for band in range(1, dataset.count + 1):
-        values = dataset.read(band)
-        valid = dataset.read_masks(band) > 0
-        if dataset.nodata is None:
-            continue
-        if np.isnan(dataset.nodata):
-            if np.any(valid & np.isnan(values)):
+    """Read every pixel in bounded windows and validate its data mask."""
+    for window in _windows(dataset.width, dataset.height):
+        for band in range(1, dataset.count + 1):
+            values = dataset.read(band, window=window)
+            if dataset.nodata is None:
+                continue
+            valid = dataset.read_masks(band, window=window) > 0
+            if np.isnan(dataset.nodata):
+                if np.any(valid & np.isnan(values)):
+                    return False
+            elif np.any(valid & (values == dataset.nodata)):
                 return False
-        elif np.any(valid & (values == dataset.nodata)):
-            return False
     return True
 
 
@@ -134,8 +135,6 @@ def validate_raster(path: Path, expected: RasterExpectation) -> ValidationResult
 
     try:
         with rasterio.open(path) as dataset:
-            for band in range(1, dataset.count + 1):
-                dataset.read(band)
             pixel_sizes = (abs(dataset.transform.a), abs(dataset.transform.e))
             checks = {
                 "exists": True,
