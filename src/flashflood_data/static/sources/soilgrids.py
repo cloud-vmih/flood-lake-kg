@@ -297,6 +297,28 @@ class SoilGridsAdapter(SourceAdapter):
                 }
             )
 
+        raw_root = context.paths.raw.resolve()
+        expected_path = (context.paths.dataset / requested.target_relative_path).resolve()
+        local_candidates: list[tuple[float, Path]] = []
+        if expected_path.parent.is_relative_to(raw_root):
+            for path in expected_path.parent.glob(f"{expected_path.stem}*.tif"):
+                if path.name != expected_path.name and not path.name.startswith(
+                    f"{expected_path.stem}--"
+                ):
+                    continue
+                area = _covering_area(path, bounds, output_crs)
+                if area is not None:
+                    local_candidates.append((area, path.resolve()))
+        if local_candidates:
+            _, path = min(local_candidates, key=lambda item: (item[0], item[1].name))
+            suffix = path.stem.removeprefix(expected_path.stem)
+            return requested.model_copy(
+                update={
+                    "asset_id": f"{requested.asset_id}{suffix}",
+                    "target_relative_path": path.relative_to(context.paths.dataset.resolve()),
+                }
+            )
+
         request_hash = sha256(requested.uri.encode("utf-8")).hexdigest()[:16]
         versioned = requested.model_copy(
             update={

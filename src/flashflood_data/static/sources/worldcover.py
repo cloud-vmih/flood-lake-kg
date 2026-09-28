@@ -147,6 +147,13 @@ class WorldCoverAdapter(SourceAdapter):
             raise ValueError(f"WorldCover HEAD has no safe Content-Length for {uri}")
         return size
 
+    def _known_size(self, context: SourceContext, relative: Path, uri: str) -> int:
+        """Use an operator-provided expected-path payload before probing upstream."""
+        local = (context.paths.dataset / relative).resolve()
+        if local.is_relative_to(context.paths.raw.resolve()) and local.is_file():
+            return local.stat().st_size
+        return self._head_size(uri)
+
     def _grid_asset(self, available: list[AssetRecord]) -> AssetRecord | None:
         candidates = [
             asset
@@ -164,16 +171,17 @@ class WorldCoverAdapter(SourceAdapter):
         grid = self._grid_asset(available)
         if grid is None:
             uri = self._setting("grid_url")
+            relative = Path("raw") / "worldcover" / self.spec.version / "grid.geojson"
             return [
                 RemoteAsset(
                     asset_id=f"worldcover-{self.spec.version}-grid",
                     source_id=self.spec.source_id,
                     source_version=self.spec.version,
                     uri=uri,
-                    target_relative_path=Path("raw") / "worldcover" / self.spec.version / "grid.geojson",
+                    target_relative_path=relative,
                     media_type="application/geo+json",
                     license_id=self.spec.license_id,
-                    expected_size=self._head_size(uri),
+                    expected_size=self._known_size(context, relative, uri),
                     source_valid_time=self.spec.version,
                 )
             ]
@@ -184,16 +192,25 @@ class WorldCoverAdapter(SourceAdapter):
         remotes: list[RemoteAsset] = []
         for tile in select_worldcover_tiles(grid_path, self._aoi(context, "environmental")):
             uri = template.format(tile=tile.tile_id)
-            tile = replace(tile, uri=uri, content_length=self._head_size(uri))
+            relative = (
+                Path("raw")
+                / "worldcover"
+                / self.spec.version
+                / "map"
+                / f"{tile.tile_id}_Map.tif"
+            )
+            tile = replace(
+                tile,
+                uri=uri,
+                content_length=self._known_size(context, relative, uri),
+            )
             remotes.append(
                 RemoteAsset(
                     asset_id=f"worldcover-{self.spec.version}-{tile.tile_id}",
                     source_id=self.spec.source_id,
                     source_version=self.spec.version,
                     uri=tile.uri,
-                    target_relative_path=(
-                        Path("raw") / "worldcover" / self.spec.version / "map" / f"{tile.tile_id}_Map.tif"
-                    ),
+                    target_relative_path=relative,
                     media_type="image/tiff",
                     license_id=self.spec.license_id,
                     expected_size=tile.content_length,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from configparser import ConfigParser
 from datetime import UTC, datetime
 from pathlib import Path
@@ -110,6 +111,34 @@ def test_resolve_downloads_sidecar_before_exposing_timestamped_pbf(tmp_path: Pat
     assert pbf[0].target_relative_path == Path("raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf")
     assert pbf[0].expected_size == 4096
     assert pbf[0].source_valid_time == "2026-08-20T03:04:05+00:00"
+
+
+def test_resolve_uses_complete_uncatalogued_local_snapshot_without_head(
+    tmp_path: Path,
+) -> None:
+    context, spec = _context(tmp_path), _spec()
+    root = context.paths.raw / "osm" / "geofabrik" / "20260820"
+    root.mkdir(parents=True)
+    pbf = root / "vietnam-20260820.osm.pbf"
+    pbf.write_bytes(b"fixture-pbf")
+    digest = hashlib.md5(pbf.read_bytes(), usedforsecurity=False).hexdigest()
+    sidecar = pbf.with_suffix(".pbf.md5")
+    sidecar.write_text(f"{digest}  vietnam-latest.osm.pbf\n", encoding="ascii")
+
+    def reject_network(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected network request: {request.url}")
+
+    adapter = GeofabrikOsmAdapter(
+        spec, client=httpx.Client(transport=httpx.MockTransport(reject_network))
+    )
+    sidecar_remote = adapter.resolve(context, [])
+    pbf_remote = adapter.resolve(context, [_sidecar_asset(sidecar, spec)])
+
+    assert sidecar_remote[0].expected_size == sidecar.stat().st_size
+    assert pbf_remote[0].expected_size == pbf.stat().st_size
+    assert pbf_remote[0].target_relative_path == Path(
+        "raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf"
+    )
 
 
 def test_validate_raw_accepts_md5_sidecar(tmp_path: Path) -> None:

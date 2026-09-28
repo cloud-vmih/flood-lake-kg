@@ -251,3 +251,35 @@ def test_resolve_reuses_covering_raw_and_versions_expanded_bbox(
         aoi_path, index=False
     )
     assert adapter.resolve(context, [*available, expanded_record])[0].asset_id == legacy.asset_id
+
+
+def test_resolve_reuses_uncatalogued_covering_raw(
+    adapter: SoilGridsAdapter, context: SourceContext, fixture_dir: Path
+) -> None:
+    settings = dict(adapter.spec.settings)
+    settings.update(properties=["wv0033"], depths=["0-5cm"], statistics=["mean"])
+    adapter = SoilGridsAdapter(adapter.spec.model_copy(update={"settings": settings}))
+    capabilities = context.paths.raw / "soilgrids" / "2.0" / "wv0033" / "capabilities.xml"
+    capabilities.parent.mkdir(parents=True)
+    capabilities.write_bytes((fixture_dir / "wv0033_capabilities.xml").read_bytes())
+    capability = _available(capabilities, "soilgrids-2-0-wv0033-capabilities")
+    raster = capabilities.parent / "0-5cm" / "mean.tif"
+    raster.parent.mkdir()
+    with rasterio.open(
+        raster,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="int16",
+        crs="EPSG:4326",
+        nodata=-32768,
+        transform=from_origin(104, 21, 0.1, 0.1),
+    ) as dataset:
+        dataset.write(np.ones((10, 10), dtype="int16"), 1)
+
+    remote = adapter.resolve(context, [capability])[0]
+
+    assert remote.asset_id == "soilgrids-2-0-wv0033-0-5cm-mean"
+    assert context.paths.dataset / remote.target_relative_path == raster

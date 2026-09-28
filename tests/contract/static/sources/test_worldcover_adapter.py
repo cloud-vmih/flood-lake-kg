@@ -108,6 +108,27 @@ def test_resolve_preserves_grid_before_selecting_tiles(context: SourceContext, s
     assert [request.method for request in seen] == ["HEAD"]
 
 
+def test_resolve_uses_uncatalogued_local_grid_without_head(
+    context: SourceContext, grid_fixture: Path, spec: SourceSpec
+) -> None:
+    grid_path = context.paths.raw / "worldcover" / "2021-v200" / "grid.geojson"
+    grid_path.parent.mkdir(parents=True)
+    grid_path.write_bytes(grid_fixture.read_bytes())
+
+    def reject_network(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected network request: {request.url}")
+
+    adapter = WorldCoverAdapter(
+        spec, client=httpx.Client(transport=httpx.MockTransport(reject_network))
+    )
+    remotes = adapter.resolve(context, [])
+
+    assert remotes[0].target_relative_path == Path(
+        "raw/worldcover/2021-v200/grid.geojson"
+    )
+    assert remotes[0].expected_size == grid_path.stat().st_size
+
+
 def test_resolve_heads_only_sorted_intersecting_tiles(
     context: SourceContext, grid_fixture: Path, spec: SourceSpec
 ) -> None:
@@ -133,6 +154,29 @@ def test_resolve_heads_only_sorted_intersecting_tiles(
         "https://worldcover.example.test/N21E102.tif",
     ]
     assert all(remote.expected_size == 2048 for remote in remotes)
+
+
+def test_resolve_uses_uncatalogued_local_tiles_without_head(
+    context: SourceContext, grid_fixture: Path, spec: SourceSpec
+) -> None:
+    root = context.paths.raw / "worldcover" / "2021-v200"
+    grid_path = root / "grid.geojson"
+    grid_path.parent.mkdir(parents=True)
+    grid_path.write_bytes(grid_fixture.read_bytes())
+    for tile_id in ("N18E102", "N21E102"):
+        path = root / "map" / f"{tile_id}_Map.tif"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(tile_id.encode("ascii"))
+
+    def reject_network(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected network request: {request.url}")
+
+    adapter = WorldCoverAdapter(
+        spec, client=httpx.Client(transport=httpx.MockTransport(reject_network))
+    )
+    remotes = adapter.resolve(context, [_grid_asset(grid_path, spec)])
+
+    assert [remote.expected_size for remote in remotes] == [7, 7]
 
 
 def test_select_worldcover_tiles_rejects_missing_tile_identifier(tmp_path: Path, environmental_aoi) -> None:

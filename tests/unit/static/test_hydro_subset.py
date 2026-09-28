@@ -84,6 +84,34 @@ def test_basinatlas_uses_hydrobasins_ids_and_allowlisted_fields(tmp_path: Path) 
     assert "unapproved" not in layer.columns
 
 
+def test_basinatlas_selects_authoritative_ids_despite_geometry_differences(
+    tmp_path: Path,
+) -> None:
+    values = {
+        field: [101, 102] if field == "HYBAS_ID" else [1, 2]
+        for field in BASINATLAS_RAW_FIELDS
+    }
+    source = tmp_path / "basinatlas.gpkg"
+    gpd.GeoDataFrame(
+        values,
+        geometry=[
+            box(103.0, 20.0, 103.1, 20.1),
+            box(102.0, 19.0, 102.1, 19.1),
+        ],
+        crs="EPSG:4326",
+    ).to_file(source, driver="GPKG")
+
+    result = build_hydro_subset(
+        "basinatlas_v10",
+        source,
+        _write_aoi(tmp_path),
+        tmp_path / "out",
+        selected_hybas_ids={101, 102},
+    )
+
+    assert set(gpd.read_file(result.path).HYBAS_ID) == {101, 102}
+
+
 def test_hydrorivers_selects_intersections_without_clipping(tmp_path: Path) -> None:
     source = tmp_path / "rivers.gpkg"
     crossing = LineString([(102.9, 20.05), (103.3, 20.05)])

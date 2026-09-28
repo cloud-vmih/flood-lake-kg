@@ -294,6 +294,7 @@ class GeofabrikOsmAdapter(SourceAdapter):
     def __init__(self, spec, *, client: httpx.Client | None = None) -> None:
         super().__init__(spec)
         self.client = client or httpx.Client()
+        self._local_snapshot_cache: tuple[Path, SnapshotMetadata | None] | None = None
 
     def _setting(self, key: str) -> str:
         value = self.spec.settings.get(key)
@@ -318,14 +319,50 @@ class GeofabrikOsmAdapter(SourceAdapter):
             raise ValueError("Geofabrik MD5 HEAD has no safe Content-Length")
         return size
 
+    def _local_snapshot(self, context: SourceContext) -> SnapshotMetadata | None:
+        """Return the newest complete, MD5-verified expected-path local snapshot."""
+        root = context.paths.raw / "osm" / "geofabrik"
+        cache_key = root.resolve()
+        if (
+            self._local_snapshot_cache is not None
+            and self._local_snapshot_cache[0] == cache_key
+        ):
+            return self._local_snapshot_cache[1]
+        candidates: list[SnapshotMetadata] = []
+        for pbf in root.glob("*/vietnam-????????.osm.pbf"):
+            match = re.fullmatch(r"vietnam-(\d{8})\.osm\.pbf", pbf.name)
+            sidecar = pbf.with_suffix(".pbf.md5")
+            if match is None or not sidecar.is_file() or pbf.is_symlink():
+                continue
+            try:
+                valid_time = datetime.strptime(match.group(1), "%Y%m%d").replace(
+                    tzinfo=UTC
+                )
+                md5_text = sidecar.read_text(encoding="ascii")
+                token = md5_text.strip().split(maxsplit=1)[0]
+                validate_snapshot_md5(pbf, token)
+            except (OSError, UnicodeError, ValueError):
+                continue
+            candidates.append(
+                SnapshotMetadata(
+                    source_valid_time=valid_time,
+                    target_name=pbf.name,
+                    content_length=pbf.stat().st_size,
+                    md5=token.lower(),
+                )
+            )
+        result = max(candidates, key=lambda item: item.source_valid_time, default=None)
+        self._local_snapshot_cache = (cache_key, result)
+        return result
+
     @staticmethod
     def _relative(metadata: SnapshotMetadata) -> Path:
         return Path("raw") / "osm" / "geofabrik" / f"{metadata.source_valid_time:%Y%m%d}"
 
     def resolve(self, context: SourceContext, available: list[AssetRecord]) -> list[RemoteAsset]:
         """Return MD5 first, then the exact dated PBF after the sidecar is retained."""
-        del context
-        metadata = self._pbf_metadata()
+        local = self._local_snapshot(context)
+        metadata = local or self._pbf_metadata()
         date = f"{metadata.source_valid_time:%Y%m%d}"
         relative = self._relative(metadata)
         sidecar_name = f"{metadata.target_name}.md5"
@@ -346,7 +383,13 @@ class GeofabrikOsmAdapter(SourceAdapter):
                     target_relative_path=relative / sidecar_name,
                     media_type="text/plain",
                     license_id=self.spec.license_id,
-                    expected_size=self._sidecar_size(),
+                    expected_size=(
+                        (
+                            context.paths.dataset / relative / sidecar_name
+                        ).stat().st_size
+                        if local is not None
+                        else self._sidecar_size()
+                    ),
                     source_valid_time=metadata.source_valid_time.isoformat(),
                 )
             ]

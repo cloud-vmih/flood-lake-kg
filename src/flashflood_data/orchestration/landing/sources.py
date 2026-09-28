@@ -158,7 +158,22 @@ def acquire_validated_assets(
         if not pending:
             break
         for remote in pending:
-            fetched = _fetch_with_adapter_hook(adapter, fetcher, context, remote)
+            target = (context.paths.dataset / remote.target_relative_path).resolve()
+            adopted = None
+            adopt_local = getattr(fetcher, "adopt_local", None)
+            if (
+                callable(adopt_local)
+                and target.is_relative_to(context.paths.raw.resolve())
+                and target.is_file()
+            ):
+                adopted = adopt_local(
+                    remote,
+                    context.run_id,
+                    adapter.validate_raw,
+                )
+            fetched = adopted or _fetch_with_adapter_hook(
+                adapter, fetcher, context, remote
+            )
             if fetched.status is AssetStatus.VALIDATED:
                 continue
             validation = adapter.validate_raw(Path(fetched.storage_path))

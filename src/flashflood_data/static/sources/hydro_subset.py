@@ -23,6 +23,7 @@ _OUTPUT_NAMES = {
     "basinatlas_v10": "basinatlas_l12_vietnam_h1.shp",
     "hydrorivers_v10": "hydrorivers_vietnam_h1.shp",
 }
+_ID_QUERY_CHUNK_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,33 @@ def _normalize_dbf_date(path: Path) -> None:
         stream.write(bytes((80, 1, 1)))
 
 
+def _read_basinatlas_ids(
+    source_path: Path,
+    columns: list[str] | None,
+    wanted: set[int],
+    source_crs: str,
+    bounds: tuple[float, float, float, float],
+) -> gpd.GeoDataFrame:
+    """Read nearby rows first, then recover geometry-drifted rows by key."""
+    if not wanted:
+        raise ValueError("BasinATLAS subset requires at least one HydroBASINS ID")
+    nearby = pyogrio.read_dataframe(source_path, bbox=bounds, columns=columns)
+    nearby_ids = set(_integer_ids(nearby, "HYBAS_ID"))
+    missing = sorted(wanted - nearby_ids)
+    frames = [nearby]
+    frames.extend(
+        pyogrio.read_dataframe(
+            source_path,
+            where=f"HYBAS_ID IN ({','.join(map(str, missing[offset:offset + _ID_QUERY_CHUNK_SIZE]))})",
+            columns=columns,
+        )
+        for offset in range(0, len(missing), _ID_QUERY_CHUNK_SIZE)
+    )
+    return gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True), geometry="geometry", crs=source_crs
+    )
+
+
 def build_hydro_subset(
     source_id: str,
     source_path: Path,
@@ -93,20 +121,35 @@ def build_hydro_subset(
         raise ValueError("hydro source has no CRS")
     national = _aoi(aoi_path).to_crs(source_crs)
     geometry = national.geometry.union_all()
-    frame = pyogrio.read_dataframe(
-        source_path,
-        bbox=geometry.bounds,
-        columns=_source_columns(source_id, source_path),
+    wanted = (
+        {int(value) for value in selected_hybas_ids}
+        if selected_hybas_ids is not None
+        else None
     )
+    if source_id == "basinatlas_v10":
+        if wanted is None:
+            raise ValueError("BasinATLAS subset requires selected HydroBASINS IDs")
+        frame = _read_basinatlas_ids(
+            source_path,
+            _source_columns(source_id, source_path),
+            wanted,
+            source_crs,
+            geometry.bounds,
+        )
+    else:
+        frame = pyogrio.read_dataframe(
+            source_path,
+            bbox=geometry.bounds,
+            columns=_source_columns(source_id, source_path),
+        )
     if frame.crs is None:
         raise ValueError("hydro source has no CRS")
-    frame = frame.loc[frame.geometry.intersects(geometry)].copy()
+    if source_id != "basinatlas_v10":
+        frame = frame.loc[frame.geometry.intersects(geometry)].copy()
     id_field = _FEATURE_IDS[source_id]
     ids = _integer_ids(frame, id_field)
     if source_id == "basinatlas_v10":
-        if selected_hybas_ids is None:
-            raise ValueError("BasinATLAS subset requires selected HydroBASINS IDs")
-        wanted = {int(value) for value in selected_hybas_ids}
+        assert wanted is not None
         frame = frame.loc[ids.isin(wanted)].copy()
         ids = _integer_ids(frame, id_field)
         if set(ids) != wanted:

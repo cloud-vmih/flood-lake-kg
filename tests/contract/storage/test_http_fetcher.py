@@ -15,7 +15,13 @@ import httpx
 import pytest
 import respx
 
-from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, RemoteAsset
+from flashflood_data.catalog.models import (
+    AssetKind,
+    AssetRecord,
+    AssetStatus,
+    RemoteAsset,
+    ValidationResult,
+)
 from flashflood_data.core.config import EnvironmentSettings
 from flashflood_data.static.sources.budget import StorageBudget
 from flashflood_data.storage.http import (
@@ -105,6 +111,21 @@ def _single_attempt_fetcher(project_paths, catalog) -> HttpFetcher:
         max_attempts=1,
         sleep=lambda _: None,
     )
+
+
+def test_default_client_allows_slow_provider_responses(project_paths, catalog) -> None:
+    fetcher = HttpFetcher(
+        project_paths,
+        catalog,
+        StorageBudget(
+            project_paths.dataset, soft_cap_bytes=2**30, minimum_free_bytes=0
+        ),
+    )
+    try:
+        assert fetcher.client.timeout.connect == 30.0
+        assert fetcher.client.timeout.read == 120.0
+    finally:
+        fetcher.client.close()
 
 
 def _interrupt_owned_partial(
@@ -1782,6 +1803,41 @@ def test_uncatalogued_target_is_quarantined_before_a_clean_refetch(
     assert target.read_bytes() == b"valid-payload"
     assert [path.read_bytes() for path in evidence] == [b"stale-payload"]
     assert catalog.get(remote_asset.asset_id) == record
+
+
+def test_prevalidated_local_target_is_adopted_without_network(
+    fetcher: HttpFetcher, project_paths, remote_asset: RemoteAsset, catalog
+) -> None:
+    target = project_paths.dataset / remote_asset.target_relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"valid-payload")
+
+    record = fetcher.adopt_local(
+        remote_asset,
+        "run-adopt-local",
+        lambda _: ValidationResult(passed=True, checks={"fixture": True}),
+    )
+
+    assert record is not None
+    assert record.status is AssetStatus.VALIDATED
+    assert Path(record.storage_path) == target
+    assert catalog.get(remote_asset.asset_id) == record
+
+
+def test_invalid_local_target_is_not_adopted(
+    fetcher: HttpFetcher, project_paths, remote_asset: RemoteAsset
+) -> None:
+    target = project_paths.dataset / remote_asset.target_relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"valid-payload")
+
+    record = fetcher.adopt_local(
+        remote_asset,
+        "run-reject-local",
+        lambda _: ValidationResult(passed=False, checks={"fixture": False}),
+    )
+
+    assert record is None
 
 
 @respx.mock

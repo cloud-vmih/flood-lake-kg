@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import geopandas as gpd
+import httpx
 import pytest
 from shapely.geometry import box
 
@@ -14,6 +15,7 @@ from flashflood_data.catalog.models import (
     AssetStatus,
     RemoteAsset,
     SourceSpec,
+    ValidationResult,
 )
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
@@ -25,6 +27,8 @@ from flashflood_data.orchestration.landing.sources import (
     prepare_source_objects,
 )
 from flashflood_data.static.sources.base import SourceContext
+from flashflood_data.static.sources.budget import StorageBudget
+from flashflood_data.storage.http import HttpFetcher
 
 NOW = datetime(2026, 9, 16, tzinfo=UTC)
 
@@ -379,6 +383,73 @@ def test_adapter_only_receives_catalog_records_with_verified_local_content(
 
     assert observed == [()]
     assert selected == ()
+
+
+def test_acquisition_adopts_adapter_validated_expected_path_without_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    target = paths.raw / "osm" / "fixture.osm.pbf"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"local-payload")
+    remote = RemoteAsset(
+        asset_id="fixture-local-pbf",
+        source_id="geofabrik_vietnam_snapshot",
+        source_version="snapshot",
+        uri="https://example.invalid/vietnam.osm.pbf",
+        target_relative_path=target.relative_to(paths.dataset),
+        media_type="application/vnd.openstreetmap.data+pbf",
+        license_id="ODbL-1.0",
+        expected_size=target.stat().st_size,
+    )
+
+    class Adapter:
+        def resolve(self, context, available):
+            return [remote]
+
+        def validate_raw(self, path):
+            return ValidationResult(
+                passed=path.read_bytes() == b"local-payload",
+                checks={"fixture": True},
+            )
+
+    monkeypatch.setattr(
+        "flashflood_data.orchestration.landing.sources.build_adapter",
+        lambda spec: Adapter(),
+    )
+
+    def reject_network(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected network request: {request.url}")
+
+    fetcher = HttpFetcher(
+        paths,
+        catalog,
+        StorageBudget(paths.dataset, soft_cap_bytes=2**30, minimum_free_bytes=0),
+        client=httpx.Client(transport=httpx.MockTransport(reject_network)),
+    )
+    context = SourceContext(
+        paths=paths,
+        catalog=catalog,
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+        run_id="run-adopt",
+    )
+    policy = LandingSourcePolicy(
+        source_id="geofabrik_vietnam_snapshot", mode="individual"
+    )
+    spec = SourceSpec(
+        source_id=policy.source_id,
+        adapter="geofabrik_osm",
+        version="snapshot",
+        license_id="ODbL-1.0",
+    )
+
+    selected = acquire_validated_assets(policy, spec, context, fetcher)
+
+    assert selected[0].asset_id == remote.asset_id
+    assert selected[0].status is AssetStatus.VALIDATED
 
 
 def test_acquisition_verifies_each_unchanged_local_asset_once(

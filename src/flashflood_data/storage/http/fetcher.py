@@ -19,6 +19,7 @@ from flashflood_data.catalog.models import (
     AssetRecord,
     AssetStatus,
     RemoteAsset,
+    ValidationResult,
 )
 from flashflood_data.core.config import EnvironmentSettings
 from flashflood_data.core.paths import ProjectPaths
@@ -76,7 +77,9 @@ class HttpFetcher(ResumeMixin, TransferMixin, QuarantineMixin):
         self.paths = paths
         self.catalog = catalog
         self.budget = budget
-        self.client = client or httpx.Client()
+        self.client = client or httpx.Client(
+            timeout=httpx.Timeout(120.0, connect=30.0)
+        )
         self.max_attempts = max_attempts
         self.sleep = sleep
         self.environment = environment
@@ -104,6 +107,51 @@ class HttpFetcher(ResumeMixin, TransferMixin, QuarantineMixin):
 
         with self._target_lock(remote):
             return self._fetch_locked(remote, run_id, final_path, size_bound, headers or {})
+
+    def adopt_local(
+        self,
+        remote: RemoteAsset,
+        run_id: str,
+        validator: Callable[[Path], ValidationResult],
+    ) -> AssetRecord | None:
+        """Catalogue an uncatalogued expected-path payload after adapter validation."""
+        lexical_path = self.paths.dataset / remote.target_relative_path
+        final_path = self._target_path(remote)
+        if not final_path.is_file() or lexical_path.is_symlink():
+            return None
+        with self._target_lock(remote):
+            try:
+                self.catalog.get(remote.asset_id)
+            except KeyError:
+                actual_size = final_path.stat().st_size
+                if remote.expected_size is not None:
+                    if actual_size != remote.expected_size:
+                        return None
+                elif (
+                    remote.budget_size_bytes is None
+                    or actual_size > remote.budget_size_bytes
+                ):
+                    return None
+                if not validator(final_path).passed:
+                    return None
+                actual_checksum = sha256_file(final_path)
+                if remote.expected_checksum is not None and not hmac.compare_digest(
+                    actual_checksum, remote.expected_checksum.lower()
+                ):
+                    return None
+                discovered = self._record(
+                    remote,
+                    final_path,
+                    run_id,
+                    status=AssetStatus.DISCOVERED,
+                    size_bytes=actual_size,
+                    checksum=actual_checksum,
+                )
+                self.catalog.upsert(discovered)
+                self.catalog.transition(remote.asset_id, AssetStatus.FETCHING)
+                self.catalog.transition(remote.asset_id, AssetStatus.FETCHED)
+                return self.catalog.transition(remote.asset_id, AssetStatus.VALIDATED)
+            return None
 
     def _fetch_locked(
         self,
