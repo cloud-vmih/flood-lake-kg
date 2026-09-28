@@ -127,7 +127,15 @@ def test_source_failures_log_the_pipeline_phase_and_traceback() -> None:
 
     assert "def _log_source_failure(" in text
     assert "traceback.format_tb" in text
-    assert text.count("_log_source_failure(") >= 5
+    assert text.count("_log_source_failure(") == 2
     assert {"publish", "register", "cleanup", "audit"} <= _string_literals(
         ast.parse(text)
     )
+
+
+def test_source_phase_failures_use_airflow_retries_before_failure_envelopes() -> None:
+    text = DAG_PATH.read_text(encoding="utf-8")
+
+    assert "get_current_context" in text
+    assert "try_number <= max_tries" in text
+    assert text.count("_retry_or_failure(") == 5

@@ -9,7 +9,7 @@ from pathlib import Path
 from time import monotonic
 
 from airflow.exceptions import AirflowException
-from airflow.sdk import dag, task, task_group
+from airflow.sdk import dag, get_current_context, task, task_group
 
 from flashflood_data.cli.app import build_static_landing_service
 from flashflood_data.core.paths import ProjectPaths
@@ -58,6 +58,27 @@ def _log_source_failure(source_id: str, phase: str, error: Exception) -> None:
     )
 
 
+def _retry_or_failure(
+    source_id: str, phase: str, error: Exception
+) -> dict[str, object]:
+    """Let Airflow retry transient failures before emitting a terminal envelope."""
+    _log_source_failure(source_id, phase, error)
+    task_instance = get_current_context()["ti"]
+    try_number = int(task_instance.try_number)
+    max_tries = int(task_instance.max_tries)
+    error_code = StaticSourceLandingService._error_code(error)
+    if try_number <= max_tries:
+        document = {
+            "source_id": source_id,
+            "phase": phase,
+            "error_code": error_code,
+            "try_number": try_number,
+            "max_tries": max_tries,
+        }
+        raise AirflowException(json.dumps(document, sort_keys=True)) from None
+    return LandingTaskEnvelope.failed(source_id, error_code).model_dump(mode="json")
+
+
 def _staging_root() -> Path:
     configured = os.environ.get("FLASHFLOOD_STAGING_ROOT")
     if configured:
@@ -98,10 +119,7 @@ def publish_source(source_id: str, landing_run_id: str) -> dict[str, object]:
         batch = service.publish_source(source_id, landing_run_id)
         envelope = LandingTaskEnvelope.succeeded("published", batch)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
-        _log_source_failure(source_id, "publish", error)
-        envelope = LandingTaskEnvelope.failed(
-            source_id, StaticSourceLandingService._error_code(error)
-        )
+        return _retry_or_failure(source_id, "publish", error)
     return envelope.model_dump(mode="json")
 
 
@@ -122,10 +140,7 @@ def register_batch(envelope_json: dict[str, object]) -> dict[str, object]:
         registered = service.register_batch(envelope.batch)
         result = LandingTaskEnvelope.succeeded("registered", registered)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
-        _log_source_failure(source_id, "register", error)
-        result = LandingTaskEnvelope.failed(
-            source_id, StaticSourceLandingService._error_code(error)
-        )
+        return _retry_or_failure(source_id, "register", error)
     return result.model_dump(mode="json")
 
 
@@ -156,12 +171,7 @@ def cleanup_batch(
         service.cleanup_batch(envelope.batch)
         result = LandingTaskEnvelope.succeeded("cleaned", envelope.batch)
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
-        _log_source_failure(source_id, "cleanup", error)
-        document = {
-            "source_id": source_id,
-            "error_code": StaticSourceLandingService._error_code(error),
-        }
-        raise AirflowException(json.dumps(document, sort_keys=True)) from None
+        return _retry_or_failure(source_id, "cleanup", error)
     return result.model_dump(mode="json")
 
 
@@ -199,10 +209,7 @@ def audit_registered_meta(envelope_json: dict[str, object]) -> dict[str, object]
             checked_at=datetime.now(UTC),
         )
     except Exception as error:  # noqa: BLE001 - preserve independent source groups
-        _log_source_failure(source_id, "audit", error)
-        return LandingTaskEnvelope.failed(
-            source_id, StaticSourceLandingService._error_code(error)
-        ).model_dump(mode="json")
+        return _retry_or_failure(source_id, "audit", error)
     return envelope.model_dump(mode="json")
 
 
