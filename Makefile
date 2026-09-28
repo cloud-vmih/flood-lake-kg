@@ -66,7 +66,7 @@ lakehouse-init:
 
 lakehouse-up: lakehouse-init
 	tools/bootstrap/check_docker_access.sh
-	docker compose build minio
+	docker compose build minio airflow-api-server
 	docker compose up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor
 	docker compose run --no-deps --rm polaris-bootstrap
 

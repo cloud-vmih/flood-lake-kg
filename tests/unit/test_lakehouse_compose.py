@@ -44,6 +44,11 @@ def test_minio_image_is_built_from_pinned_upstream_source() -> None:
     assert "quay.io/minio" not in text
     makefile = (ROOT / "Makefile").read_text()
     assert "docker compose build minio" in makefile
+    assert (
+        "lakehouse-up: lakehouse-init\n"
+        "\ttools/bootstrap/check_docker_access.sh\n"
+        "\tdocker compose build minio airflow-api-server\n"
+    ) in makefile
 
 
 def test_storage_services_have_health_and_memory_bounds() -> None:
