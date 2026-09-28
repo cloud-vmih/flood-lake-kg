@@ -40,7 +40,8 @@ Các nhãn `VARCHAR`, `UUID`, `JSONB`, `TIMESTAMPTZ`, `GEOMETRY` trong sơ đồ
 | `bronze.osm_feature_raw` | Một `(object_id, osm_type, osm_id)` | Feature OSM trong AOI đã chọn, tags gốc và geometry; không nhầm với road graph đã harmonize. |
 | `bronze.raster_coverage` | Một `(object_id, band_or_layer)` | DEM, SoilGrids, WorldCover, WorldPop: URI object, layer/property/depth/statistic, bbox, CRS, resolution, nodata, dtype, checksum. Pixel raster vẫn nằm trong object; không nhân mỗi pixel thành hàng Iceberg chỉ để có bảng Bronze. |
 | `bronze.historical_event_raw` | Một `(object_id, source_record_id)` | Dòng sự kiện/văn bản gốc và reference tới tài liệu, chưa gán cứng một basin. |
-| `bronze.weather_grid_value` | Một `(object_id, source_grid_id, variable, vertical_level, valid_time, window_start, window_end, source_revision)` | Bản ghi ERA5-Land/IFS/GSMaP sau parse nếu chọn lưu dạng hàng; kèm `source_cycle_id`, `model_run_time` nullable, `available_at`, unit và value kind. Quyết định lưu hàng hay chunk được đo kích thước trước khi ingest lớn. |
+| `bronze.weather_raster_slice` | Một biến × level × cycle × validity window × revision × spatial scope | Mảng `cell_indices` song song với `values`; mỗi index trỏ tới `silver.source_grid`. Scoped Raw đã được cắt trước khi publish; Bronze slice được giữ bền vững. |
+| `meta.object_lifecycle` | Một `object_id` | Retention và trạng thái storage của Raw động. NOW/IFS chỉ xóa sau 7 ngày khi có Bronze snapshot, DQ passed và lineage; Standard/ERA5-Land là durable. |
 
 Mỗi bảng Bronze có `object_id` để quay về byte raw, `ingest_run_id`, `parser_version`, quality flag và cột gốc cần thiết. Không trộn các provider có grain khác nhau vào một bảng rộng toàn nullable. `RAW_INGEST_MANIFEST` trong diagram được hiểu là `meta.source_objects` + object manifest JSON; `parser_version` thuộc bảng Bronze, không thuộc raw landing.
 
@@ -52,8 +53,9 @@ Mỗi bảng Bronze có `object_id` để quay về byte raw, `ingest_run_id`, `
 | `silver.basin_edge` | `(topology_version, upstream_basin_id)` | Cạnh trực tiếp `NEXT_DOWN` tới `downstream_basin_id`, hai đầu cùng `basin_version`, có QA cycle/outlet; không chứa velocity, attenuation hay thời gian truyền theo kịch bản. |
 | `silver.basin_static_feature` | `(basin_id, basin_version, feature_build_version)` | Một hàng feature/đơn vị lưu vực, theo dictionary dưới đây. DEM là nguồn terrain chính, SoilGrids là nguồn soil chính; Atlas terrain chỉ QA. |
 | `silver.basin_feature_lineage` | `(basin_id, basin_version, feature_build_version, object_id, role)` | Nhiều raw object có thể góp vào một hàng feature; thay cho một `feature_source_manifest_id`. |
-| `silver.source_grid` | `(source_id, source_grid_version, source_grid_id)` | Geometry ô lưới, CRS, resolution. |
-| `silver.grid_basin_weight` | `(source_id, source_grid_version, source_grid_id, basin_id, basin_version, geometry_processing_version)` | `intersection_area_m2`, `weight_by_basin`, `weight_by_grid`, coverage QA; version của cả grid và basin là bắt buộc. |
+| `silver.source_grid` **đã có contract vật lý** | `(source_id, source_grid_version, source_grid_id)` | Identity ô lưới ổn định, `cell_index`, row/column, geometry, CRS, resolution và `scope_ids`. |
+| `silver.grid_basin_weight` **chưa triển khai** | `(source_id, source_grid_version, source_grid_id, basin_id, basin_version, geometry_processing_version)` | `intersection_area_m2`, `weight_by_basin`, `weight_by_grid`, coverage QA; version của cả grid và basin là bắt buộc. |
+| `silver.basin_weather_value` **chưa triển khai** | Basin/version × source/product × variable/level × window × revision | Giá trị thời tiết aggregate theo basin từ raster slice và grid–basin weight, kèm valid coverage. |
 
 Các bảng river, road, facility dùng khóa ghép ID + version ở cả bảng chính, bảng bridge và FK hai đầu cạnh. Sự kiện lũ có thể chạm nhiều basin: tách `silver.observed_flood_event` khỏi `silver.event_basin`. Tài liệu gốc và chunk có bảng/document ID riêng, event–evidence là quan hệ nhiều–nhiều. Dữ liệu dân số từ WorldPop chỉ bảo đảm population theo sản phẩm đã landing; trẻ em/người già cần nguồn riêng hoặc để null, không suy ra từ tổng dân số.
 

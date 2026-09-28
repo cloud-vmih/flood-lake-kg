@@ -1,6 +1,6 @@
 # Data schema contract — FloodLakeKG Sơn La
 
-Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Meta, các bảng Bronze static và `bronze.weather_grid_value` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Silver trở đi vẫn là thiết kế đích.
+Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Meta, các bảng Bronze static, `bronze.weather_raster_slice` và bảng tham chiếu `silver.source_grid` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Các bảng Silver nghiệp vụ trở đi vẫn là thiết kế đích.
 
 Các sơ đồ Mermaid dưới đây biểu diễn quan hệ logic; bảng dữ liệu bên dưới mới là danh sách thuộc tính. `PK`/`FK` là ràng buộc cần pipeline kiểm tra vì Iceberg không tự thực thi khóa ngoại. `!` là không null, `?` là có thể null. Kiểu `timestamp` là UTC; `geometry_wkb` là WKB `binary` kèm `crs`/bbox. `json` nghĩa là chuỗi JSON có schema version cho tới khi có `struct`/`map` vật lý. ID basin luôn là chuỗi `HYBAS_ID` **level 12**; mọi tham chiếu tới basin dùng đủ `(basin_id, basin_version)`. `object_id` là SHA-256 ổn định, còn Iceberg snapshot ID là `long` và phải đi với tên bảng.
 
@@ -90,7 +90,7 @@ Các kiểu/null dưới đây đối chiếu trực tiếp với `source_object
 | `selection_json` | json ! | AOI, level, layer và lựa chọn tải nguồn. |
 | `provider_metadata_json` | json ! | Header/ETag/metadata nguồn chưa chuẩn hóa. |
 
-### `meta.ingest_watermarks` — một dòng / `(source_id, product, stream_id)`; **đã có contract**
+### `meta.ingest_watermarks` — một dòng / `(source_id, product, stream_id, spatial_scope_id)`; **đã có contract**
 
 **Vai trò:** Giữ cursor operational bền vững cho từng product/stream động. Bảng này giảm khoảng cần lập kế hoạch; inventory `meta.source_objects` vẫn là bằng chứng authoritative rằng Raw object đã commit.
 
@@ -99,6 +99,7 @@ Các kiểu/null dưới đây đối chiếu trực tiếp với `source_object
 | `source_id` | string ! PK/FK | Nguồn sở hữu stream, ví dụ `gsmap`. |
 | `product` | string ! PK | Product có vòng đời riêng, ví dụ `gauge_standard_v8`. |
 | `stream_id` | string ! PK | Request/cycle family có chung nhịp và cursor. |
+| `spatial_scope_id` | string ! PK | Phiên bản AOI subset; mở rộng AOI tạo cursor riêng để không coi vùng mới là đã ingest. |
 | `cursor_time` | timestamp ! | Cuối khoảng liên tục đã có Raw hoặc `NO_DATA` hợp lệ. |
 | `last_safe_end` | timestamp ! | Mốc provider-safe quan sát ở lần cập nhật gần nhất. |
 | `last_run_id` | string ! | Airflow run cập nhật cursor. |
@@ -107,6 +108,27 @@ Các kiểu/null dưới đây đối chiếu trực tiếp với `source_object
 | `detail_json` | json ! | Chi tiết gap/NO_DATA có schema version; `{}` khi không có. |
 
 Backfill explicit không cập nhật bảng này. Catch-up chỉ tăng `cursor_time` qua chuỗi cửa sổ liên tục; một object ở 12:00 không che được lỗ hổng 11:00.
+
+### `meta.object_lifecycle` — một dòng / `object_id`; **đã có contract**
+
+**Vai trò:** Theo dõi retention và điều kiện xóa payload Raw động mà không làm mất bằng chứng Bronze.
+
+| Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
+| --- | --- | --- |
+| `object_id` | string ! PK/FK | Object trong `meta.source_objects`. |
+| `retention_class` | string ! | `durable` với GSMaP Standard/ERA5-Land hoặc `transient_7d` với NOW/IFS. |
+| `storage_status` | string ! | `available`, `eligible_for_expiry`, `delete_failed` hoặc `expired`. |
+| `expires_at` | timestamp ? | Hạn sớm nhất được xem xét xóa; null với object bền vững. |
+| `bronze_snapshot_id` | long ? | Snapshot đã materialize object vào Bronze. |
+| `quality_status` | string ! | Kết quả QA cần là `passed` trước cleanup. |
+| `lineage_edge_id` | string ? | Cạnh lineage Raw → Bronze dùng làm bằng chứng. |
+| `deleted_at` | timestamp ? | Lúc payload và manifest Raw đã xóa thành công. |
+| `last_checked_at` | timestamp ! | Lần cleanup đánh giá object gần nhất. |
+| `reason` | string ? | Giải thích giữ lại, đủ điều kiện hoặc lỗi xóa. |
+
+Cleanup NOW/IFS chỉ chuyển sang `expired` sau khi hết 7 ngày, có Bronze snapshot, QA passed,
+lineage và MinIO xác nhận đã xóa payload lẫn manifest. GSMaP Standard và ERA5-Land không có
+`expires_at`; bảng Bronze và metadata audit không bị xóa bởi policy này.
 
 ### `meta.ingest_attempts` — một dòng / `(ingest_run_id, source_id, asset_id, attempt_no)`; đích
 
@@ -262,7 +284,7 @@ flowchart LR
   SO --> OF["osm_feature_raw"]
   SO --> RC["raster_coverage"]
   SO --> HE["historical_event_raw"]
-  SO --> WV["weather_grid_value"]
+  SO --> WV["weather_raster_slice"]
 ```
 
 `source_objects` giữ tham chiếu tới **file nguồn bất biến** trong MinIO; `raster_coverage` chỉ mô tả band/tile sau khi đọc header, không chép pixel vào hàng Iceberg. Một object có thể sinh nhiều hàng Bronze. Các trường `ingest_run_id`, `parser_version`, `quality_status` thuộc schema của từng bảng Bronze parsed và được liệt kê trong sơ đồ draw.io.
@@ -388,33 +410,40 @@ bất kỳ bằng chứng nào sẽ được xử lý lại. Tham số `force_re
 | `parser_version` | string ! | Phiên bản parser/OCR. |
 | `quality_status` | string ! | Mức đọc được/thiếu thông tin. |
 
-### `bronze.weather_grid_value` — một dòng / `(object_id, source_grid_version, source_grid_id, variable, vertical_level, source_cycle_id, valid_time, window_start, window_end, source_revision)`; **đã có contract**
+### `bronze.weather_raster_slice` — một dòng / một biến × level × window × revision × scope; **đã có contract**
 
-**Vai trò:** Biểu diễn giá trị thời tiết/dòng chảy theo ô lưới và thời gian sau khi parse file động.
+**Vai trò:** Lưu một lát raster động đã cắt theo AOI dưới dạng hai mảng song song, giữ đúng
+identity grid mà không tạo một hàng Iceberg cho mỗi pixel.
 
-Ba weather ingest DAG parse GSMaP, ERA5-Land và IFS/Open-Meteo sang dạng hàng này. File gzip/NetCDF/JSON gốc vẫn nằm trong Raw để replay; `source_grid_version` định danh ô lưới xuyên các lần đổi grid.
+Bốn DAG GSMaP NOW, GSMaP Standard, ERA5-Land và IFS parse scoped Raw sang bảng này. Mỗi phần tử
+`cell_indices[i]` trỏ tới `silver.source_grid.cell_index`; `values[i]` là giá trị cùng vị trí.
+Hai mảng phải cùng độ dài và index phải thuộc `spatial_scope_id` đã đăng ký. Bronze luôn bền vững;
+chỉ payload Raw NOW/IFS có thể hết hạn sau 7 ngày theo `meta.object_lifecycle`.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
-| `object_id` | string ! PK/FK | File động gốc. |
-| `source_id` | string ! | Provider/product grid, đối chiếu `meta.source_objects`. |
-| `source_grid_id` | string ! PK | Ô lưới theo provider. |
-| `source_grid_version` | string ! PK | Phiên bản định nghĩa lưới. |
+| `slice_id` | string ! PK | Hash ổn định của business key đầy đủ của slice. |
+| `object_id` | string ! FK | Scoped Raw object sinh ra slice. |
+| `source_id` | string ! | Provider grid, đối chiếu `meta.source_objects`. |
+| `source_product` | string ! PK | Product như `gauge_now_v8`, `gauge_standard_v8`, ERA5-Land hay IFS. |
+| `source_grid_version` | string ! PK/FK | Phiên bản lưới trong `silver.source_grid`. |
+| `spatial_scope_id` | string ! PK | Phiên bản AOI subset đã dùng trước Raw. |
 | `variable` | string ! PK | Biến khí tượng/thủy văn. |
-| `vertical_level` | string ! PK | Level; dùng giá trị quy ước `surface` nếu không có. |
+| `vertical_level` | string ! PK | Level; dùng `surface` nếu không có. |
+| `source_cycle_id` | string ! PK | Chu kỳ/reanalysis product. |
+| `model_run_time` | timestamp ? | Run model, null với quan trắc/reanalysis. |
 | `valid_time` | timestamp ! PK | Thời điểm giá trị có hiệu lực. |
 | `window_start` | timestamp ! PK | Đầu khoảng tích lũy, inclusive. |
 | `window_end` | timestamp ! PK | Cuối khoảng tích lũy, exclusive. |
 | `source_revision` | int ! PK | Revision nhà cung cấp. |
-| `source_cycle_id` | string ! PK | Chu kỳ/reanalysis product. |
-| `model_run_time` | timestamp ? | Run model, null với reanalysis. |
-| `available_at` | timestamp ! | Lúc nguồn công bố/khả dụng. |
-| `value` | double ? | Giá trị; null nếu missing theo source. |
+| `cell_indices` | list<long> ! | Chỉ số ô toàn cục, tăng dần, cùng độ dài với `values`. |
+| `values` | list<float?> ! | Giá trị theo `cell_indices`; phần tử null biểu diễn missing của provider. |
 | `unit` | string ! | Đơn vị gốc đã khai báo. |
-| `value_kind` | string ! | Instant, preceding-hour sum, rate hoặc `accumulation_since_00_utc`; ERA5-Land giữ accumulation gốc và de-accumulate ở Silver. |
+| `value_kind` | string ! | Instant, preceding-hour sum, rate hoặc accumulation gốc. |
+| `available_at` | timestamp ? | Lúc nguồn công bố/khả dụng nếu provider có. |
 | `ingest_run_id` | string ! | Run parser. |
 | `parser_version` | string ! | Phiên bản parser. |
-| `quality_status` | string ! | QA temporal/unit/missing. |
+| `quality_status` | string ! | QA grid, temporal, unit và missing. |
 
 ## 3. Silver — dữ liệu chuẩn hóa và quan hệ không gian
 
@@ -422,8 +451,8 @@ Ba weather ingest DAG parse GSMaP, ERA5-Land và IFS/Open-Meteo sang dạng hàn
 flowchart LR
   B["dim_basin L12"] --> BE["basin_edge"]
   B --> SF["basin_static_feature"] --> FL["basin_feature_lineage"]
-  G["source_grid"] --> GB["grid_basin_weight"] --> B
-  G --> GV["grid_value"]
+  G["source_grid"] --> GB["grid_basin_weight — chưa triển khai"] --> B
+  GB --> GV["basin_weather_value — chưa triển khai"]
   G --> PG["population_grid"]
   R["dim_river_reach"] --> RE["river_reach_edge"]
   R --> RB["river_basin"] --> B
@@ -561,24 +590,30 @@ SoilGrids 0–30 cm cần tổng hợp có trọng số theo bề dày các kho�
 | `contribution` | string ? | Phạm vi tile/layer/biến đóng góp. |
 | `qa_status` | string ! | Kiểm tra lineage/coverage. |
 
-### `silver.source_grid` — `(source_id, source_grid_version, source_grid_id)`
+### `silver.source_grid` — `(source_id, source_grid_version, source_grid_id)`; **đã có contract vật lý**
 
-**Vai trò:** Định nghĩa hình học và phiên bản các ô lưới của từng sản phẩm raster hoặc thời tiết.
+**Vai trò:** Định nghĩa identity, hình học và membership AOI của ô lưới thời tiết. Pipeline đăng
+ký phần lưới giao `vietnam_hydrological_aoi`; khi scope Sơn La mở rộng, ô cũ giữ nguyên
+`source_grid_id` và `cell_index` để raster slice cũ vẫn đọc được.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
 | `source_id` | string ! PK | Provider/product grid. |
 | `source_grid_version` | string ! PK | Phiên bản định nghĩa grid. |
 | `source_grid_id` | string ! PK | ID ô trong grid đó. |
+| `cell_index` | long ! unique | Chỉ số toàn cục dùng trong `weather_raster_slice.cell_indices`. |
+| `row_index` | int ! | Hàng trong lưới provider. |
+| `column_index` | int ! | Cột trong lưới provider. |
 | `geometry_wkb` | binary ! | Polygon ô lưới. |
-| `crs` | string ! | CRS geometry. |
 | `bbox_wgs84` | list<double> ! | Extent. |
-| `resolution_x` | double ! | Kích thước ô trục X. |
-| `resolution_y` | double ! | Kích thước ô trục Y. |
 | `centroid_lon` | double ! | Kinh độ tâm ô. |
 | `centroid_lat` | double ! | Vĩ độ tâm ô. |
+| `resolution_x` | double ! | Kích thước ô trục X. |
+| `resolution_y` | double ! | Kích thước ô trục Y. |
+| `crs` | string ! | CRS geometry. |
+| `scope_ids` | list<string> ! | Các scope AOI hiện chứa ô này; append membership, không đổi cell identity. |
 
-### `silver.grid_basin_weight` — `(source_id, source_grid_version, source_grid_id, basin_id, basin_version, geometry_processing_version)`
+### `silver.grid_basin_weight` — `(source_id, source_grid_version, source_grid_id, basin_id, basin_version, geometry_processing_version)`; **chưa triển khai**
 
 **Vai trò:** Lưu trọng số giao nhau giữa ô lưới và basin để aggregate dữ liệu động theo lưu vực.
 
@@ -595,19 +630,23 @@ SoilGrids 0–30 cm cần tổng hợp có trọng số theo bề dày các kho�
 | `weight_by_grid` | double ! | `intersection_area / grid_cell_area`. |
 | `quality_status` | string ! | QA tổng trọng số, clipping, sliver. |
 
-### `silver.grid_value` — một dòng / `business_key_hash`
+### `silver.basin_weather_value` — một dòng / `business_key_hash`; **chưa triển khai**
 
-**Vai trò:** Chuẩn hóa giá trị thời tiết theo ô lưới, biến, chu kỳ, thời điểm và đơn vị.
+**Vai trò:** Chuẩn hóa và aggregate một raster slice thành giá trị theo basin L12 bằng
+`grid_basin_weight`, kèm coverage để không nhầm dữ liệu thiếu với giá trị 0.
 
-Hash khóa business phải bao gồm nguồn/grid/version/biến/level/cycle/valid time/window/revision; pipeline kiểm tra uniqueness của cả tuple trước khi hash.
+Hash khóa business phải bao gồm basin/version, nguồn/product/grid version, biến/level/cycle,
+valid time/window và revision; pipeline tương lai kiểm tra uniqueness của tuple trước khi hash.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
 | `business_key_hash` | string ! PK | Hash khóa business chuẩn hóa. |
+| `basin_id` | string ! FK | Basin L12 nhận giá trị aggregate. |
+| `basin_version` | string ! FK | Phiên bản polygon basin. |
 | `source_id` | string ! FK | Nguồn grid. |
+| `source_product` | string ! | Product cụ thể của nguồn. |
 | `source_grid_version` | string ! FK | Phiên bản grid. |
-| `source_grid_id` | string ! FK | Ô lưới. |
-| `raw_object_id` | string ! FK | File nguồn chứa giá trị. |
+| `source_slice_id` | string ! FK | Slice Bronze dùng làm đầu vào. |
 | `source_cycle_id` | string ! | Chu kỳ nguồn. |
 | `model_run_time` | timestamp ? | Chu kỳ model; null với reanalysis. |
 | `valid_time` | timestamp ! | Thời điểm có hiệu lực. |
@@ -620,6 +659,7 @@ Hash khóa business phải bao gồm nguồn/grid/version/biến/level/cycle/val
 | `value_kind` | string ! | Instant/accumulated/mean/rate. |
 | `source_revision` | int ! | Revision nguồn. |
 | `available_at` | timestamp ! | Dùng chống future leakage. |
+| `valid_coverage_fraction` | double ! | Phần diện tích/trọng số basin có giá trị hợp lệ. |
 | `quality_flags_json` | json ! | Cờ missing/range/temporal QA. |
 
 ### `silver.dim_river_reach` — `(river_reach_id, river_version)`
@@ -881,7 +921,7 @@ Một sự kiện có thể được xác nhận hoặc bác bỏ bởi nhiều 
 
 ```mermaid
 flowchart LR
-  SW["Silver grid_value + grid_basin_weight"] --> BF["basin_forcing"]
+  SW["Silver basin_weather_value"] --> BF["basin_forcing"]
   BF --> DI["basin_dynamic_indicator"]
   BF --> HS["hydro_state"]
   EP["basin_edge_routing_parameter"] --> HS

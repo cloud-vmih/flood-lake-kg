@@ -65,11 +65,17 @@
         <mxCell id="m-lineage-edges-a" value="+ lineage_edge_id: string ! PK&#10;+ pipeline_run_id: string ! FK&#10;+ input_kind: string !&#10;+ input_object_id: string ? FK&#10;+ input_table: string ?&#10;+ input_snapshot_id: long ?&#10;+ output_table: string !&#10;+ output_snapshot_id: long !&#10;+ transform_role: string !&#10;+ mapping_version: string ?&#10;+ created_at: timestamp !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-lineage-edges" vertex="1">
           <mxGeometry as="geometry" x="0" y="34" width="540" height="199" />
         </mxCell>
-        <mxCell id="m-ingest-watermarks" value="meta.ingest_watermarks (implemented contract)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
-          <mxGeometry as="geometry" x="1270" y="1380" width="540" height="199" />
+        <mxCell id="m-ingest-watermarks" value="meta.ingest_watermarks (implemented)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="1270" y="1380" width="540" height="216" />
         </mxCell>
-        <mxCell id="m-ingest-watermarks-a" value="+ source_id: string ! PK/FK&#10;+ product: string ! PK&#10;+ stream_id: string ! PK&#10;+ cursor_time: timestamp !&#10;+ last_safe_end: timestamp !&#10;+ last_run_id: string !&#10;+ status: string !&#10;+ updated_at: timestamp !&#10;+ detail_json: json !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-ingest-watermarks" vertex="1">
-          <mxGeometry as="geometry" x="0" y="34" width="540" height="165" />
+        <mxCell id="m-ingest-watermarks-a" value="+ source_id: string ! PK/FK&#10;+ product: string ! PK&#10;+ stream_id: string ! PK&#10;+ spatial_scope_id: string ! PK&#10;+ cursor_time: timestamp !&#10;+ last_safe_end: timestamp !&#10;+ last_run_id: string !&#10;+ status: string !&#10;+ updated_at: timestamp !&#10;+ detail_json: json !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-ingest-watermarks" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="182" />
+        </mxCell>
+        <mxCell id="m-object-lifecycle" value="meta.object_lifecycle (implemented)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=13;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="1" vertex="1">
+          <mxGeometry as="geometry" x="50" y="1435" width="540" height="250" />
+        </mxCell>
+        <mxCell id="m-object-lifecycle-a" value="+ object_id: string ! PK/FK&#10;+ retention_class: string !&#10;+ storage_status: string !&#10;+ expires_at: timestamp ?&#10;+ bronze_snapshot_id: long ?&#10;+ quality_status: string !&#10;+ lineage_edge_id: string ?&#10;+ deleted_at: timestamp ?&#10;+ last_checked_at: timestamp !&#10;+ reason: string ?" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=7;fontSize=11;" parent="m-object-lifecycle" vertex="1">
+          <mxGeometry as="geometry" x="0" y="34" width="540" height="216" />
         </mxCell>
         <mxCell id="me1" value="registers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;" parent="1" edge="1" source="m-source-registry" target="m-source-objects">
           <mxGeometry as="geometry" relative="1" />
@@ -104,6 +110,9 @@
         <mxCell id="me11" value="dynamic cursor" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-source-registry" target="m-ingest-watermarks">
           <mxGeometry as="geometry" relative="1" />
         </mxCell>
+        <mxCell id="me12" value="retention" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" parent="1" edge="1" source="m-source-objects" target="m-object-lifecycle">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
@@ -136,11 +145,11 @@
         <mxCell id="b-raster-raw-a" value="+ object_id: string ! PK/FK&#10;+ band_or_layer: string ! PK&#10;+ property: string ?&#10;+ depth_interval: string ?&#10;+ statistic: string ?&#10;+ object_uri: string !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ resolution_x: double !&#10;+ resolution_y: double !&#10;+ nodata: double ?&#10;+ dtype: string !&#10;+ checksum: string !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-raster-raw">
           <mxGeometry x="0" y="34" width="400" height="284" as="geometry" />
         </mxCell>
-        <mxCell id="b-weather-raw" value="bronze.weather_grid_value (implemented contract)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="1450" y="250" width="410" height="369" as="geometry" />
+        <mxCell id="b-weather-raw" value="bronze.weather_raster_slice (implemented)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1450" y="250" width="410" height="420" as="geometry" />
         </mxCell>
-        <mxCell id="b-weather-raw-a" value="+ object_id: string ! PK/FK&#10;+ source_id: string !&#10;+ source_grid_id: string ! PK&#10;+ source_grid_version: string ! PK&#10;+ variable: string ! PK&#10;+ vertical_level: string ! PK&#10;+ valid_time: timestamp ! PK&#10;+ window_start: timestamp ! PK&#10;+ window_end: timestamp ! PK&#10;+ source_revision: int ! PK&#10;+ source_cycle_id: string ! PK&#10;+ model_run_time: timestamp ?&#10;+ available_at: timestamp !&#10;+ value: double ?&#10;+ unit: string !&#10;+ value_kind: string !&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-weather-raw">
-          <mxGeometry x="0" y="34" width="410" height="335" as="geometry" />
+        <mxCell id="b-weather-raw-a" value="+ slice_id: string ! PK&#10;+ object_id: string ! FK&#10;+ source_id: string !&#10;+ source_product: string ! PK&#10;+ source_grid_version: string ! PK/FK&#10;+ spatial_scope_id: string ! PK&#10;+ variable: string ! PK&#10;+ vertical_level: string ! PK&#10;+ source_cycle_id: string ! PK&#10;+ model_run_time: timestamp ?&#10;+ valid_time: timestamp ! PK&#10;+ window_start: timestamp ! PK&#10;+ window_end: timestamp ! PK&#10;+ source_revision: int ! PK&#10;+ cell_indices: list&lt;long&gt; !&#10;+ values: list&lt;float?&gt; !&#10;+ unit: string !&#10;+ value_kind: string !&#10;+ available_at: timestamp ?&#10;+ ingest_run_id: string !&#10;+ parser_version: string !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=8;fontSize=11;" vertex="1" parent="b-weather-raw">
+          <mxGeometry x="0" y="34" width="410" height="386" as="geometry" />
         </mxCell>
         <mxCell id="b-osm-raw" value="bronze.osm_feature_raw (target)" style="swimlane;html=1;startSize=34;fontStyle=1;fontSize=14;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="70" y="700" width="400" height="216" as="geometry" />
@@ -189,16 +198,16 @@
         <mxCell id="sn" value="Representative fields; exact attributes and keys: docs/schema_contract/data.md" style="text;html=1;fontSize=14;fontColor=#666666;align=left;" vertex="1" parent="1">
           <mxGeometry x="50" y="70" width="1400" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="s-grid-dim" value="silver.source_grid (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="50" y="150" width="300" height="215" as="geometry" />
+        <mxCell id="s-grid-dim" value="silver.source_grid (implemented reference)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="50" y="130" width="300" height="300" as="geometry" />
         </mxCell>
-        <mxCell id="s-grid-dim-a" value="+ source_id: string ! PK&#10;+ source_grid_version: string ! PK&#10;+ source_grid_id: string ! PK&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ resolution_x: double !&#10;+ resolution_y: double !&#10;+ centroid_lon: double !&#10;+ centroid_lat: double !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-dim">
-          <mxGeometry x="0" y="32" width="300" height="183" as="geometry" />
+        <mxCell id="s-grid-dim-a" value="+ source_id: string ! PK&#10;+ source_grid_version: string ! PK&#10;+ source_grid_id: string ! PK&#10;+ cell_index: long ! unique&#10;+ row_index: int !&#10;+ column_index: int !&#10;+ geometry_wkb: binary !&#10;+ bbox_wgs84: list&lt;double&gt; !&#10;+ centroid_lon: double !&#10;+ centroid_lat: double !&#10;+ resolution_x: double !&#10;+ resolution_y: double !&#10;+ crs: string !&#10;+ scope_ids: list&lt;string&gt; !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-dim">
+          <mxGeometry x="0" y="32" width="300" height="268" as="geometry" />
         </mxCell>
-        <mxCell id="s-grid-fact" value="silver.grid_value (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="s-grid-fact" value="silver.basin_weather_value (future)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="410" y="130" width="330" height="280" as="geometry" />
         </mxCell>
-        <mxCell id="s-grid-fact-a" value="+ business_key_hash: string ! PK&#10;+ source_id: string ! FK&#10;+ source_grid_version: string ! FK&#10;+ source_grid_id: string ! FK&#10;+ raw_object_id: string ! FK&#10;+ source_cycle_id: string !&#10;+ model_run_time: timestamp ?&#10;+ valid_time: timestamp !&#10;+ window_start: timestamp !&#10;+ window_end: timestamp !&#10;+ variable: string !&#10;+ vertical_level: string !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-fact">
+        <mxCell id="s-grid-fact-a" value="+ business_key_hash: string ! PK&#10;+ basin_id: string ! FK&#10;+ basin_version: string ! FK&#10;+ source_id: string ! FK&#10;+ source_product: string !&#10;+ source_grid_version: string ! FK&#10;+ source_slice_id: string ! FK&#10;+ source_cycle_id: string !&#10;+ model_run_time: timestamp ?&#10;+ valid_time: timestamp !&#10;+ window_start: timestamp !&#10;+ window_end: timestamp !&#10;+ variable: string !&#10;+ valid_coverage_fraction: double !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-fact">
           <mxGeometry x="0" y="32" width="330" height="248" as="geometry" />
         </mxCell>
         <mxCell id="s-basin" value="silver.dim_basin (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
@@ -207,7 +216,7 @@
         <mxCell id="s-basin-a" value="+ basin_id: string ! PK&#10;+ basin_version: string ! PK&#10;+ hydrobasins_level: int ! = 12&#10;+ geometry_wkb: binary !&#10;+ crs: string !&#10;+ geometry_hash: string !&#10;+ next_down_id: string ?&#10;+ main_basin_id: string ?&#10;+ pfaf_id: string ?&#10;+ topology_sort_hint: long ?&#10;+ basin_area_km2: double !&#10;+ upstream_area_km2: double !&#10;… full fields in data.md" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-basin">
           <mxGeometry x="0" y="32" width="330" height="258" as="geometry" />
         </mxCell>
-        <mxCell id="s-grid-basin" value="silver.grid_basin_weight (target)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="s-grid-basin" value="silver.grid_basin_weight (future)" style="swimlane;html=1;startSize=32;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="1280" y="145" width="340" height="235" as="geometry" />
         </mxCell>
         <mxCell id="s-grid-basin-a" value="+ source_id: string ! PK/FK&#10;+ source_grid_version: string ! PK/FK&#10;+ source_grid_id: string ! PK/FK&#10;+ basin_id: string ! PK/FK&#10;+ basin_version: string ! PK/FK&#10;+ geometry_processing_version: string ! PK&#10;+ intersection_area_m2: double !&#10;+ weight_by_basin: double !&#10;+ weight_by_grid: double !&#10;+ quality_status: string !" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=7;spacingTop=7;fontSize=10;" vertex="1" parent="s-grid-basin">

@@ -1,6 +1,6 @@
 # Kiến trúc pipeline dữ liệu và kế hoạch triển khai
 
-**Cập nhật:** 23/09/2026
+**Cập nhật:** 28/09/2026
 **Phạm vi:** pipeline Raw/Landing, Meta và Bronze hiện có cho static/weather; kế hoạch tách flood event; kế hoạch Silver/Gold cho GSMaP, ERA5-Land và IFS/Open-Meteo.
 
 Tài liệu này phân biệt rõ:
@@ -49,19 +49,20 @@ Không truyền file lớn qua Airflow XCom. Task chỉ truyền `source_id`, `o
 | --- | --- | --- |
 | `static_source_landing` | Đã triển khai và đã chạy | Chọn/tải dữ liệu tĩnh, publish payload + manifest vào MinIO, đăng ký `meta.source_objects`, audit Meta. |
 | `static_source_to_bronze` | Đã triển khai và đã chạy | Discover raw object chưa có kết quả hợp lệ, parse theo nguồn, chạy QA, ghi bảng Bronze và lineage. |
-| `gsmap_ingest` | Đã triển khai, sample provider thật đã chạy | Gauge Standard/NOW: lập expected windows, fetch, commit Raw/Meta, parse Bronze và cập nhật watermark. |
+| `gsmap_now_ingest` | Đã triển khai | Gauge NOW: fetch vào staging, cắt AOI, commit scoped Raw/Meta, parse raster slice và cleanup Raw transient sau 7 ngày. |
+| `gsmap_standard_ingest` | Đã triển khai | Gauge Standard: fetch, cắt AOI, commit scoped Raw durable, parse raster slice và cập nhật watermark riêng. |
 | `era5_land_ingest` | Đã triển khai, chưa chạy provider thật | ERA5-Land theo tháng hoàn chỉnh: request CDS theo AOI, commit Raw/Meta và giữ accumulation gốc trong Bronze. |
 | `ifs_ingest` | Đã triển khai, chưa chạy provider thật | IFS HRES Single Runs theo cycle 6 giờ: request Open-Meteo, commit Raw/Meta và parse forecast grid vào Bronze. |
 
-Hai DAG static đều `schedule=None`, `catchup=False` và mặc định pause khi tạo. Ba DAG weather có
+Hai DAG static đều `schedule=None`, `catchup=False` và mặc định pause khi tạo. Bốn DAG weather có
 schedule riêng, `catchup=False`, `max_active_runs=1` và cũng pause khi tạo. Việc chạy lại là
 idempotent theo object và kết quả đã publish, không dựa vào DAG run ID. Runtime Airflow đã import
-được cả ba DAG weather. Sample backfill GSMaP Standard/NOW đã chạy trọn Raw → Meta → Bronze;
-credential, quota, latency và payload thật của ERA5-Land/IFS vẫn phải được xác minh riêng.
+được cả bốn DAG weather. Lakehouse local phải reset một lần trước khi chạy contract raster slice;
+credential, quota, latency và payload thật của từng provider vẫn phải được xác minh riêng.
 
 ### 2.2. Dữ liệu đã có
 
-Snapshot kiểm tra gần nhất có bảy bảng Bronze:
+Snapshot kiểm tra gần nhất của static pipeline có sáu bảng Bronze:
 
 | Bảng | Số dòng | Nội dung |
 | --- | ---: | --- |
@@ -71,12 +72,10 @@ Snapshot kiểm tra gần nhất có bảy bảng Bronze:
 | `bronze.raster_coverage` | 111 | Chỉ mục band/tile của DEM, SoilGrids, WorldCover, WorldPop. |
 | `bronze.historical_event_raw` | 32 | Dòng bằng chứng sự kiện lũ giữ theo nguồn. |
 | `bronze.osm_feature_raw` | 763.704 | OSM thuộc các nhóm phục vụ lũ. |
-| `bronze.weather_grid_value` | 800 | Hai lát GSMaP Standard/NOW, 400 ô AOI mỗi lát. |
 
 Raw payload tương ứng nằm trong MinIO. `raster_coverage` chỉ lưu metadata band/tile; pixel vẫn nằm trong file Raw.
-Hai object GSMaP lúc 00:00 UTC ngày 20/09/2026 đã được đăng ký trong `meta.source_objects` và parse
-thành 800 row Bronze có quality `passed`. Run dùng mode backfill nên `meta.ingest_watermarks` vẫn
-chưa được đẩy; ERA5-Land và IFS chưa có dữ liệu provider thật tại checkpoint này.
+Weather cũ theo từng ô là dữ liệu thử nghiệm không tương thích contract mới. Sau reset và trigger,
+pipeline tạo `silver.source_grid`, `bronze.weather_raster_slice` và `meta.object_lifecycle`.
 
 ### 2.3. Nguồn hiện nằm trong static pipeline
 
@@ -315,11 +314,13 @@ flowchart TD
     FB --> FH["flood_event_harmonize"]
   end
 
-  subgraph Weather["Weather ingest — đã có; Silver/Gold — mục tiêu"]
-    GI["gsmap_ingest<br/>Landing → Raw/Meta → Bronze"]
+  subgraph Weather["Weather ingest — đã có; basin Silver/Gold — mục tiêu"]
+    GN["gsmap_now_ingest<br/>scoped Raw → raster slice"]
+    GS["gsmap_standard_ingest<br/>scoped Raw → raster slice"]
     EI["era5_land_ingest<br/>Landing → Raw/Meta → Bronze"]
     II["ifs_ingest<br/>Landing → Raw/Meta → Bronze"]
-    GI --> ASSET["weather_bronze_updated"]
+    GN --> ASSET["weather_bronze_updated"]
+    GS --> ASSET
     EI --> ASSET
     II --> ASSET
     ASSET --> WS["weather_bronze_to_silver"]
@@ -472,17 +473,20 @@ Chính sách chọn dữ liệu:
 | Khoảng trễ của nguồn final | GSMaP Gauge NOW | IFS | IFS | `PROVISIONAL` |
 | Tương lai | IFS | IFS | IFS | `FORECAST` |
 
-GSMaP NOW và IFS provisional không bị xóa khi dữ liệu final xuất hiện. Silver selector đổi bản ghi ưu tiên, còn lịch sử Raw/Bronze vẫn được giữ để replay, audit và đánh giá forecast.
+GSMaP NOW và IFS provisional không bị xóa chỉ vì dữ liệu final xuất hiện. Bronze và metadata audit
+được giữ; scoped Raw của hai nguồn transient hết hạn sau 7 ngày nhưng chỉ được xóa khi đã có
+Bronze snapshot, DQ passed và lineage. GSMaP Standard và ERA5-Land Raw là durable.
 
 ### 9.2. Một ingest DAG cho mỗi source
 
 | DAG đã triển khai | Wake-up schedule | Safe end hiện dùng | Công việc |
 | --- | --- | --- | --- |
-| `gsmap_ingest` | Phút 17 mỗi giờ | Đồng hồ UTC trừ lag riêng Standard/NOW; file thiếu làm run fail và giữ cursor | Standard cho lịch sử ổn định, NOW cho đoạn gần hiện tại; Landing → Bronze. |
+| `gsmap_now_ingest` | Phút 07 và 37 mỗi giờ | Đồng hồ UTC trừ lag NOW; file thiếu làm run fail và giữ cursor | NOW gần hiện tại; scoped Raw transient 7 ngày → Bronze raster slice. |
+| `gsmap_standard_ingest` | Phút 27 mỗi 6 giờ | Đồng hồ UTC trừ lag Standard; file thiếu làm run fail và giữ cursor | Standard lịch sử ổn định; scoped Raw durable → Bronze raster slice. |
 | `ifs_ingest` | Phút 12 mỗi 6 giờ | UTC trừ 7 giờ, làm tròn theo cycle 6 giờ | Lấy explicit archived run qua Open-Meteo Single Runs; Landing → Bronze. |
 | `era5_land_ingest` | 02:43 hằng ngày | UTC trừ 10 ngày rồi lùi về đầu tháng hoàn chỉnh gần nhất | Backfill/correction theo tháng; Landing → Bronze. |
 
-Cả ba DAG đặt:
+Cả bốn DAG đặt:
 
 ```python
 catchup=False
@@ -504,17 +508,20 @@ Do đó:
 
 ```mermaid
 flowchart TD
-  R["register_dynamic_registry"] --> A["load_cursor"]
+  R["register_dynamic_registry"] --> SG["ensure_source_grid"]
+  SG --> A["load_cursor theo spatial_scope_id"]
   A --> B["determine_available_end"]
   B --> C["plan_expected_windows<br/>đối chiếu source_objects"]
   C --> D["extract_missing_objects"]
-  D --> E["fetch_missing_or_revised"]
-  E --> F["register_raw_and_meta"]
+  D --> E["fetch vào run staging"]
+  E --> S["scope_fetched_payload<br/>cắt theo AOI"]
+  S --> F["register scoped Raw + Meta"]
   F --> G["verify_contiguous_coverage"]
   G --> H["advance_cursor"]
   H --> I["discover_unparsed_objects"]
   I --> J["parse_bronze<br/>QA + commit + lineage"]
   J --> K["publish_bronze_update"]
+  K --> X["cleanup transient Raw<br/>sau 7 ngày + đủ evidence"]
 ```
 
 Các task được nhóm thành hai TaskGroup:
@@ -570,6 +577,7 @@ Các weather DAG đã dùng bảng `meta.ingest_watermarks`:
 | `source_id` | Source/provider sở hữu stream. |
 | `product` | Product cụ thể, ví dụ GSMaP Standard và Gauge NOW không dùng chung cursor. |
 | `stream_id` | Phân biệt request/cycle family khi một product có nhiều stream. |
+| `spatial_scope_id` | Hash/version AOI subset; mỗi lần mở rộng scope có cursor riêng. |
 | `cursor_time` | Mốc cuối liên tục đã có Raw hoặc đã ghi nhận NO_DATA hợp lệ. |
 | `last_safe_end` | Safe end quan sát ở lần lập kế hoạch gần nhất. |
 | `last_run_id` | Run đã cập nhật cursor gần nhất. |
@@ -580,13 +588,14 @@ Các weather DAG đã dùng bảng `meta.ingest_watermarks`:
 Khóa logic là:
 
 ```text
-(source_id, product, stream_id)
+(source_id, product, stream_id, spatial_scope_id)
 ```
 
 Vai trò các bảng không trùng nhau:
 
 - `meta.source_objects` là inventory authoritative của Raw object đã commit.
 - `meta.ingest_watermarks` là con trỏ acquisition để giới hạn khoảng lập kế hoạch.
+- `meta.object_lifecycle` giữ retention và bằng chứng cleanup của Raw động.
 - `meta.pipeline_runs`, `meta.quality_results` và `meta.lineage_edges` ghi kết quả chạy, gap/DQ và quan hệ Raw → Bronze.
 - Bronze tiến tới đâu được xác định từ lineage + published run + lát bảng, không suy ra từ acquisition watermark.
 - Silver và Gold dùng snapshot/lineage của chính chúng, không tái sử dụng Raw watermark.
@@ -677,18 +686,20 @@ Quy tắc:
 Raw layout hiện có:
 
 ```text
-raw/weather/<source_id>/<product>/YYYY/MM/DD/<asset_id>/<checksum>/<filename>
-raw/weather/<source_id>/<product>/YYYY/MM/DD/<asset_id>/<checksum>/<filename>.manifest.json
+raw/weather/<source_id>/<product>/<spatial_scope_id>/YYYY/MM/DD/<asset_id>/<checksum>/<filename>
+raw/weather/<source_id>/<product>/<spatial_scope_id>/YYYY/MM/DD/<asset_id>/<checksum>/<filename>.manifest.json
 ```
 
-Raw chỉ lấy biến và spatial subset cần cho AOI khi provider hỗ trợ. Payload giữ gần nguyên trạng, được nén nếu phù hợp và luôn có manifest/request fingerprint.
+Provider payload đi vào run staging, sau đó luôn được cắt theo AOI Sơn La trước khi publish Raw.
+Manifest giữ provider checksum/size và scoped checksum/size để audit. Staging chỉ xóa sau khi
+scoped payload qua validation và publish thành công.
 
-Bronze dùng contract source-faithful đã benchmark. Nếu lưu dạng row, grain tối thiểu là:
+Bronze dùng `bronze.weather_raster_slice`. Grain tối thiểu là:
 
 ```text
-(object_id,
+(source_product,
  source_grid_version,
- source_grid_id,
+ spatial_scope_id,
  variable,
  vertical_level,
  source_cycle_id,
@@ -697,6 +708,10 @@ Bronze dùng contract source-faithful đã benchmark. Nếu lưu dạng row, gra
  window_end,
  source_revision)
 ```
+
+Mỗi hàng chứa `cell_indices: list<long>` và `values: list<float?>` song song. Index trỏ tới
+`silver.source_grid`, bảng tham chiếu lưới ổn định đã được triển khai. `grid_basin_weight` và
+`basin_weather_value` chưa triển khai.
 
 Sau Bronze:
 
@@ -710,7 +725,8 @@ Mapping grid–basin được version riêng cho GSMaP, IFS và ERA5-Land. Weigh
 
 ```text
 airflow/dags/
-├── gsmap_ingest.py                 # hiện có
+├── gsmap_now_ingest.py             # hiện có
+├── gsmap_standard_ingest.py        # hiện có
 ├── era5_land_ingest.py             # hiện có
 ├── ifs_ingest.py                   # hiện có
 ├── weather_bronze_to_silver.py     # kế hoạch
@@ -718,7 +734,8 @@ airflow/dags/
 └── threat_b0_b3.py                 # kế hoạch
 
 config/dynamic/
-├── gsmap.yaml
+├── gsmap_now.yaml
+├── gsmap_standard.yaml
 ├── era5_land.yaml
 └── ifs.yaml
 
@@ -730,6 +747,9 @@ src/flashflood_data/orchestration/weather/
 ├── landing.py
 ├── bronze.py
 ├── parsers.py
+├── grids.py
+├── subset.py
+├── lifecycle.py
 ├── factory.py
 ├── airflow_factory.py
 ├── providers/
@@ -757,8 +777,8 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [x] Tải một sample GSMaP Standard và Gauge NOW; xác nhận v8, FTP auth, binary float32, missing flag, lag và license trong source contract.
 - [ ] Lưu IFS probe có cycle, lead time, request parameters và response nguyên trạng.
 - [ ] Tải một ERA5-Land sample qua CDS cho đúng AOI và biến đã chọn.
-- [ ] Benchmark một tháng để chốt Bronze weather dạng row hay chunk.
-- [ ] Chốt temporal/unit semantics và provider-specific object identity.
+- [x] Chốt Bronze dạng raster slice sau khi loại phương án một hàng/pixel.
+- [x] Chốt temporal/unit semantics và provider-specific object identity trong contract/config.
 
 **Nghiệm thu:** fixture đọc được offline; expected time slot của từng source xác định được; không còn quyết định schema bắt buộc chưa chốt.
 
@@ -777,16 +797,17 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [x] Tạo model request/raw object, provider protocol và config loader dùng chung.
 - [x] Mở rộng manifest/`SourceObjectRow` cho product, cycle, valid/available time, revision và request fingerprint.
 - [x] Tái sử dụng `ObjectPublisher`, `SourceObjectInventory` và `MetaRecorder`.
-- [x] Tạo parser dispatch và Bronze row contract.
+- [x] Tạo parser dispatch và Bronze raster-slice contract.
 - [x] Discover quét mọi Raw weather object chưa có parser version hiện tại.
 - [x] Thêm DQ cơ bản cho non-empty parse, unit, temporal interval và precipitation/runoff âm.
 - [ ] Bổ sung DQ thống kê missing, out-of-order và spatial/temporal coverage trên payload thật.
 
 **Nghiệm thu:** fake provider chạy trọn Landing → Raw/Meta → Bronze; rerun không tạo lát trùng; Bronze lỗi có thể phục hồi từ Raw.
 
-### Task 4 — Triển khai ba source ingest DAG
+### Task 4 — Triển khai bốn weather ingest DAG
 
-- [x] `gsmap_ingest`: Standard backfill, NOW near-real-time; revision được giữ cho Silver selector sau này.
+- [x] `gsmap_now_ingest`: NOW near-real-time, scoped Raw transient 7 ngày.
+- [x] `gsmap_standard_ingest`: Standard backfill, scoped Raw durable.
 - [x] `era5_land_ingest`: CDS request theo tháng, safe lag và correction overlap.
 - [x] `ifs_ingest`: explicit archived cycle qua Single Runs API.
 - [x] Mỗi DAG có TaskGroup `landing_raw` và `bronze`, `catchup=False`, `max_active_runs=1`.
@@ -799,9 +820,9 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 
 ### Task 5 — Xây Weather Silver
 
-- [ ] Tạo source grid/version và cell geometry cho từng provider.
+- [x] Tạo `silver.source_grid` với stable cell identity và membership scope cho từng provider.
 - [ ] Tạo `grid_basin_weight` cho basin L12.
-- [ ] Chuẩn hóa variable, unit, interval và revision vào Silver.
+- [ ] Tạo `basin_weather_value`, chuẩn hóa variable/unit/interval/revision và aggregate theo basin.
 - [ ] Trigger bằng Bronze asset event và thêm reconciliation theo snapshot Meta.
 - [ ] Kiểm thử area weight, valid coverage, missing và cửa sổ không chồng lấn.
 
@@ -844,7 +865,7 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 
 - Basin level 12 là đơn vị phân tích mục tiêu.
 - Flood event có pipeline riêng và tái sử dụng hạ tầng chung.
-- Weather có ba ingest DAG theo source: `gsmap_ingest`, `era5_land_ingest` và `ifs_ingest`.
+- Weather có bốn ingest DAG: `gsmap_now_ingest`, `gsmap_standard_ingest`, `era5_land_ingest` và `ifs_ingest`.
 - Mỗi ingest DAG chứa Landing/Raw commit và Bronze parse/commit theo hai TaskGroup.
 - Silver, Gold và threat là các DAG downstream dùng chung.
 - `catchup=False`; schedule là wake-up, application planner catch-up từ watermark.
@@ -852,7 +873,7 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - `meta.source_objects` là inventory Raw; `meta.ingest_watermarks` là acquisition cursor.
 - Reconciliation Raw → Bronze là backstop bắt buộc, không chỉ dựa vào asset event.
 - Backfill và catch-up dùng chung code.
-- IFS và GSMaP NOW provisional được giữ khi nguồn final xuất hiện.
+- IFS và GSMaP NOW Bronze/metadata được giữ khi nguồn final xuất hiện; scoped Raw transient có thể hết hạn sau 7 ngày khi đủ evidence.
 - Product/version/revision luôn được bảo toàn trong identity và lineage.
 
 ### Cần xác minh trước khi backfill lớn
@@ -860,7 +881,7 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - Quyền truy cập, quota, license, archive listing và revision behavior thực tế của từng GSMaP product.
 - Safe-end API/listing và retention thực tế của IFS/Open-Meteo.
 - Availability/correction lag và request limit hiện hành của CDS ERA5-Land.
-- Row-vs-chunk cho Bronze sau benchmark.
+- Kích thước thực tế và chi phí query của raster-slice Bronze sau backfill đại diện.
 - Grid footprint/version và kích thước Raw thực tế.
 - Overlap tối ưu cho từng source và retention đủ dài để catch-up sau downtime.
 - Cụm basin/AOI đầu tiên dùng để kiểm thử end-to-end.
@@ -891,11 +912,14 @@ Giao diện weather đã triển khai:
 ```bash
 # Catch-up tự động từ watermark tới safe end của provider
 docker compose exec -T airflow-scheduler \
-  airflow dags trigger gsmap_ingest
+  airflow dags trigger gsmap_now_ingest
+
+docker compose exec -T airflow-scheduler \
+  airflow dags trigger gsmap_standard_ingest
 
 # Backfill một khoảng rõ ràng
 docker compose exec -T airflow-scheduler \
-  airflow dags trigger gsmap_ingest \
+  airflow dags trigger gsmap_standard_ingest \
   --conf '{"mode":"backfill","start":"2020-01-01T00:00:00Z","end":"2021-01-01T00:00:00Z"}'
 
 docker compose exec -T airflow-scheduler \
