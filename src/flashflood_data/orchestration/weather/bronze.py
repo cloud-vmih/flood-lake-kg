@@ -27,16 +27,22 @@ def _raw_key(row: SourceObjectRow, bucket: str) -> tuple[str, str]:
     return f"{bucket}/{path}", path.name
 
 
-def _batches(iterator, size: int):
+def _batches(iterator, size: int, allowed_indices: set[int]):
     while batch := list(islice(iterator, size)):
         for row in batch:
-            value = row.get("value")
-            if (
-                row.get("variable")
-                in {"precipitation", "total_precipitation", "runoff", "surface_runoff"}
-                and value is not None
-                and float(value) < 0
-            ):
+            indices = list(map(int, row.get("cell_indices", ())))
+            values = list(row.get("values", ()))
+            if len(indices) != len(values):
+                raise ValueError("weather slice arrays have different lengths")
+            if set(indices) != allowed_indices:
+                raise ValueError("weather slice contains unknown or missing source-grid indices")
+            if row.get("variable") in {
+                "precipitation",
+                "total_precipitation",
+                "runoff",
+                "surface_runoff",
+                "sub_surface_runoff",
+            } and any(value is not None and float(value) < 0 for value in values):
                 raise ValueError("negative precipitation or runoff in weather object")
             if not row.get("unit"):
                 raise ValueError("weather value has no source unit")
@@ -55,6 +61,7 @@ class WeatherBronzeService:
         object_store,
         writer,
         meta,
+        lifecycle,
         raw_bucket: str,
         staging_root: Path,
         catalog_name: str = "flood_lakehouse",
@@ -67,6 +74,7 @@ class WeatherBronzeService:
         self.object_store = object_store
         self.writer = writer
         self.meta = meta
+        self.lifecycle = lifecycle
         self.raw_bucket = raw_bucket
         self.staging_root = Path(staging_root)
         self.catalog_name = catalog_name
@@ -79,7 +87,7 @@ class WeatherBronzeService:
         helper = getattr(self.writer, "published_weather_objects", None)
         if helper is not None:
             return set(helper(parser_version)) & set(object_ids)
-        dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.weather_grid_value"
+        dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.weather_raster_slice"
         meta_namespace = getattr(self.meta, "meta_namespace", "meta")
         lineage_table = self.writer.ensure_table((meta_namespace, "lineage_edges"))
         lineage_table.refresh()
@@ -124,7 +132,7 @@ class WeatherBronzeService:
         }
         if not candidates_with_published_runs:
             return set()
-        table = self.writer.ensure_table((self.bronze_namespace, "weather_grid_value"))
+        table = self.writer.ensure_table((self.bronze_namespace, "weather_raster_slice"))
         table.refresh()
         bronze_ids = tuple(sorted(candidates_with_published_runs))
         expression = (
@@ -156,6 +164,8 @@ class WeatherBronzeService:
             for row in self.inventory.available_objects(source_id)
             if row.source_type == "dynamic"
         )
+        expired = set(self.lifecycle.expired_object_ids(candidates))
+        candidates = tuple(item for item in candidates if item not in expired)
         if force_reprocess:
             return candidates
         published = self._published(candidates, parser_version)
@@ -177,8 +187,31 @@ class WeatherBronzeService:
         if len(matches) != 1:
             raise LookupError(f"available dynamic Raw object is not unique: {object_id}")
         row = matches[0]
+        selection = json.loads(row.selection_json)
+        source_grid_version = str(selection["source_grid_version"])
+        spatial_scope_id = str(selection["spatial_scope_id"])
+        helper = getattr(self.writer, "source_grid_indices", None)
+        if helper is not None:
+            allowed_indices = set(
+                helper(row.source_id, source_grid_version, spatial_scope_id)
+            )
+        else:
+            grid_rows = self.writer.get_keyed_rows(
+                ("silver", "source_grid"),
+                {
+                    "source_id": row.source_id,
+                    "source_grid_version": source_grid_version,
+                },
+            )
+            allowed_indices = {
+                int(item["cell_index"])
+                for item in grid_rows
+                if spatial_scope_id in item["scope_ids"]
+            }
+        if not allowed_indices:
+            raise ValueError("weather source grid has no cells for the registered scope")
         key, filename = _raw_key(row, self.raw_bucket)
-        dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.weather_grid_value"
+        dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.weather_raster_slice"
         started_at = datetime.now(UTC)
         identity = json.dumps(
             {"run_id": run_id, "object_id": object_id, "parser_version": parser_version},
@@ -216,9 +249,9 @@ class WeatherBronzeService:
                     row, local, run_id=run_id, parser_version=parser_version
                 )
                 snapshot_id, row_count = self.writer.replace_object_batches(
-                    (self.bronze_namespace, "weather_grid_value"),
+                    (self.bronze_namespace, "weather_raster_slice"),
                     object_id,
-                    _batches(rows, self.batch_size),
+                    _batches(rows, self.batch_size, allowed_indices),
                 )
             now = datetime.now(UTC)
             self.meta.record_snapshot_ref(
@@ -243,7 +276,7 @@ class WeatherBronzeService:
                 snapshot_table=dataset_id,
                 snapshot_id=snapshot_id,
             )
-            self.meta.record_lineage(
+            lineage_edge_id = self.meta.record_lineage(
                 pipeline_run_id=pipeline_run_id,
                 input_object_id=object_id,
                 output_table=dataset_id,
@@ -251,6 +284,13 @@ class WeatherBronzeService:
                 transform_role="source",
                 mapping_version=parser_version,
                 created_at=now,
+            )
+            self.lifecycle.mark_bronze_evidence(
+                object_id,
+                snapshot_id,
+                "passed",
+                lineage_edge_id,
+                now,
             )
             self.meta.record_run(
                 {

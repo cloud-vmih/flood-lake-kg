@@ -254,7 +254,7 @@ class WeatherRasterSlice(ImmutableModel):
     window_end: datetime
     source_revision: int = Field(ge=0)
     cell_indices: tuple[int, ...]
-    values: tuple[float, ...]
+    values: tuple[float | None, ...]
     unit: str
     value_kind: str
     available_at: datetime | None = None
@@ -285,8 +285,8 @@ class WeatherRasterSlice(ImmutableModel):
             raise ValueError("cell_indices cannot be negative")
         if tuple(sorted(set(self.cell_indices))) != self.cell_indices:
             raise ValueError("cell_indices must be sorted and unique")
-        if self.window_end <= self.window_start:
-            raise ValueError("weather slice window_end must be after window_start")
+        if self.window_end < self.window_start:
+            raise ValueError("weather slice window_end cannot precede window_start")
         if not self.window_start <= self.valid_time <= self.window_end:
             raise ValueError("valid_time must fall within the weather slice window")
         return self

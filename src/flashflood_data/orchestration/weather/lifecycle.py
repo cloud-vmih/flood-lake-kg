@@ -142,6 +142,20 @@ class ObjectLifecycleStore:
             eligible.append(marked)
         return tuple(sorted(eligible, key=lambda item: item.object_id))
 
+    def expired_object_ids(self, object_ids) -> set[str]:
+        """Return candidate IDs whose Raw payload has already been deleted."""
+        requested = set(map(str, object_ids))
+        if not requested:
+            return set()
+        rows = self.store.get_keyed_rows(
+            self.IDENTIFIER, {"storage_status": "expired"}
+        )
+        return {
+            str(row["object_id"])
+            for row in rows
+            if str(row["object_id"]) in requested
+        }
+
     def mark_expired(self, object_id: str, deleted_at: datetime) -> int:
         """Confirm the Raw payload is absent after a successful object-store delete."""
         current = self._load(object_id)

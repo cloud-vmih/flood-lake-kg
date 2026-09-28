@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from flashflood_data.orchestration.weather.config import load_weather_config
 from flashflood_data.orchestration.weather.factory import WeatherRuntime, _matches_planned_object
 from flashflood_data.orchestration.weather.models import PlannedWeatherObject, WeatherWindow
 
@@ -85,3 +86,34 @@ def test_provider_failure_is_recorded_before_raw_publication(tmp_path: Path, mon
     assert [item["status"] for item in meta.attempts] == ["running", "failed"]
     assert meta.attempts[-1]["attempt_no"] == 3
     assert meta.attempts[-1]["error_code"] == "TimeoutError"
+
+
+def test_meta_registration_targets_weather_raster_slice_contract() -> None:
+    class MemoryMeta:
+        def __init__(self) -> None:
+            self.datasets = []
+
+        def register_source(self, row):
+            return 1
+
+        def register_dataset(self, row):
+            self.datasets.append(row)
+            return 2
+
+    meta = MemoryMeta()
+    runtime = WeatherRuntime(
+        root=Path(__file__).resolve().parents[3],
+        config=load_weather_config(
+            Path(__file__).resolve().parents[3] / "config/dynamic/gsmap_standard.yaml"
+        ),
+        settings=SimpleNamespace(),
+        inventory=SimpleNamespace(),
+        table_store=SimpleNamespace(),
+        meta=meta,
+        object_store=SimpleNamespace(),
+    )
+
+    runtime.register_meta()
+
+    assert meta.datasets[0]["dataset_id"] == "flood_lakehouse.bronze.weather_raster_slice"
+    assert meta.datasets[0]["schema_ref"].endswith("#bronzeweather_raster_slice")

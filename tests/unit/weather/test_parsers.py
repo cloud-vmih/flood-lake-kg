@@ -1,4 +1,3 @@
-import gzip
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,6 +50,9 @@ def _selection(**options: object) -> dict[str, object]:
         "variables": ["precipitation"],
         "source_cycle_id": "20260901T0000Z",
         "source_revision": 7,
+        "source_grid_version": "grid-v1",
+        "spatial_scope_id": "sonla-scope-v1",
+        "cell_count": 1,
         "options": options,
     }
 
@@ -67,6 +69,7 @@ def test_openmeteo_json_expands_points_times_and_variables(tmp_path: Path) -> No
                     {
                         "latitude": 21.5,
                         "longitude": 104.0,
+                        "cell_index": 121,
                         "hourly": {
                             "time": ["2026-09-01T01:00", "2026-09-01T02:00"],
                             "precipitation": [1.0, 2.0],
@@ -92,7 +95,8 @@ def test_openmeteo_json_expands_points_times_and_variables(tmp_path: Path) -> No
     parsed = list(parse_weather_object(row, path, run_id="bronze-run", parser_version="v1"))
 
     assert len(parsed) == 4
-    assert {item["source_grid_id"] for item in parsed} == {"lat=21.500000,lon=104.000000"}
+    assert all(item["cell_indices"] == [121] for item in parsed)
+    assert {tuple(item["values"]) for item in parsed} == {(1.0,), (2.0,), (0.2,), (0.3,)}
     assert {item["vertical_level"] for item in parsed} == {"surface", "0_to_7cm"}
     assert {item["value_kind"] for item in parsed} == {"preceding_hour_sum", "instantaneous"}
     assert all(item["valid_time"].tzinfo is UTC for item in parsed)
@@ -110,14 +114,14 @@ def test_era5_netcdf_expands_grid_and_preserves_source_units(
     path = tmp_path / "era5.nc"
     dataset = xr.Dataset(
         {
-            "tp": (
-                ("valid_time", "latitude", "longitude"),
-                np.array([[[0.001, 0.002]], [[0.003, 0.004]]], dtype=np.float32),
+            "total_precipitation": (
+                ("valid_time", "cell_index"),
+                np.array([[0.001, 0.002], [0.003, 0.004]], dtype=np.float32),
                 {"units": "m"},
             ),
-            "swvl1": (
-                ("valid_time", "latitude", "longitude"),
-                np.array([[[0.25, 0.30]], [[0.26, 0.31]]], dtype=np.float32),
+            "volumetric_soil_water_layer_1": (
+                ("valid_time", "cell_index"),
+                np.array([[0.25, 0.30], [0.26, 0.31]], dtype=np.float32),
                 {"units": "m3 m-3"},
             ),
         },
@@ -126,8 +130,7 @@ def test_era5_netcdf_expands_grid_and_preserves_source_units(
                 np.datetime64("2026-09-01T00:00:00"),
                 np.datetime64("2026-09-01T12:00:00"),
             ],
-            "latitude": [21.5],
-            "longitude": [104.0, 104.1],
+            "cell_index": [121, 122],
         },
     )
     path.write_bytes(b"netcdf-fixture")
@@ -142,12 +145,13 @@ def test_era5_netcdf_expands_grid_and_preserves_source_units(
         selection={
             **_selection(),
             "variables": ["total_precipitation", "volumetric_soil_water_layer_1"],
+            "cell_count": 2,
         },
     )
 
     parsed = list(parse_weather_object(row, path, run_id="bronze-run", parser_version="v1"))
 
-    assert len(parsed) == 8
+    assert len(parsed) == 4
     precipitation = [item for item in parsed if item["variable"] == "total_precipitation"]
     assert {item["unit"] for item in precipitation} == {"m"}
     assert {item["value_kind"] for item in precipitation} == {"accumulation_since_00_utc"}
@@ -156,35 +160,44 @@ def test_era5_netcdf_expands_grid_and_preserves_source_units(
     noon = [item for item in precipitation if item["valid_time"].hour == 12]
     assert all(item["window_start"] == item["valid_time"] - timedelta(hours=24) for item in midnight)
     assert all(item["window_start"].hour == 0 for item in noon)
-    assert {item["source_grid_id"] for item in parsed} == {
-        "lat=21.500000,lon=104.000000",
-        "lat=21.500000,lon=104.100000",
-    }
+    assert all(item["cell_indices"] == [121, 122] for item in parsed)
+    assert precipitation[0]["values"] == [0.0010000000474974513, 0.0020000000949949026]
 
 
-def test_gsmap_binary_is_subset_to_aoi_and_uses_configured_grid(tmp_path: Path) -> None:
-    path = tmp_path / "gsmap.dat.gz"
-    values = np.arange(12, dtype="<f4").reshape(3, 4)
-    values[0, :3] = (-99.0, -4.0, -8.0)
-    with gzip.open(path, "wb") as stream:
-        stream.write(values.tobytes())
-    selection = _selection(
-        grid_height=3,
-        grid_width=4,
-        grid_north=1.0,
-        grid_west=100.0,
-        grid_resolution_degrees=1.0,
-        dtype="<f4",
-        missing_values=[-4.0, -8.0, -99.0],
-        aoi_bounds=[100.5, -0.5, 102.5, 1.5],
+def test_gsmap_npz_emits_one_aligned_raster_slice(tmp_path: Path) -> None:
+    path = tmp_path / "gsmap.scoped.npz"
+    np.savez(
+        path,
+        cell_indices=np.asarray([121, 122, 481], dtype="int64"),
+        values=np.asarray([1.0, np.nan, 3.5], dtype="float32"),
     )
+    selection = {**_selection(), "cell_count": 3}
     row = _row(path, source_id="gsmap", product="gauge_standard_v8", selection=selection)
 
     parsed = list(parse_weather_object(row, path, run_id="bronze-run", parser_version="v1"))
 
-    assert len(parsed) == 6
+    assert len(parsed) == 1
     assert {item["unit"] for item in parsed} == {"mm/h"}
     assert {item["value_kind"] for item in parsed} == {"rate"}
-    assert sum(item["value"] is None for item in parsed) == 3
-    assert min(item["value"] for item in parsed if item["value"] is not None) == 4.0
-    assert max(item["value"] for item in parsed if item["value"] is not None) == 6.0
+    assert parsed[0]["cell_indices"] == [121, 122, 481]
+    assert parsed[0]["values"] == [1.0, None, 3.5]
+
+
+def test_parser_rejects_duplicate_or_unsorted_cell_indices(tmp_path: Path) -> None:
+    import pytest
+
+    path = tmp_path / "gsmap.scoped.npz"
+    np.savez(
+        path,
+        cell_indices=np.asarray([122, 121, 121], dtype="int64"),
+        values=np.asarray([1.0, 2.0, 3.0], dtype="float32"),
+    )
+    row = _row(
+        path,
+        source_id="gsmap",
+        product="gauge_standard_v8",
+        selection={**_selection(), "cell_count": 3},
+    )
+
+    with pytest.raises(ValueError, match="sorted and unique"):
+        list(parse_weather_object(row, path, run_id="run", parser_version="v2"))

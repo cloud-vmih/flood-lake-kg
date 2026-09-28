@@ -151,13 +151,13 @@ class WeatherRuntime:
         )
         dataset = self.meta.register_dataset(
             {
-                "dataset_id": "flood_lakehouse.bronze.weather_grid_value",
-                "contract_version": "1.0",
+                "dataset_id": "flood_lakehouse.bronze.weather_raster_slice",
+                "contract_version": "2.0",
                 "layer": "bronze",
-                "description": "Provider-grain dynamic weather grid values",
+                "description": "AOI-scoped dynamic weather raster slices",
                 "owner": "flashflood-data",
                 "source_id": None,
-                "schema_ref": "docs/schema_contract/data.md#bronzeweather_grid_value",
+                "schema_ref": "docs/schema_contract/data.md#bronzeweather_raster_slice",
                 "data_classification": "public",
                 "license_id": None,
                 "retention_policy_ref": "retain-source-revisions",
@@ -389,6 +389,7 @@ class WeatherRuntime:
             object_store=self.object_store,
             writer=self.table_store,
             meta=self.meta,
+            lifecycle=ObjectLifecycleStore(self.table_store),
             raw_bucket=self.settings.raw_bucket,
             staging_root=self.settings.staging_root,
             catalog_name=self.settings.polaris_catalog,
