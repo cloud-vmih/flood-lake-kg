@@ -8,6 +8,15 @@ from flashflood_data.cli.app import app
 
 
 def test_bronze_backfill_dry_run_lists_registered_object_ids(monkeypatch) -> None:
+    class Config:
+        def __init__(self):
+            self.sources = {"hydrobasins_v1c": object()}
+
+        @staticmethod
+        def parser_version(source_id):
+            assert source_id == "hydrobasins_v1c"
+            return "v1"
+
     class Service:
         def discover(self, source_id, *, parser_version, force_reprocess):
             assert source_id == "hydrobasins_v1c"
@@ -20,6 +29,9 @@ def test_bronze_backfill_dry_run_lists_registered_object_ids(monkeypatch) -> Non
 
     monkeypatch.setattr(
         "flashflood_data.cli.commands.bronze.build_bronze_service", lambda: Service()
+    )
+    monkeypatch.setattr(
+        "flashflood_data.cli.commands.bronze.load_bronze_config", lambda _path: Config()
     )
     result = CliRunner().invoke(
         app, ["bronze", "backfill", "--source-id", "hydrobasins_v1c", "--dry-run"]
