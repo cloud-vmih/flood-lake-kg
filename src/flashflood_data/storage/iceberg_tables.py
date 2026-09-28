@@ -27,10 +27,14 @@ def _filters(keys: Sequence[Mapping[str, Any]]) -> EqualTo | And | Or:
     if not keys:
         raise ValueError("Iceberg key batch cannot be empty")
     expressions = [_filter(key) for key in keys]
-    result = expressions[0]
-    for expression in expressions[1:]:
-        result = Or(result, expression)
-    return result
+    while len(expressions) > 1:
+        expressions = [
+            Or(expressions[index], expressions[index + 1])
+            if index + 1 < len(expressions)
+            else expressions[index]
+            for index in range(0, len(expressions), 2)
+        ]
+    return expressions[0]
 
 
 def _snapshot_id(table: Any) -> int:

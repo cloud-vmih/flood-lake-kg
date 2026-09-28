@@ -7,8 +7,11 @@ import pyarrow as pa
 import pytest
 from pyiceberg.exceptions import CommitFailedException
 from pyiceberg.expressions import And, EqualTo, In, Or
+from pyiceberg.expressions.visitors import bind
+from pyiceberg.schema import Schema
+from pyiceberg.types import NestedField, StringType
 
-from flashflood_data.storage.iceberg_tables import IcebergTableStore
+from flashflood_data.storage.iceberg_tables import IcebergTableStore, _filters
 
 
 def _matches(row: dict[str, object], expression: object) -> bool:
@@ -91,6 +94,26 @@ class _Transaction:
 
     def append(self, data: pa.Table):
         self.rows.extend(data.to_pylist())
+
+
+def test_large_key_filter_can_be_bound_by_pyiceberg() -> None:
+    schema = Schema(
+        NestedField(1, "source_id", StringType(), required=True),
+        NestedField(2, "source_grid_version", StringType(), required=True),
+        NestedField(3, "source_grid_id", StringType(), required=True),
+    )
+    keys = [
+        {
+            "source_id": "gsmap",
+            "source_grid_version": "grid-v1",
+            "source_grid_id": f"row=1000,col={column}",
+        }
+        for column in range(500)
+    ]
+
+    expression = _filters(keys)
+
+    assert bind(schema, expression, case_sensitive=True) is not None
 
 
 class _Catalog:
