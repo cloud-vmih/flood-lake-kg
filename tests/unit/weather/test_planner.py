@@ -35,6 +35,7 @@ def test_plans_stable_half_open_objects_until_provider_safe_end() -> None:
     objects = plan_expected_objects(
         source_id="rain_source",
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream=_stream(),
         start=datetime(2026, 1, 1, 0, tzinfo=UTC),
         end=datetime(2026, 1, 1, 3, tzinfo=UTC),
@@ -46,6 +47,7 @@ def test_plans_stable_half_open_objects_until_provider_safe_end() -> None:
     assert objects == plan_expected_objects(
         source_id="rain_source",
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream=_stream(),
         start=datetime(2026, 1, 1, 0, tzinfo=UTC),
         end=datetime(2026, 1, 1, 3, tzinfo=UTC),
@@ -56,6 +58,7 @@ def test_request_options_are_part_of_the_expected_identity() -> None:
     kwargs = {
         "source_id": "era5_land",
         "source_version": "v1",
+        "spatial_scope_id": "sonla-scope-v1",
         "stream": _stream(),
         "start": datetime(2026, 1, 1, 0, tzinfo=UTC),
         "end": datetime(2026, 1, 1, 1, tzinfo=UTC),
@@ -71,11 +74,29 @@ def test_request_options_are_part_of_the_expected_identity() -> None:
     assert first.request_fingerprint != changed.request_fingerprint
 
 
+def test_spatial_scope_is_part_of_asset_and_request_identity() -> None:
+    kwargs = {
+        "source_id": "gsmap",
+        "source_version": "v8",
+        "stream": _stream(),
+        "start": datetime(2026, 1, 1, tzinfo=UTC),
+        "end": datetime(2026, 1, 1, 1, tzinfo=UTC),
+    }
+
+    sonla = plan_expected_objects(**kwargs, spatial_scope_id="sonla-scope-v1")[0]
+    laocai = plan_expected_objects(**kwargs, spatial_scope_id="laocai-scope-v1")[0]
+
+    assert sonla.spatial_scope_id == "sonla-scope-v1"
+    assert sonla.asset_id != laocai.asset_id
+    assert sonla.request_fingerprint != laocai.request_fingerprint
+
+
 def test_fixed_windows_follow_request_cadence_and_may_overlap() -> None:
     stream = _stream(step_minutes=30, chunk_minutes=60)
     objects = plan_expected_objects(
         source_id="gsmap",
         source_version="v8",
+        spatial_scope_id="sonla-scope-v1",
         stream=stream,
         start=datetime(2026, 1, 1, 0, tzinfo=UTC),
         end=datetime(2026, 1, 1, 2, tzinfo=UTC),
@@ -95,6 +116,7 @@ def test_existing_objects_are_skipped_except_inside_overlap() -> None:
     expected = plan_expected_objects(
         source_id="rain_source",
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream=_stream(overlap_steps=1),
         start=datetime(2026, 1, 1, 0, tzinfo=UTC),
         end=datetime(2026, 1, 1, 3, tzinfo=UTC),
@@ -113,6 +135,7 @@ def test_overlap_does_not_redownload_object_committed_after_cursor_update() -> N
     expected = plan_expected_objects(
         source_id="rain_source",
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream=_stream(overlap_steps=1),
         start=datetime(2026, 1, 1, 0, tzinfo=UTC),
         end=datetime(2026, 1, 1, 3, tzinfo=UTC),
@@ -132,6 +155,7 @@ def test_cursor_stops_before_gap_and_accepts_explicit_no_data() -> None:
     expected = plan_expected_objects(
         source_id="rain_source",
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream=_stream(),
         start=datetime(2026, 1, 1, 10, tzinfo=UTC),
         end=datetime(2026, 1, 1, 13, tzinfo=UTC),
@@ -203,6 +227,7 @@ def test_calendar_month_chunking_never_cross_multiplies_dates() -> None:
     objects = plan_expected_objects(
         source_id="era5_land",
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream=stream,
         start=datetime(2024, 1, 1, tzinfo=UTC),
         end=datetime(2024, 4, 1, tzinfo=UTC),

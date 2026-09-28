@@ -48,6 +48,7 @@ def plan_expected_objects(
     *,
     source_id: str,
     source_version: str,
+    spatial_scope_id: str,
     stream: WeatherStreamConfig,
     start: datetime,
     end: datetime,
@@ -84,6 +85,7 @@ def plan_expected_objects(
         identity = {
             "source_id": source_id,
             "source_version": source_version,
+            "spatial_scope_id": spatial_scope_id,
             "stream_id": stream.stream_id,
             "product": stream.product,
             "window_start": _utc_text(cursor),
@@ -94,13 +96,15 @@ def plan_expected_objects(
         canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
         fingerprint = sha256(canonical.encode("utf-8")).hexdigest()
         cycle = cursor.strftime("%Y%m%dT%H%MZ")
+        scope_token = sha256(spatial_scope_id.encode()).hexdigest()[:12]
         objects.append(
             PlannedWeatherObject(
                 source_id=source_id,
                 source_version=source_version,
+                spatial_scope_id=spatial_scope_id,
                 stream_id=stream.stream_id,
                 product=stream.product,
-                asset_id=f"{stream.stream_id}-{cycle}",
+                asset_id=f"{stream.stream_id}-{cycle}-{scope_token}",
                 window=window,
                 variables=stream.variables,
                 request_fingerprint=fingerprint,

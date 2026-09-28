@@ -111,6 +111,7 @@ class PlannedWeatherObject(ImmutableModel):
 
     source_id: str
     source_version: str
+    spatial_scope_id: str
     stream_id: str
     product: str
     asset_id: str

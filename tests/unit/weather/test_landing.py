@@ -102,6 +102,7 @@ def _scoped(tmp_path: Path, payload: bytes = b"weather") -> ScopedWeatherObject:
     planned = PlannedWeatherObject(
         source_id="rain_source",
         source_version="v1",
+        spatial_scope_id="sonla-l12-h1-deadbeef",
         stream_id="hourly",
         product="rain",
         asset_id="hourly-20260901T0000Z",

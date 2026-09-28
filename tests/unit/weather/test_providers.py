@@ -18,6 +18,7 @@ def _first_plan(config_path: str):
     plan = plan_expected_objects(
         source_id=config.source_id,
         source_version=config.source_version,
+        spatial_scope_id="sonla-scope-v1",
         stream=stream,
         start=stream.start_at,
         end=stream.start_at + timedelta(minutes=stream.chunk_minutes),

@@ -65,6 +65,35 @@ class GridRegistration:
     cell_index_by_grid_id: Mapping[str, int]
     definition: GridDefinition
 
+    def to_document(self) -> dict[str, object]:
+        """Return a JSON-safe Airflow XCom document."""
+        return {
+            "source_grid_version": self.source_grid_version,
+            "scope_id": self.scope_id,
+            "cell_index_by_grid_id": dict(self.cell_index_by_grid_id),
+            "definition": {
+                name: getattr(self.definition, name)
+                for name in GridDefinition.__dataclass_fields__
+            },
+        }
+
+    @classmethod
+    def from_document(cls, document: Mapping[str, object]) -> "GridRegistration":
+        """Validate and reconstruct a registration passed between Airflow tasks."""
+        definition_doc = document.get("definition")
+        mapping = document.get("cell_index_by_grid_id")
+        if not isinstance(definition_doc, Mapping) or not isinstance(mapping, Mapping):
+            raise TypeError("invalid weather grid registration document")
+        definition = GridDefinition(**definition_doc)
+        if document.get("source_grid_version") != definition.source_grid_version:
+            raise ValueError("grid registration version does not match its definition")
+        return cls(
+            source_grid_version=definition.source_grid_version,
+            scope_id=str(document["scope_id"]),
+            cell_index_by_grid_id={str(key): int(value) for key, value in mapping.items()},
+            definition=definition,
+        )
+
 
 class _GridWriter(Protocol):
     def get_keyed_rows(self, identifier, key): ...

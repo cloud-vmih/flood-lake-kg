@@ -1,4 +1,4 @@
-"""Airflow TaskFlow factory shared by the three dynamic weather DAGs."""
+"""Airflow TaskFlow factory shared by the dynamic weather DAGs."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,9 +7,11 @@ from airflow.sdk import Asset, dag, get_current_context, task, task_group
 
 from flashflood_data.orchestration.weather.config import load_weather_config
 from flashflood_data.orchestration.weather.factory import build_weather_runtime
+from flashflood_data.orchestration.weather.grids import GridRegistration
 from flashflood_data.orchestration.weather.models import (
     FetchedWeatherObject,
     PlannedWeatherObject,
+    ScopedWeatherObject,
 )
 from flashflood_data.orchestration.weather.planner import verify_weather_outcomes
 
@@ -32,8 +34,13 @@ def build_weather_dag(dag_id: str, config_path: Path):
         return build_weather_runtime(config_path).register_meta()
 
     @task(retries=2)
-    def load_cursor() -> dict[str, object]:
-        return build_weather_runtime(config_path).cursor_document()
+    def ensure_source_grid() -> dict[str, object]:
+        return build_weather_runtime(config_path).ensure_source_grid().to_document()
+
+    @task(retries=2)
+    def load_cursor(grid_document: dict[str, object]) -> dict[str, object]:
+        grid = GridRegistration.from_document(grid_document)
+        return build_weather_runtime(config_path).cursor_document(grid.scope_id)
 
     @task(retries=2)
     def determine_available_end() -> dict[str, str]:
@@ -47,7 +54,9 @@ def build_weather_dag(dag_id: str, config_path: Path):
         requested_start: str,
         requested_end: str,
         requested_limit: str,
+        grid_document: dict[str, object],
     ) -> dict[str, object]:
+        grid = GridRegistration.from_document(grid_document)
         return build_weather_runtime(config_path).plan_document(
             cursors,
             safe_ends,
@@ -55,6 +64,7 @@ def build_weather_dag(dag_id: str, config_path: Path):
             requested_start=requested_start,
             requested_end=requested_end,
             requested_limit=requested_limit,
+            spatial_scope_id=grid.scope_id,
         )
 
     @task(retries=0)
@@ -69,12 +79,17 @@ def build_weather_dag(dag_id: str, config_path: Path):
         pool="weather_fetch",
     )
     def fetch_missing_or_revised(
-        planned_document: dict[str, object], weather_run_id: str
+        planned_document: dict[str, object],
+        weather_run_id: str,
+        grid_document: dict[str, object],
     ) -> dict[str, object]:
         planned = PlannedWeatherObject.model_validate(planned_document)
         attempt_no = int(get_current_context()["ti"].try_number)
         fetched = build_weather_runtime(config_path).fetch(
-            planned, weather_run_id, attempt_no=attempt_no
+            planned,
+            weather_run_id,
+            attempt_no=attempt_no,
+            grid=GridRegistration.from_document(grid_document),
         )
         return {
             "status": "available",
@@ -82,18 +97,34 @@ def build_weather_dag(dag_id: str, config_path: Path):
             "fetched": fetched.model_dump(mode="json"),
         }
 
-    @task(retries=3, pool="weather_raw_writer")
-    def register_raw_and_meta(
-        fetched_document: dict[str, object], weather_run_id: str
+    @task(retries=2)
+    def scope_fetched_payload(
+        fetched_document: dict[str, object], grid_document: dict[str, object]
     ) -> dict[str, object]:
         if fetched_document.get("status") == "no_data":
             return fetched_document
         fetched = FetchedWeatherObject.model_validate(fetched_document["fetched"])
+        scoped = build_weather_runtime(config_path).scope_fetched(
+            fetched, GridRegistration.from_document(grid_document)
+        )
+        return {
+            "status": "available",
+            "attempt_no": fetched_document.get("attempt_no", 1),
+            "scoped": scoped.model_dump(mode="json"),
+        }
+
+    @task(retries=3, pool="weather_raw_writer")
+    def register_raw_and_meta(
+        scoped_document: dict[str, object], weather_run_id: str
+    ) -> dict[str, object]:
+        if scoped_document.get("status") == "no_data":
+            return scoped_document
+        scoped = ScopedWeatherObject.model_validate(scoped_document["scoped"])
         runtime = build_weather_runtime(config_path)
         published = runtime.landing_service().publish_and_register(
-            fetched,
+            scoped,
             run_id=weather_run_id,
-            attempt_no=int(fetched_document.get("attempt_no", 1)),
+            attempt_no=int(scoped_document.get("attempt_no", 1)),
         )
         return {
             "status": published.status,
@@ -151,6 +182,10 @@ def build_weather_dag(dag_id: str, config_path: Path):
             "asset": "weather_bronze_updated",
         }
 
+    @task(retries=0, trigger_rule="all_done")
+    def expire_transient_raw() -> dict[str, object]:
+        return build_weather_runtime(config_path).expire_transient_raw(datetime.now(UTC))
+
     @task_group(group_id="landing_raw")
     def landing_raw_group(
         weather_run_id: str,
@@ -160,19 +195,29 @@ def build_weather_dag(dag_id: str, config_path: Path):
         requested_limit: str,
     ):
         registry = register_dynamic_registry()
-        cursors = load_cursor()
+        grid = ensure_source_grid()
+        registry >> grid
+        cursors = load_cursor(grid)
         safe_ends = determine_available_end()
-        registry >> cursors
         plan = plan_expected_windows(
-            cursors, safe_ends, mode, requested_start, requested_end, requested_limit
+            cursors,
+            safe_ends,
+            mode,
+            requested_start,
+            requested_end,
+            requested_limit,
+            grid,
         )
         missing = extract_missing_objects(plan)
         fetched = fetch_missing_or_revised.partial(
-            weather_run_id=weather_run_id
+            weather_run_id=weather_run_id, grid_document=grid
         ).expand(planned_document=missing)
+        scoped = scope_fetched_payload.partial(grid_document=grid).expand(
+            fetched_document=fetched
+        )
         registered = register_raw_and_meta.partial(
             weather_run_id=weather_run_id
-        ).expand(fetched_document=fetched)
+        ).expand(scoped_document=scoped)
         verified = verify_contiguous_coverage(plan, registered)
         return advance_cursor(plan, verified, weather_run_id)
 
@@ -207,6 +252,8 @@ def build_weather_dag(dag_id: str, config_path: Path):
         landed = landing_raw_group(
             weather_run_id, mode, requested_start, requested_end, requested_limit
         )
-        bronze_group(landed, weather_run_id, force_reprocess)
+        bronze_result = bronze_group(landed, weather_run_id, force_reprocess)
+        cleanup = expire_transient_raw()
+        bronze_result >> cleanup
 
     return weather_dag()

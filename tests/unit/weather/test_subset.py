@@ -22,6 +22,7 @@ def _planned(source_id: str, variables: tuple[str, ...]) -> PlannedWeatherObject
     return PlannedWeatherObject(
         source_id=source_id,
         source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
         stream_id="weather",
         product="weather-product",
         asset_id="weather-20260927T0000Z",

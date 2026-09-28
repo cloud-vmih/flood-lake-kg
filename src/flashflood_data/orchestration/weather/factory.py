@@ -3,7 +3,8 @@
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from flashflood_data.core.lakehouse import LakehouseSettings
 from flashflood_data.core.paths import ProjectPaths
@@ -66,6 +67,7 @@ def _matches_planned_object(row, planned: PlannedWeatherObject) -> bool:
         return False
     expected = {
         "stream_id": planned.stream_id,
+        "spatial_scope_id": planned.spatial_scope_id,
         "window_start": planned.window.start.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "window_end": planned.window.end.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "variables": list(planned.variables),
@@ -170,7 +172,7 @@ class WeatherRuntime:
         )
         return {"source_snapshot": source or 0, "dataset_snapshot": dataset or 0}
 
-    def cursor_document(self) -> dict[str, object]:
+    def cursor_document(self, spatial_scope_id: str) -> dict[str, object]:
         return {
             stream.stream_id: (
                 None
@@ -178,7 +180,7 @@ class WeatherRuntime:
                     self.config.source_id,
                     stream.product,
                     stream.stream_id,
-                    self.config.spatial_scope_name,
+                    spatial_scope_id,
                 )) is None
                 else watermark.model_dump(mode="json")
             )
@@ -201,6 +203,7 @@ class WeatherRuntime:
         requested_start: str = "",
         requested_end: str = "",
         requested_limit: str = "",
+        spatial_scope_id: str,
     ) -> dict[str, object]:
         if mode not in {"catchup", "backfill"}:
             raise ValueError("weather mode must be catchup or backfill")
@@ -229,6 +232,7 @@ class WeatherRuntime:
             expected = plan_expected_objects(
                 source_id=self.config.source_id,
                 source_version=self.config.source_version,
+                spatial_scope_id=spatial_scope_id,
                 stream=stream,
                 start=start,
                 end=end,
@@ -268,7 +272,12 @@ class WeatherRuntime:
                     "existing_asset_ids": sorted(existing),
                 }
             )
-        return {"mode": mode, "streams": stream_documents, "missing": all_missing}
+        return {
+            "mode": mode,
+            "spatial_scope_id": spatial_scope_id,
+            "streams": stream_documents,
+            "missing": all_missing,
+        }
 
     def provider(self, stream_id: str, grid: GridRegistration | None = None):
         stream = self.stream(stream_id)
@@ -370,7 +379,7 @@ class WeatherRuntime:
                     source_id=self.config.source_id,
                     product=str(document["product"]),
                     stream_id=str(document["stream_id"]),
-                    spatial_scope_id=self.config.spatial_scope_name,
+                    spatial_scope_id=str(plan["spatial_scope_id"]),
                     cursor_time=cursor,
                     last_safe_end=_datetime(document["safe_end"]),
                     last_run_id=run_id,
@@ -394,6 +403,52 @@ class WeatherRuntime:
             staging_root=self.settings.staging_root,
             catalog_name=self.settings.polaris_catalog,
         )
+
+    def expire_transient_raw(self, now: datetime | None = None) -> dict[str, object]:
+        """Delete only lifecycle-approved Raw payloads and confirm their absence."""
+        checked_at = datetime.now(UTC) if now is None else now.astimezone(UTC)
+        lifecycle = ObjectLifecycleStore(self.table_store)
+        candidates = lifecycle.eligible(checked_at)
+        available = {
+            row.object_id: row
+            for row in self.inventory.available_objects(self.config.source_id)
+        }
+        expired: list[str] = []
+        failed: dict[str, str] = {}
+        for candidate in candidates:
+            row = available.get(candidate.object_id)
+            if row is None:
+                continue
+            try:
+                uri = urlsplit(row.object_uri)
+                path = PurePosixPath(uri.path.lstrip("/"))
+                if (
+                    uri.scheme != "s3"
+                    or uri.netloc != self.settings.raw_bucket
+                    or not path.parts
+                    or any(part in {".", ".."} for part in path.parts)
+                ):
+                    raise ValueError("lifecycle object URI is outside the Raw bucket")
+                key = f"{self.settings.raw_bucket}/{path}"
+                self.object_store.delete(key)
+                if self.object_store.exists(key):
+                    raise RuntimeError("object store still reports payload after delete")
+                lifecycle.mark_expired(candidate.object_id, checked_at)
+                expired.append(candidate.object_id)
+            except Exception as error:  # noqa: BLE001 - cleanup is best effort per object
+                reason = type(error).__name__
+                failed[candidate.object_id] = reason
+                try:
+                    lifecycle.mark_delete_failed(
+                        candidate.object_id, checked_at, reason
+                    )
+                except Exception:  # noqa: BLE001 - preserve successful Bronze task state
+                    failed[candidate.object_id] = "LifecycleStateWriteError"
+        return {
+            "eligible": len(candidates),
+            "expired": sorted(expired),
+            "failed": failed,
+        }
 
 
 def build_weather_runtime(config_path: Path, root: Path | None = None) -> WeatherRuntime:

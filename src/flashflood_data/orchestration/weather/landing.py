@@ -99,6 +99,8 @@ class WeatherLandingService:
         started = datetime.now(UTC)
         planned = scoped.planned
         try:
+            if planned.spatial_scope_id != scoped.spatial_scope_id:
+                raise ValueError("planned and scoped weather AOI identities do not match")
             checksum = _checksum(scoped.path)
             if checksum != scoped.scoped_payload_checksum:
                 raise ValueError("scoped weather payload checksum changed before publication")

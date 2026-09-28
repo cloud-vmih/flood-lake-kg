@@ -3,17 +3,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
 DAGS = {
-    "gsmap_ingest.py": "gsmap_ingest",
-    "era5_land_ingest.py": "era5_land_ingest",
-    "ifs_ingest.py": "ifs_ingest",
+    "gsmap_now_ingest.py": ("gsmap_now_ingest", "gsmap_now.yaml"),
+    "gsmap_standard_ingest.py": ("gsmap_standard_ingest", "gsmap_standard.yaml"),
+    "era5_land_ingest.py": ("era5_land_ingest", "era5_land.yaml"),
+    "ifs_ingest.py": ("ifs_ingest", "ifs.yaml"),
 }
 
 
 def test_each_dynamic_source_has_one_thin_restart_safe_dag() -> None:
-    for filename, dag_id in DAGS.items():
+    for filename, (dag_id, config_name) in DAGS.items():
         source = (ROOT / "airflow/dags" / filename).read_text(encoding="utf-8")
         ast.parse(source)
         assert dag_id in source
+        assert config_name in source
         assert "build_weather_dag" in source
         assert "static_source" not in source
 
@@ -28,12 +30,15 @@ def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
         "determine_available_end",
         "plan_expected_windows",
         "extract_missing_objects",
+        "ensure_source_grid",
         "fetch_missing_or_revised",
+        "scope_fetched_payload",
         "register_raw_and_meta",
         "verify_contiguous_coverage",
         "advance_cursor",
         "discover_unparsed_objects",
         "parse_bronze",
+        "expire_transient_raw",
     ):
         assert task_name in source
     assert "landing_raw" in source
@@ -49,6 +54,9 @@ def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
     assert "outlets=" in source
     assert 'pool="weather_fetch"' in source
     assert "retry_exponential_backoff=True" in source
+    assert source.index("ensure_source_grid") < source.index("scope_fetched_payload")
+    assert source.index("scope_fetched_payload") < source.index("register_raw_and_meta")
+    assert 'trigger_rule="all_done"' in source
     imports = {
         node.module.split(".", 1)[0]
         for node in ast.walk(tree)
