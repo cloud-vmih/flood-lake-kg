@@ -41,6 +41,8 @@ x-airflow-common: &airflow-common
     CDSAPI_URL: ${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
     CDSAPI_KEY: ${CDSAPI_KEY:-}
     OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-}
+    FLASHFLOOD_CDSE_USERNAME: ${FLASHFLOOD_CDSE_USERNAME:-}
+    FLASHFLOOD_CDSE_PASSWORD: ${FLASHFLOOD_CDSE_PASSWORD:-}
   volumes:
     - ./airflow/dags:/opt/airflow/dags:ro,Z
     - ./airflow/plugins:/opt/airflow/plugins:ro,Z
