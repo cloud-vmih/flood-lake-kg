@@ -113,6 +113,41 @@ def test_resolve_downloads_sidecar_before_exposing_timestamped_pbf(tmp_path: Pat
     assert pbf[0].source_valid_time == "2026-08-20T03:04:05+00:00"
 
 
+def test_resolve_retries_geofabrik_metadata_after_read_timeout(tmp_path: Path) -> None:
+    context, spec = _context(tmp_path), _spec()
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("fixture timeout", request=request)
+        if request.url.path.endswith(".pbf"):
+            return httpx.Response(
+                200,
+                headers={
+                    "Last-Modified": "Thu, 20 Aug 2026 03:04:05 GMT",
+                    "Content-Length": "4096",
+                },
+            )
+        return httpx.Response(200, headers={"Content-Length": "57"})
+
+    adapter = GeofabrikOsmAdapter(
+        spec,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=delays.append,
+    )
+
+    remotes = adapter.resolve(context, [])
+
+    assert [remote.asset_id for remote in remotes] == [
+        "geofabrik-osm-20260820-md5"
+    ]
+    assert attempts == 3
+    assert delays == [1.0]
+
+
 def test_resolve_uses_complete_uncatalogued_local_snapshot_without_head(
     tmp_path: Path,
 ) -> None:

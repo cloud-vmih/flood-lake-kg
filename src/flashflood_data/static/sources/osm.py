@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -291,9 +292,18 @@ def extract_osm_layers(
 class GeofabrikOsmAdapter(SourceAdapter):
     """Resolve a dated Vietnam PBF snapshot and harmonize its Exposure-AOI layers."""
 
-    def __init__(self, spec, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        spec,
+        *,
+        client: httpx.Client | None = None,
+        sleep: Callable[[float], object] = time.sleep,
+    ) -> None:
         super().__init__(spec)
-        self.client = client or httpx.Client()
+        self.client = client or httpx.Client(
+            timeout=httpx.Timeout(120.0, connect=30.0)
+        )
+        self.sleep = sleep
         self._local_snapshot_cache: tuple[Path, SnapshotMetadata | None] | None = None
 
     def _setting(self, key: str) -> str:
@@ -304,13 +314,11 @@ class GeofabrikOsmAdapter(SourceAdapter):
 
     def _pbf_metadata(self) -> SnapshotMetadata:
         pbf_url = self._setting("pbf_url")
-        head = self.client.head(pbf_url, follow_redirects=True)
-        head.raise_for_status()
+        head = self._head_with_retry(pbf_url)
         return parse_geofabrik_metadata(head.headers, "0" * 32)
 
     def _sidecar_size(self) -> int:
-        response = self.client.head(self._setting("md5_url"), follow_redirects=True)
-        response.raise_for_status()
+        response = self._head_with_retry(self._setting("md5_url"))
         try:
             size = int(response.headers["Content-Length"])
         except (KeyError, ValueError) as exc:
@@ -318,6 +326,22 @@ class GeofabrikOsmAdapter(SourceAdapter):
         if size <= 0:
             raise ValueError("Geofabrik MD5 HEAD has no safe Content-Length")
         return size
+
+    def _head_with_retry(self, url: str) -> httpx.Response:
+        for attempt in range(1, 5):
+            try:
+                response = self.client.head(url, follow_redirects=True)
+                if response.status_code != 429 and response.status_code < 500:
+                    response.raise_for_status()
+                    return response
+                if attempt == 4:
+                    response.raise_for_status()
+                response.close()
+            except (httpx.TimeoutException, httpx.NetworkError):
+                if attempt == 4:
+                    raise
+            self.sleep(float(2 ** (attempt - 1)))
+        raise AssertionError("unreachable")
 
     def _local_snapshot(self, context: SourceContext) -> SnapshotMetadata | None:
         """Return the newest complete, MD5-verified expected-path local snapshot."""
