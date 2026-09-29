@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
+from shapely.geometry import box
 
 from flashflood_data.orchestration.bronze.osm import (
+    OsmAoi,
     OsmSelection,
     iter_osm_batches,
+    load_osm_aoi,
     load_osm_selection,
 )
 
@@ -37,6 +40,24 @@ groups:
     assert selection.matching_groups({"waterway": "no"}) == ()
 
 
+def test_osm_aoi_is_loaded_as_wgs84_with_a_geometry_fingerprint(tmp_path: Path) -> None:
+    import geopandas as gpd
+
+    path = tmp_path / "exposure_aoi.geoparquet"
+    gpd.GeoDataFrame(
+        {"aoi": ["exposure"], "geometry": [box(103.0, 20.0, 105.0, 22.0)]},
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3857").to_parquet(path)
+
+    first = load_osm_aoi(path)
+    second = load_osm_aoi(path)
+
+    assert isinstance(first, OsmAoi)
+    assert first.geometry.bounds == pytest.approx((103.0, 20.0, 105.0, 22.0))
+    assert first.version == second.version
+    assert first.version.startswith("exposure-")
+
+
 def test_osm_parser_reads_real_pbf_and_keeps_complete_tags() -> None:
     selection = OsmSelection(
         version="test-v1",
@@ -50,6 +71,7 @@ def test_osm_parser_reads_real_pbf_and_keeps_complete_tags() -> None:
             run_id="parse-1",
             parser_version="v1",
             selection=selection,
+            aoi=box(-0.24, 51.76, -0.22, 51.78),
             batch_size=1,
         )
     )
@@ -63,6 +85,27 @@ def test_osm_parser_reads_real_pbf_and_keeps_complete_tags() -> None:
     assert rows[0]["crs"] == "EPSG:4326"
     assert len(rows[0]["bbox_wgs84"]) == 4
     assert rows[0]["quality_status"] == "passed"
+
+
+def test_osm_parser_excludes_selected_tags_outside_exposure_aoi() -> None:
+    selection = OsmSelection(
+        version="test-v1",
+        groups={"critical_facility": {"amenity": ("post_box",)}},
+    )
+
+    batches = list(
+        iter_osm_batches(
+            FIXTURE,
+            object_id="osm-object",
+            run_id="parse-1",
+            parser_version="v1",
+            selection=selection,
+            aoi=box(103.0, 20.0, 105.0, 22.0),
+            batch_size=1,
+        )
+    )
+
+    assert batches == []
 
 
 def test_osm_selection_rejects_invalid_empty_policy() -> None:

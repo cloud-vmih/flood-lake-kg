@@ -13,7 +13,7 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from flashflood_data.orchestration.bronze.osm import OsmSelection
+from flashflood_data.orchestration.bronze.osm import OsmAoi, OsmSelection
 from flashflood_data.orchestration.bronze.service import BronzeService
 from flashflood_data.orchestration.landing.models import SourceObjectRow
 
@@ -348,6 +348,10 @@ def test_osm_pbf_is_discovered_and_committed_in_bounded_batches(tmp_path: Path) 
             version="test-v1",
             groups={"critical_facility": {"amenity": ("post_box",)}},
         ),
+        osm_aoi=OsmAoi(
+            version="exposure-test-v1",
+            geometry=box(-0.24, 51.76, -0.22, 51.78),
+        ),
     )
 
     assert service.discover("geofabrik_vietnam_snapshot") == ("raw-1",)
@@ -359,6 +363,42 @@ def test_osm_pbf_is_discovered_and_committed_in_bounded_batches(tmp_path: Path) 
     assert result["row_count"] == 1
     assert writer.batch_sizes == [1]
     assert writer.records[0][2][0]["osm_id"] == "818056434"
+
+
+def test_osm_aoi_change_makes_existing_raw_object_eligible_again(tmp_path: Path) -> None:
+    path = Path(__file__).parents[3] / "fixtures" / "osm" / "sample.osm.pbf"
+    row = _raster_row(path).model_copy(update={
+        "source_id": "geofabrik_vietnam_snapshot",
+        "object_uri": "s3://raw/static/geofabrik_vietnam_snapshot/vietnam.osm.pbf",
+    })
+    writer = _Writer()
+    writer.ensure_table(("bronze", "osm_feature_raw")).rows.append({"object_id": "raw-1"})
+    writer.ensure_table(("meta", "lineage_edges")).rows.append({
+        "pipeline_run_id": "old-run",
+        "input_kind": "raw_object",
+        "input_object_id": "raw-1",
+        "output_table": "flood_lakehouse.bronze.osm_feature_raw",
+        "mapping_version": "v1|osm:test-v1|aoi:exposure-old",
+    })
+    writer.ensure_table(("meta", "pipeline_runs")).rows.append({
+        "pipeline_run_id": "old-run",
+        "status": "succeeded",
+        "published_at": datetime(2026, 9, 21, tzinfo=UTC),
+    })
+    service = BronzeService(
+        inventory=_Inventory(row), object_store=_ObjectStore(path), writer=writer,
+        meta=_Meta(), raw_bucket="raw", staging_root=tmp_path / "staging",
+        osm_selection=OsmSelection(
+            version="test-v1",
+            groups={"critical_facility": {"amenity": ("post_box",)}},
+        ),
+        osm_aoi=OsmAoi(
+            version="exposure-new",
+            geometry=box(-0.24, 51.76, -0.22, 51.78),
+        ),
+    )
+
+    assert service.discover("geofabrik_vietnam_snapshot") == ("raw-1",)
 
 
 def test_discovery_skips_only_published_objects_still_present_in_bronze(tmp_path: Path) -> None:

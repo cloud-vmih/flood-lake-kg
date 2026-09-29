@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from pyiceberg.expressions import EqualTo, In
 
 from flashflood_data.catalog import sha256_file
-from flashflood_data.orchestration.bronze.osm import OsmSelection, iter_osm_batches
+from flashflood_data.orchestration.bronze.osm import OsmAoi, OsmSelection, iter_osm_batches
 from flashflood_data.orchestration.bronze.parsers import (
     iter_vector_batches,
     parse_events,
@@ -134,6 +134,7 @@ class BronzeService:
         bronze_namespace: str = "bronze",
         vector_batch_size: int = 5_000,
         osm_selection: OsmSelection | None = None,
+        osm_aoi: OsmAoi | None = None,
     ) -> None:
         self.inventory = inventory
         self.object_store = object_store
@@ -147,11 +148,16 @@ class BronzeService:
             raise ValueError("vector_batch_size must be positive")
         self.vector_batch_size = vector_batch_size
         self.osm_selection = osm_selection
-
+        self.osm_aoi = osm_aoi
 
     def _mapping_version(self, source_id: str, parser_version: str) -> str:
-        if source_id == _OSM_SOURCE and self.osm_selection is not None:
-            return f"{parser_version}|osm:{self.osm_selection.version}"
+        if source_id == _OSM_SOURCE:
+            if self.osm_selection is None or self.osm_aoi is None:
+                raise ValueError("OSM selection policy and exposure AOI are not configured")
+            return (
+                f"{parser_version}|osm:{self.osm_selection.version}"
+                f"|aoi:{self.osm_aoi.version}"
+            )
         return parser_version
 
     def _published_object_ids(
@@ -460,11 +466,14 @@ class BronzeService:
                     def checked_batches():
                         nonlocal checked_count
                         if osm:
-                            if self.osm_selection is None:
-                                raise ValueError("OSM selection policy is not configured")
+                            if self.osm_selection is None or self.osm_aoi is None:
+                                raise ValueError(
+                                    "OSM selection policy and exposure AOI are not configured"
+                                )
                             batches = iter_osm_batches(
                                 local, object_id=object_id, run_id=run_id,
                                 parser_version=parser_version, selection=self.osm_selection,
+                                aoi=self.osm_aoi.geometry,
                                 batch_size=self.vector_batch_size,
                             )
                         else:

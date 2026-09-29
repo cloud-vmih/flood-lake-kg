@@ -4,14 +4,17 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
 
+import geopandas as gpd
 import pyogrio
 import yaml
 from pyogrio import _ogr
-from shapely import from_wkb
+from shapely import from_wkb, normalize, to_wkb
+from shapely.geometry.base import BaseGeometry
 
 _LAYERS = ("points", "lines", "multipolygons", "multilinestrings", "other_relations")
 _NEGATIVE_VALUES = frozenset({"", "0", "false", "no"})
@@ -22,6 +25,18 @@ _CLOSED_WAY_POLYGON_KEYS = (
     "military,natural,office,place,shop,sport,tourism,water,wetland,"
     "highway=platform,public_transport=platform"
 )
+
+
+@dataclass(frozen=True)
+class OsmAoi:
+    """WGS84 exposure scope and its deterministic mapping-version component."""
+
+    version: str
+    geometry: BaseGeometry
+
+    def __post_init__(self) -> None:
+        if not self.version or self.geometry.is_empty:
+            raise ValueError("OSM AOI requires a version and non-empty geometry")
 
 
 @dataclass(frozen=True)
@@ -86,6 +101,21 @@ def load_osm_selection(path: Path) -> OsmSelection:
             for key, values in rules.items()
         }
     return OsmSelection(version=str(document.get("version", "")), groups=groups)
+
+
+def load_osm_aoi(path: Path) -> OsmAoi:
+    """Load the exposure AOI as WGS84 and fingerprint its normalized geometry."""
+    if not path.is_file():
+        raise FileNotFoundError(f"OSM exposure AOI does not exist: {path}")
+    frame = gpd.read_parquet(path, columns=["geometry"])
+    if frame.empty or frame.crs is None:
+        raise ValueError("OSM exposure AOI requires geometry and a declared CRS")
+    geometry = frame.to_crs("EPSG:4326").geometry.union_all()
+    if geometry.is_empty or not geometry.is_valid:
+        raise ValueError("OSM exposure AOI geometry must be non-empty and valid")
+    canonical = normalize(geometry)
+    digest = sha256(to_wkb(canonical, byte_order=1, include_srid=False)).hexdigest()[:16]
+    return OsmAoi(version=f"exposure-{digest}", geometry=geometry)
 
 
 def _sql_filter(selection: OsmSelection) -> str:
@@ -180,11 +210,14 @@ def iter_osm_batches(
     run_id: str,
     parser_version: str,
     selection: OsmSelection,
+    aoi: BaseGeometry,
     batch_size: int = 5_000,
 ) -> Iterator[list[dict[str, object]]]:
     """Stream selected OSM features without loading the country extract into memory."""
     if batch_size < 1:
         raise ValueError("OSM batch_size must be positive")
+    if aoi.is_empty:
+        raise ValueError("OSM Bronze parser requires a non-empty exposure AOI")
     if not path.name.lower().endswith(".osm.pbf"):
         raise ValueError("OSM Bronze parser requires an .osm.pbf object")
     sql_filter = _sql_filter(selection)
@@ -207,6 +240,7 @@ def iter_osm_batches(
                         path,
                         layer=layer,
                         where=sql_filter,
+                        bbox=aoi.bounds,
                         batch_size=batch_size,
                         use_pyarrow=True,
                     ) as (metadata, reader):
@@ -214,6 +248,12 @@ def iter_osm_batches(
                         crs = str(metadata["crs"] or "EPSG:4326")
                         for arrow_batch in reader:
                             for record in arrow_batch.to_pylist():
+                                raw_geometry = record.get(geometry_name)
+                                if raw_geometry is None:
+                                    continue
+                                geometry = from_wkb(bytes(raw_geometry))
+                                if geometry.is_empty or not geometry.intersects(aoi):
+                                    continue
                                 tags = json.loads(str(record["all_tags"]))
                                 if not selection.matching_groups(tags):
                                     continue

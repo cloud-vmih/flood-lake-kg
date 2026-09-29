@@ -4,7 +4,7 @@ from pathlib import Path
 
 from flashflood_data.core.lakehouse import LakehouseSettings
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.orchestration.bronze.osm import load_osm_selection
+from flashflood_data.orchestration.bronze.osm import load_osm_aoi, load_osm_selection
 from flashflood_data.orchestration.bronze.service import BronzeService
 from flashflood_data.orchestration.meta.service import MetaRecorder
 from flashflood_data.storage.iceberg import SourceObjectInventory, load_polaris_catalog
@@ -27,4 +27,7 @@ def build_bronze_service(root: Path | None = None) -> BronzeService:
         staging_root=settings.staging_root,
         catalog_name=settings.polaris_catalog,
         osm_selection=load_osm_selection(paths.root / "config" / "bronze" / "osm.yaml"),
+        osm_aoi=load_osm_aoi(
+            paths.harmonized / "aoi" / "exposure_aoi.geoparquet"
+        ),
     )
