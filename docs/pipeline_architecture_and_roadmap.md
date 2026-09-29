@@ -512,9 +512,10 @@ flowchart TD
   SG --> A["load_cursor theo spatial_scope_id"]
   A --> B["determine_available_end"]
   B --> C["plan_expected_windows<br/>đối chiếu source_objects"]
-  C --> D["extract_missing_objects"]
-  D --> E["fetch vào run staging"]
-  E --> S["scope_fetched_payload<br/>cắt theo AOI"]
+  C --> D["extract_missing_batches"]
+  D --> E["fetch batch song song<br/>ghi audit spool riêng"]
+  E --> EA["commit_fetch_attempts<br/>một Iceberg writer"]
+  EA --> S["scope_fetched_payload<br/>cắt theo AOI"]
   S --> F["register scoped Raw + Meta"]
   F --> G["verify_contiguous_coverage"]
   G --> H["advance_cursor"]
@@ -532,8 +533,15 @@ Các task được nhóm thành hai TaskGroup:
 Ranh giới lỗi:
 
 - Fetch lỗi: không đăng ký object hoàn tất và không tiến watermark.
+- GSMaP Standard gom 24 object giờ/task và NOW gom 48 object nửa giờ/task. Fetch không ghi
+  Iceberg trực tiếp; `commit_fetch_attempts` gom spool của mọi mapped task vào một commit để tránh
+  optimistic commit conflict.
+- Staging dùng namespace riêng theo pipeline và run. Provider payload cùng bản scoped được giữ
+  xuyên suốt các lần retry của batch, rồi `cleanup_weather_staging` dọn sau khi run đã terminal.
+- Bronze gom Standard 24 object/task và NOW 48 object/task, parse toàn bộ batch trước khi tạo một
+  snapshot. DQ, lineage và lifecycle vẫn giữ scope từng object; lỗi nêu rõ object làm batch fail.
 - Raw commit thành công nhưng advance cursor lỗi: lần sau planner nhìn lại `meta.source_objects`, bỏ qua object đã có và hoàn tất cursor.
-- Raw hoàn tất nhưng Bronze lỗi: Raw vẫn hợp lệ; `discover_unparsed_objects` của lần sau nhận lại object đó.
+- Raw hoàn tất nhưng Bronze lỗi: Raw vẫn hợp lệ; `discover_unparsed_batches` của lần sau nhận lại object đó.
 - Một object Bronze đã có lineage, run publish thành công và lát dữ liệu còn tồn tại sẽ được skip.
 - Reconciliation luôn quét mọi Raw weather object chưa có Bronze hợp lệ. Vì vậy event bị gộp, scheduler nghỉ hoặc task trigger lỗi không làm thất lạc dữ liệu.
 - Bản hiện tại vẫn chạy `publish_bronze_update` khi danh sách object cần parse rỗng. Downstream phải
@@ -743,6 +751,7 @@ src/flashflood_data/orchestration/weather/
 ├── models.py
 ├── config.py
 ├── planner.py
+├── fetch_audit.py
 ├── watermarks.py
 ├── landing.py
 ├── bronze.py
@@ -814,6 +823,9 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [x] Phát `weather_bronze_updated` sau khi nhóm Bronze thành công.
 - [ ] Không phát `weather_bronze_updated` khi danh sách parse rỗng.
 - [x] Giới hạn fetch bằng pool bốn slot, writer bằng pool một slot và retry exponential backoff.
+- [x] Gom GSMaP theo batch ngày, resolve wildcard revision FTP và batch-commit audit/Raw Meta để
+  giảm mapped task cùng số commit Iceberg.
+- [x] Gom Raw GSMaP thành batch Bronze ngày, commit một snapshot/batch và giữ evidence theo object.
 - [x] Xác minh GSMaP provider error sau sample thật; log không ghi credential và lỗi file thiếu đi qua retry/audit.
 
 **Nghiệm thu:** một provider lỗi không chặn provider khác; Docker tắt rồi bật lại tự lấp time slot thiếu; manual trigger và schedule dùng cùng code.

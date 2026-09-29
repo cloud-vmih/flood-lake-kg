@@ -12,6 +12,8 @@ parser_version: gsmap-raster-slice-v2
 license_id: jaxa-gsmap-terms
 license_uri: https://sharaku.eorc.jaxa.jp/GSMaP/guide.html
 max_objects_per_run: 336
+task_batch_size: 48
+bronze_task_batch_size: 48
 streams:
   - stream_id: gauge_now
     product: gauge_now_v8

@@ -59,36 +59,102 @@ def test_inventory_coverage_requires_the_complete_expected_request_identity() ->
     )
 
 
-def test_provider_failure_is_recorded_before_raw_publication(tmp_path: Path, monkeypatch) -> None:
+def test_fetch_does_not_write_shared_iceberg_audit_from_parallel_task(
+    tmp_path: Path, monkeypatch
+) -> None:
     class FailingProvider:
         def fetch(self, _planned, _target):
             raise TimeoutError("provider timed out")
 
-    class MemoryMeta:
-        def __init__(self) -> None:
-            self.attempts = []
+    class RejectingMeta:
+        def record_attempt(self, **_values):
+            raise AssertionError("parallel fetch must not write Iceberg audit")
 
-        def record_attempt(self, **values):
-            self.attempts.append(values)
-
-    meta = MemoryMeta()
     runtime = WeatherRuntime(
         root=tmp_path,
-        config=SimpleNamespace(),
+        config=SimpleNamespace(
+            source_id="era5_land",
+            source_version="v2",
+            provider="era5_land",
+            streams=(SimpleNamespace(stream_id="hourly_reanalysis"),),
+        ),
         settings=SimpleNamespace(staging_root=tmp_path),
         inventory=SimpleNamespace(),
         table_store=SimpleNamespace(),
-        meta=meta,
+        meta=RejectingMeta(),
         object_store=SimpleNamespace(),
     )
     monkeypatch.setattr(runtime, "provider", lambda _stream_id: FailingProvider())
 
     with pytest.raises(TimeoutError, match="provider timed out"):
-        runtime.fetch(_planned(), "run-1", attempt_no=3)
+        runtime.fetch(_planned(), "run-1")
 
-    assert [item["status"] for item in meta.attempts] == ["running", "failed"]
-    assert meta.attempts[-1]["attempt_no"] == 3
-    assert meta.attempts[-1]["error_code"] == "TimeoutError"
+
+def test_weather_run_staging_is_path_safe_and_pipeline_specific(
+    tmp_path: Path,
+) -> None:
+    def runtime(stream_id: str) -> WeatherRuntime:
+        return WeatherRuntime(
+            root=tmp_path,
+            config=SimpleNamespace(
+                source_id="gsmap",
+                source_version="v8",
+                provider="gsmap",
+                streams=(SimpleNamespace(stream_id=stream_id),),
+            ),
+            settings=SimpleNamespace(staging_root=tmp_path),
+            inventory=SimpleNamespace(),
+            table_store=SimpleNamespace(),
+            meta=SimpleNamespace(),
+            object_store=SimpleNamespace(),
+        )
+
+    standard = runtime("standard_hourly")
+    now = runtime("now_half_hourly")
+    run_id = "manual__../../same-id"
+
+    standard_path = standard.run_staging_dir(run_id)
+    now_path = now.run_staging_dir(run_id)
+
+    assert standard_path != now_path
+    assert standard_path.is_relative_to(tmp_path / "weather" / "runs")
+    assert run_id not in str(standard_path)
+
+
+def test_cleanup_weather_staging_only_removes_the_selected_pipeline_run(
+    tmp_path: Path,
+) -> None:
+    def runtime(stream_id: str) -> WeatherRuntime:
+        return WeatherRuntime(
+            root=tmp_path,
+            config=SimpleNamespace(
+                source_id="gsmap",
+                source_version="v8",
+                provider="gsmap",
+                streams=(SimpleNamespace(stream_id=stream_id),),
+            ),
+            settings=SimpleNamespace(staging_root=tmp_path),
+            inventory=SimpleNamespace(),
+            table_store=SimpleNamespace(),
+            meta=SimpleNamespace(),
+            object_store=SimpleNamespace(),
+        )
+
+    standard = runtime("standard_hourly")
+    now = runtime("now_half_hourly")
+    run_id = "manual__same-id"
+    standard_path = standard.run_staging_dir(run_id)
+    now_path = now.run_staging_dir(run_id)
+    standard_path.mkdir(parents=True)
+    now_path.mkdir(parents=True)
+    (standard_path / "standard.dat").write_bytes(b"standard")
+    (now_path / "now.dat").write_bytes(b"now")
+
+    result = standard.cleanup_run_staging(run_id)
+
+    assert result["removed"] is True
+    assert not standard_path.exists()
+    assert now_path.exists()
 
 
 def test_meta_registration_targets_weather_raster_slice_contract() -> None:

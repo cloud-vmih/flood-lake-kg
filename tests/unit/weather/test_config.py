@@ -49,9 +49,13 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     assert standard.schedule == "27 */6 * * *"
     assert standard.retention_class == "durable"
     assert standard.retention_days is None
+    assert standard.task_batch_size == 24
+    assert standard.bronze_task_batch_size == 24
     assert now.schedule == "7,37 * * * *"
     assert now.retention_class == "transient_7d"
     assert now.retention_days == 7
+    assert now.task_batch_size == 48
+    assert now.bronze_task_batch_size == 48
     assert {stream.product for stream in (*standard.streams, *now.streams)} == {
         "gauge_standard_v8", "gauge_now_v8",
     }
@@ -93,8 +97,10 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     }
     assert ifs.streams[0].options["model"] == "ecmwf_ifs"
     assert era5.retention_class == "durable"
+    assert era5.bronze_task_batch_size == 1
     assert ifs.retention_class == "transient_7d"
     assert ifs.retention_days == 7
+    assert ifs.bronze_task_batch_size == 1
 
 
 def test_weather_window_rejects_naive_or_empty_ranges() -> None:

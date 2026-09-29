@@ -171,50 +171,103 @@ class WeatherBronzeService:
         published = self._published(candidates, parser_version)
         return tuple(object_id for object_id in candidates if object_id not in published)
 
-    def process_object(
+    def _parse_registered_object(
+        self,
+        row: SourceObjectRow,
+        *,
+        run_id: str,
+        parser_version: str,
+        temporary_root: Path,
+        object_index: int,
+        grid_cache: dict[tuple[str, str, str], set[int]],
+    ) -> list[dict[str, object]]:
+        """Download and validate one object while preserving its identity in errors."""
+        try:
+            selection = json.loads(row.selection_json)
+            source_grid_version = str(selection["source_grid_version"])
+            spatial_scope_id = str(selection["spatial_scope_id"])
+            grid_key = (row.source_id, source_grid_version, spatial_scope_id)
+            allowed_indices = grid_cache.get(grid_key)
+            if allowed_indices is None:
+                helper = getattr(self.writer, "source_grid_indices", None)
+                if helper is not None:
+                    allowed_indices = set(helper(*grid_key))
+                else:
+                    grid_rows = self.writer.get_keyed_rows(
+                        ("silver", "source_grid"),
+                        {
+                            "source_id": row.source_id,
+                            "source_grid_version": source_grid_version,
+                        },
+                    )
+                    allowed_indices = {
+                        int(item["cell_index"])
+                        for item in grid_rows
+                        if spatial_scope_id in item["scope_ids"]
+                    }
+                if not allowed_indices:
+                    raise ValueError(
+                        "weather source grid has no cells for the registered scope"
+                    )
+                grid_cache[grid_key] = allowed_indices
+            key, filename = _raw_key(row, self.raw_bucket)
+            object_root = temporary_root / f"object-{object_index:04d}"
+            object_root.mkdir()
+            local = object_root / filename
+            self.object_store.download(key, local)
+            if (
+                local.stat().st_size != row.size_bytes
+                or sha256_file(local) != row.checksum
+            ):
+                raise ValueError("dynamic Raw object failed size/checksum verification")
+            current = [
+                item
+                for batch in _batches(
+                    parse_weather_object(
+                        row,
+                        local,
+                        run_id=run_id,
+                        parser_version=parser_version,
+                    ),
+                    self.batch_size,
+                    allowed_indices,
+                )
+                for item in batch
+            ]
+            if not current:
+                raise ValueError("Bronze parse produced no rows")
+            return current
+        except Exception as error:
+            raise ValueError(f"{row.object_id}: {error}") from error
+
+    def process_batch(
         self,
         source_id: str,
-        object_id: str,
+        object_ids: tuple[str, ...],
         *,
         run_id: str,
         parser_version: str,
     ) -> dict[str, object]:
-        matches = [
-            row
+        if source_id not in _SOURCES:
+            raise ValueError(f"unsupported dynamic weather source: {source_id}")
+        if not object_ids or len(set(object_ids)) != len(object_ids):
+            raise ValueError("weather Bronze batch object IDs must be non-empty and unique")
+        available = {
+            row.object_id: row
             for row in self.inventory.available_objects(source_id)
-            if row.object_id == object_id and row.source_type == "dynamic"
-        ]
-        if len(matches) != 1:
-            raise LookupError(f"available dynamic Raw object is not unique: {object_id}")
-        row = matches[0]
-        selection = json.loads(row.selection_json)
-        source_grid_version = str(selection["source_grid_version"])
-        spatial_scope_id = str(selection["spatial_scope_id"])
-        helper = getattr(self.writer, "source_grid_indices", None)
-        if helper is not None:
-            allowed_indices = set(
-                helper(row.source_id, source_grid_version, spatial_scope_id)
-            )
-        else:
-            grid_rows = self.writer.get_keyed_rows(
-                ("silver", "source_grid"),
-                {
-                    "source_id": row.source_id,
-                    "source_grid_version": source_grid_version,
-                },
-            )
-            allowed_indices = {
-                int(item["cell_index"])
-                for item in grid_rows
-                if spatial_scope_id in item["scope_ids"]
-            }
-        if not allowed_indices:
-            raise ValueError("weather source grid has no cells for the registered scope")
-        key, filename = _raw_key(row, self.raw_bucket)
+            if row.source_type == "dynamic"
+        }
+        if any(object_id not in available for object_id in object_ids):
+            raise LookupError("weather Bronze batch contains an unavailable Raw object")
+        source_rows = [available[object_id] for object_id in object_ids]
         dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.weather_raster_slice"
         started_at = datetime.now(UTC)
         identity = json.dumps(
-            {"run_id": run_id, "object_id": object_id, "parser_version": parser_version},
+            {
+                "run_id": run_id,
+                "object_ids": list(object_ids),
+                "parser_version": parser_version,
+            },
             sort_keys=True,
         )
         pipeline_run_id = sha256(identity.encode("utf-8")).hexdigest()
@@ -231,27 +284,35 @@ class WeatherBronzeService:
             "published_at": None,
             "status": "running",
             "retry_count": 0,
-            "input_row_count": 1,
+            "input_row_count": len(object_ids),
             "output_row_count": None,
             "quality_result_json": None,
-            "metrics_json": None,
+            "metrics_json": json.dumps({"object_count": len(object_ids)}),
             "error_code": None,
         }
         self.meta.record_run(run_record)
         try:
             self.staging_root.mkdir(parents=True, exist_ok=True)
+            parsed_rows: list[dict[str, object]] = []
+            row_counts: dict[str, int] = {}
+            grid_cache: dict[tuple[str, str, str], set[int]] = {}
             with TemporaryDirectory(prefix="weather-bronze-", dir=self.staging_root) as temp:
-                local = Path(temp) / filename
-                self.object_store.download(key, local)
-                if local.stat().st_size != row.size_bytes or sha256_file(local) != row.checksum:
-                    raise ValueError("dynamic Raw object failed size/checksum verification")
-                rows = parse_weather_object(
-                    row, local, run_id=run_id, parser_version=parser_version
-                )
-                snapshot_id, row_count = self.writer.replace_object_batches(
+                temporary_root = Path(temp)
+                for index, row in enumerate(source_rows):
+                    current = self._parse_registered_object(
+                        row,
+                        run_id=run_id,
+                        parser_version=parser_version,
+                        temporary_root=temporary_root,
+                        object_index=index,
+                        grid_cache=grid_cache,
+                    )
+                    row_counts[row.object_id] = len(current)
+                    parsed_rows.extend(current)
+                snapshot_id = self.writer.replace_objects_rows(
                     (self.bronze_namespace, "weather_raster_slice"),
-                    object_id,
-                    _batches(rows, self.batch_size, allowed_indices),
+                    object_ids,
+                    parsed_rows,
                 )
             now = datetime.now(UTC)
             self.meta.record_snapshot_ref(
@@ -262,35 +323,51 @@ class WeatherBronzeService:
                 quality_status="passed",
                 created_at=now,
             )
-            self.meta.record_quality(
-                pipeline_run_id=pipeline_run_id,
-                dataset_id=dataset_id,
-                rule_id="nonempty_weather_parse",
-                status="passed",
-                severity="fatal",
-                checked_at=now,
-                check_phase="post_commit",
-                scope_key=object_id,
-                observed_value_json=json.dumps({"row_count": row_count}),
-                failed_row_count=0,
-                snapshot_table=dataset_id,
-                snapshot_id=snapshot_id,
+            self.meta.record_qualities(
+                [
+                    {
+                        "pipeline_run_id": pipeline_run_id,
+                        "dataset_id": dataset_id,
+                        "rule_id": "nonempty_weather_parse",
+                        "rule_version": "v1",
+                        "status": "passed",
+                        "severity": "fatal",
+                        "checked_at": now,
+                        "check_phase": "post_commit",
+                        "scope_key": object_id,
+                        "observed_value_json": json.dumps(
+                            {"row_count": row_counts[object_id]}
+                        ),
+                        "expected_value_json": None,
+                        "failed_row_count": 0,
+                        "sample_uri": None,
+                        "snapshot_table": dataset_id,
+                        "snapshot_id": snapshot_id,
+                    }
+                    for object_id in object_ids
+                ]
             )
-            lineage_edge_id = self.meta.record_lineage(
-                pipeline_run_id=pipeline_run_id,
-                input_object_id=object_id,
-                output_table=dataset_id,
-                output_snapshot_id=snapshot_id,
-                transform_role="source",
-                mapping_version=parser_version,
-                created_at=now,
+            lineage_edge_ids = self.meta.record_lineages(
+                [
+                    {
+                        "pipeline_run_id": pipeline_run_id,
+                        "input_object_id": object_id,
+                        "output_table": dataset_id,
+                        "output_snapshot_id": snapshot_id,
+                        "transform_role": "source",
+                        "mapping_version": parser_version,
+                        "created_at": now,
+                    }
+                    for object_id in object_ids
+                ]
             )
-            self.lifecycle.mark_bronze_evidence(
-                object_id,
-                snapshot_id,
-                "passed",
-                lineage_edge_id,
-                now,
+            self.lifecycle.mark_bronze_evidence_many(
+                [
+                    (object_id, snapshot_id, "passed", lineage_edge_id, now)
+                    for object_id, lineage_edge_id in zip(
+                        object_ids, lineage_edge_ids, strict=True
+                    )
+                ]
             )
             self.meta.record_run(
                 {
@@ -298,16 +375,16 @@ class WeatherBronzeService:
                     "finished_at": now,
                     "published_at": now,
                     "status": "succeeded",
-                    "output_row_count": row_count,
+                    "output_row_count": len(parsed_rows),
                     "quality_result_json": '{"status":"passed"}',
                 }
             )
             return {
                 "pipeline_run_id": pipeline_run_id,
-                "object_id": object_id,
+                "object_ids": list(object_ids),
                 "table_name": dataset_id,
                 "snapshot_id": snapshot_id,
-                "row_count": row_count,
+                "row_count": len(parsed_rows),
                 "status": "succeeded",
             }
         except Exception as error:
@@ -320,3 +397,20 @@ class WeatherBronzeService:
                 }
             )
             raise
+
+    def process_object(
+        self,
+        source_id: str,
+        object_id: str,
+        *,
+        run_id: str,
+        parser_version: str,
+    ) -> dict[str, object]:
+        """Preserve the single-object API through the atomic batch implementation."""
+        result = self.process_batch(
+            source_id,
+            (object_id,),
+            run_id=run_id,
+            parser_version=parser_version,
+        )
+        return {**result, "object_id": object_id}

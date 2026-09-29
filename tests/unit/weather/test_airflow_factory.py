@@ -22,3 +22,30 @@ def test_verified_outcomes_materializes_lazy_airflow_mapping_result() -> None:
         {"asset_id": "standard-1", "status": "available"},
         {"asset_id": "now-1", "status": "available"},
     ]
+
+
+def test_verified_outcomes_flattens_mapped_batch_results() -> None:
+    plan = {
+        "missing": [
+            {"asset_id": "standard-1"},
+            {"asset_id": "standard-2"},
+            {"asset_id": "standard-3"},
+        ]
+    }
+
+    result = verify_weather_outcomes(
+        plan,
+        [
+            [
+                {"asset_id": "standard-1", "status": "available"},
+                {"asset_id": "standard-2", "status": "available"},
+            ],
+            [{"asset_id": "standard-3", "status": "available"}],
+        ],
+    )
+
+    assert [item["asset_id"] for item in result] == [
+        "standard-1",
+        "standard-2",
+        "standard-3",
+    ]

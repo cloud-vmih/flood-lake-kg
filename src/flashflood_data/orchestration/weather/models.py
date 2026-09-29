@@ -87,6 +87,8 @@ class WeatherPipelineConfig(ImmutableModel):
     license_id: str
     license_uri: str
     max_objects_per_run: int = Field(gt=0)
+    task_batch_size: int = Field(default=1, gt=0)
+    bronze_task_batch_size: int = Field(default=1, gt=0)
     streams: tuple[WeatherStreamConfig, ...]
 
     @model_validator(mode="after")
@@ -122,6 +124,30 @@ class PlannedWeatherObject(ImmutableModel):
     source_revision: int = Field(default=0, ge=0)
     model_run_time: datetime | None = None
     options: dict[str, object] = Field(default_factory=dict)
+
+
+class FetchAttemptRecord(ImmutableModel):
+    """One provider attempt staged locally before its serialized Meta commit."""
+
+    ingest_run_id: str
+    source_id: str
+    asset_id: str
+    attempt_no: int = Field(gt=0)
+    request_fingerprint: str
+    http_status: int | None = None
+    error_code: str | None = None
+    started_at: datetime
+    ended_at: datetime | None = None
+    status: Literal["running", "succeeded", "failed", "skipped"]
+
+    @field_validator("started_at", "ended_at")
+    @classmethod
+    def attempt_timestamps_must_be_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+            raise ValueError("fetch attempt timestamps must use UTC")
+        return value
 
 
 class FetchedWeatherObject(ImmutableModel):

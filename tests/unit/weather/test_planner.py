@@ -6,11 +6,21 @@ from flashflood_data.orchestration.weather.models import (
 )
 from flashflood_data.orchestration.weather.planner import (
     advance_contiguous_cursor,
+    batch_documents,
     operational_start,
     plan_expected_objects,
     provider_safe_end,
     select_missing_or_overlap,
 )
+
+
+def test_batch_documents_bounds_airflow_mapping_without_dropping_objects() -> None:
+    documents = [{"asset_id": f"hour-{index}"} for index in range(50)]
+
+    batches = batch_documents(documents, batch_size=24)
+
+    assert [len(batch) for batch in batches] == [24, 24, 2]
+    assert [item for batch in batches for item in batch] == documents
 
 
 def _stream(**updates: object) -> WeatherStreamConfig:

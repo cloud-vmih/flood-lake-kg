@@ -5,15 +5,20 @@ from pathlib import Path
 
 from airflow.sdk import Asset, dag, get_current_context, task, task_group
 
+from flashflood_data.orchestration.bronze.batching import batch_object_refs
 from flashflood_data.orchestration.weather.config import load_weather_config
 from flashflood_data.orchestration.weather.factory import build_weather_runtime
 from flashflood_data.orchestration.weather.grids import GridRegistration
 from flashflood_data.orchestration.weather.models import (
+    FetchAttemptRecord,
     FetchedWeatherObject,
     PlannedWeatherObject,
     ScopedWeatherObject,
 )
-from flashflood_data.orchestration.weather.planner import verify_weather_outcomes
+from flashflood_data.orchestration.weather.planner import (
+    batch_documents,
+    verify_weather_outcomes,
+)
 
 WEATHER_BRONZE_ASSET = Asset(
     "iceberg://flood_lakehouse/bronze/weather_bronze_updated"
@@ -68,9 +73,9 @@ def build_weather_dag(dag_id: str, config_path: Path):
         )
 
     @task(retries=0)
-    def extract_missing_objects(plan: dict[str, object]) -> list[dict[str, object]]:
-        """Expose the mapping list through the default XCom return key required by Airflow."""
-        return list(plan["missing"])
+    def extract_missing_batches(plan: dict[str, object]) -> list[list[dict[str, object]]]:
+        """Bound mapped task count while retaining every planned provider object."""
+        return batch_documents(plan["missing"], config.task_batch_size)
 
     @task(
         retries=3,
@@ -79,65 +84,166 @@ def build_weather_dag(dag_id: str, config_path: Path):
         pool="weather_fetch",
     )
     def fetch_missing_or_revised(
-        planned_document: dict[str, object],
+        planned_documents: list[dict[str, object]],
         weather_run_id: str,
         grid_document: dict[str, object],
-    ) -> dict[str, object]:
-        planned = PlannedWeatherObject.model_validate(planned_document)
-        attempt_no = int(get_current_context()["ti"].try_number)
-        fetched = build_weather_runtime(config_path).fetch(
-            planned,
+    ) -> list[dict[str, object]]:
+        context = get_current_context()
+        task_instance = context["ti"]
+        attempt_no = int(task_instance.try_number)
+        batch_index = int(task_instance.map_index)
+        runtime = build_weather_runtime(config_path)
+        grid = GridRegistration.from_document(grid_document)
+        plans = [PlannedWeatherObject.model_validate(item) for item in planned_documents]
+        fetched_documents: list[dict[str, object]] = []
+        attempts: list[FetchAttemptRecord] = []
+        failure: Exception | None = None
+        for planned in plans:
+            started_at = datetime.now(UTC)
+            try:
+                fetched = runtime.fetch(planned, weather_run_id, grid=grid)
+                fetched_documents.append(
+                    {
+                        "status": "available",
+                        "attempt_no": attempt_no,
+                        "fetched": fetched.model_dump(mode="json"),
+                    }
+                )
+                attempts.append(
+                    FetchAttemptRecord(
+                        ingest_run_id=weather_run_id,
+                        source_id=planned.source_id,
+                        asset_id=planned.asset_id,
+                        attempt_no=attempt_no,
+                        request_fingerprint=planned.request_fingerprint,
+                        status="running",
+                        started_at=started_at,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - Airflow owns batch retries
+                response = getattr(error, "response", None)
+                attempts.append(
+                    FetchAttemptRecord(
+                        ingest_run_id=weather_run_id,
+                        source_id=planned.source_id,
+                        asset_id=planned.asset_id,
+                        attempt_no=attempt_no,
+                        request_fingerprint=planned.request_fingerprint,
+                        status="failed",
+                        started_at=started_at,
+                        ended_at=datetime.now(UTC),
+                        http_status=getattr(response, "status_code", None),
+                        error_code=type(error).__name__,
+                    )
+                )
+                failure = error
+                break
+        if failure is not None:
+            ended_at = datetime.now(UTC)
+            attempts = [
+                row.model_copy(
+                    update={
+                        "status": "skipped",
+                        "ended_at": ended_at,
+                        "error_code": "BatchAborted",
+                    }
+                )
+                if row.status == "running"
+                else row
+                for row in attempts
+            ]
+            attempted_ids = {row.asset_id for row in attempts}
+            attempts.extend(
+                FetchAttemptRecord(
+                    ingest_run_id=weather_run_id,
+                    source_id=planned.source_id,
+                    asset_id=planned.asset_id,
+                    attempt_no=attempt_no,
+                    request_fingerprint=planned.request_fingerprint,
+                    status="skipped",
+                    started_at=ended_at,
+                    ended_at=ended_at,
+                    error_code="BatchNotAttempted",
+                )
+                for planned in plans
+                if planned.asset_id not in attempted_ids
+            )
+        runtime.stage_fetch_attempts(
             weather_run_id,
+            batch_index=batch_index,
             attempt_no=attempt_no,
-            grid=GridRegistration.from_document(grid_document),
+            rows=attempts,
         )
-        return {
-            "status": "available",
-            "attempt_no": attempt_no,
-            "fetched": fetched.model_dump(mode="json"),
-        }
+        if failure is not None:
+            raise failure
+        return fetched_documents
+
+    @task(retries=2, trigger_rule="all_done", pool="weather_raw_writer")
+    def commit_fetch_attempts(weather_run_id: str) -> dict[str, int]:
+        return build_weather_runtime(config_path).commit_fetch_attempts(weather_run_id)
 
     @task(retries=2)
     def scope_fetched_payload(
-        fetched_document: dict[str, object], grid_document: dict[str, object]
-    ) -> dict[str, object]:
-        if fetched_document.get("status") == "no_data":
-            return fetched_document
-        fetched = FetchedWeatherObject.model_validate(fetched_document["fetched"])
-        scoped = build_weather_runtime(config_path).scope_fetched(
-            fetched, GridRegistration.from_document(grid_document)
-        )
-        return {
-            "status": "available",
-            "attempt_no": fetched_document.get("attempt_no", 1),
-            "scoped": scoped.model_dump(mode="json"),
-        }
+        fetched_documents: list[dict[str, object]], grid_document: dict[str, object]
+    ) -> list[dict[str, object]]:
+        runtime = build_weather_runtime(config_path)
+        grid = GridRegistration.from_document(grid_document)
+        results = []
+        for fetched_document in fetched_documents:
+            if fetched_document.get("status") == "no_data":
+                results.append(fetched_document)
+                continue
+            fetched = FetchedWeatherObject.model_validate(fetched_document["fetched"])
+            scoped = runtime.scope_fetched(fetched, grid)
+            results.append(
+                {
+                    "status": "available",
+                    "attempt_no": fetched_document.get("attempt_no", 1),
+                    "scoped": scoped.model_dump(mode="json"),
+                }
+            )
+        return results
 
     @task(retries=3, pool="weather_raw_writer")
     def register_raw_and_meta(
-        scoped_document: dict[str, object], weather_run_id: str
-    ) -> dict[str, object]:
-        if scoped_document.get("status") == "no_data":
-            return scoped_document
-        scoped = ScopedWeatherObject.model_validate(scoped_document["scoped"])
+        scoped_documents: list[dict[str, object]], weather_run_id: str
+    ) -> list[dict[str, object]]:
         runtime = build_weather_runtime(config_path)
-        published = runtime.landing_service().publish_and_register(
-            scoped,
+        service = runtime.landing_service()
+        results: list[dict[str, object]] = []
+        scoped_objects: list[ScopedWeatherObject] = []
+        attempt_numbers: set[int] = set()
+        for scoped_document in scoped_documents:
+            if scoped_document.get("status") == "no_data":
+                results.append(scoped_document)
+                continue
+            scoped_objects.append(
+                ScopedWeatherObject.model_validate(scoped_document["scoped"])
+            )
+            attempt_numbers.add(int(scoped_document.get("attempt_no", 1)))
+        if len(attempt_numbers) > 1:
+            raise ValueError("one weather batch cannot mix Airflow attempt numbers")
+        published_batch = service.publish_many(
+            scoped_objects,
             run_id=weather_run_id,
-            attempt_no=int(scoped_document.get("attempt_no", 1)),
+            attempt_no=next(iter(attempt_numbers), 1),
         )
-        return {
-            "status": published.status,
-            "asset_id": published.asset_id,
-            "object_id": published.object_id,
-            "stream_id": published.stream_id,
-            "product": published.product,
-            "reused": published.reused,
-        }
+        for published in published_batch:
+            results.append(
+                {
+                    "status": published.status,
+                    "asset_id": published.asset_id,
+                    "object_id": published.object_id,
+                    "stream_id": published.stream_id,
+                    "product": published.product,
+                    "reused": published.reused,
+                }
+            )
+        return results
 
     @task(retries=0, trigger_rule="none_failed")
     def verify_contiguous_coverage(
-        plan: dict[str, object], outcomes: list[dict[str, object]]
+        plan: dict[str, object], outcomes: list[list[dict[str, object]]]
     ) -> list[dict[str, object]]:
         return verify_weather_outcomes(plan, outcomes)
 
@@ -150,26 +256,28 @@ def build_weather_dag(dag_id: str, config_path: Path):
         )
 
     @task(retries=2)
-    def discover_unparsed_objects(
+    def discover_unparsed_batches(
         _landing_result: dict[str, object], force_reprocess: object
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, object]]:
         runtime = build_weather_runtime(config_path)
-        return [
-            {"source_id": config.source_id, "object_id": object_id}
-            for object_id in runtime.bronze_service().discover(
-                config.source_id,
-                parser_version=config.parser_version,
-                force_reprocess=_boolean(force_reprocess),
-            )
-        ]
+        object_ids = runtime.bronze_service().discover(
+            config.source_id,
+            parser_version=config.parser_version,
+            force_reprocess=_boolean(force_reprocess),
+        )
+        return batch_object_refs(
+            config.source_id,
+            object_ids,
+            batch_size=config.bronze_task_batch_size,
+        )
 
     @task(retries=2, pool="weather_bronze_writer")
     def parse_bronze(
-        object_ref: dict[str, str], weather_run_id: str
+        batch_ref: dict[str, object], weather_run_id: str
     ) -> dict[str, object]:
-        return build_weather_runtime(config_path).bronze_service().process_object(
-            object_ref["source_id"],
-            object_ref["object_id"],
+        return build_weather_runtime(config_path).bronze_service().process_batch(
+            str(batch_ref["source_id"]),
+            tuple(map(str, batch_ref["object_ids"])),
             run_id=weather_run_id,
             parser_version=config.parser_version,
         )
@@ -178,13 +286,32 @@ def build_weather_dag(dag_id: str, config_path: Path):
     def publish_bronze_update(results: list[dict[str, object]]) -> dict[str, object]:
         return {
             "source_id": config.source_id,
-            "published_objects": len(results),
+            "published_objects": sum(
+                len(result.get("object_ids", ())) for result in results
+            ),
             "asset": "weather_bronze_updated",
         }
 
-    @task(retries=0, trigger_rule="all_done")
+    @task(retries=0, trigger_rule="all_done", pool="weather_raw_writer")
     def expire_transient_raw() -> dict[str, object]:
         return build_weather_runtime(config_path).expire_transient_raw(datetime.now(UTC))
+
+    @task(retries=0, trigger_rule="all_done")
+    def cleanup_weather_staging(weather_run_id: str) -> dict[str, object]:
+        return build_weather_runtime(config_path).cleanup_run_staging(weather_run_id)
+
+    @task(retries=0)
+    def finalize_weather_run(
+        bronze_result: dict[str, object],
+        raw_cleanup: dict[str, object],
+        staging_cleanup: dict[str, object],
+    ) -> dict[str, object]:
+        """Keep a failed upstream stage visible in the final DAG-run state."""
+        return {
+            "bronze": bronze_result,
+            "raw_cleanup": raw_cleanup,
+            "staging_cleanup": staging_cleanup,
+        }
 
     @task_group(group_id="landing_raw")
     def landing_raw_group(
@@ -208,16 +335,19 @@ def build_weather_dag(dag_id: str, config_path: Path):
             requested_limit,
             grid,
         )
-        missing = extract_missing_objects(plan)
+        missing = extract_missing_batches(plan)
         fetched = fetch_missing_or_revised.partial(
             weather_run_id=weather_run_id, grid_document=grid
-        ).expand(planned_document=missing)
+        ).expand(planned_documents=missing)
+        attempts_committed = commit_fetch_attempts(weather_run_id)
+        fetched >> attempts_committed
         scoped = scope_fetched_payload.partial(grid_document=grid).expand(
-            fetched_document=fetched
+            fetched_documents=fetched
         )
+        attempts_committed >> scoped
         registered = register_raw_and_meta.partial(
             weather_run_id=weather_run_id
-        ).expand(scoped_document=scoped)
+        ).expand(scoped_documents=scoped)
         verified = verify_contiguous_coverage(plan, registered)
         return advance_cursor(plan, verified, weather_run_id)
 
@@ -225,8 +355,10 @@ def build_weather_dag(dag_id: str, config_path: Path):
     def bronze_group(
         landing_result: dict[str, object], weather_run_id: str, force_reprocess: object
     ):
-        objects = discover_unparsed_objects(landing_result, force_reprocess)
-        parsed = parse_bronze.partial(weather_run_id=weather_run_id).expand(object_ref=objects)
+        batches = discover_unparsed_batches(landing_result, force_reprocess)
+        parsed = parse_bronze.partial(weather_run_id=weather_run_id).expand(
+            batch_ref=batches
+        )
         return publish_bronze_update(parsed)
 
     @dag(
@@ -253,7 +385,9 @@ def build_weather_dag(dag_id: str, config_path: Path):
             weather_run_id, mode, requested_start, requested_end, requested_limit
         )
         bronze_result = bronze_group(landed, weather_run_id, force_reprocess)
-        cleanup = expire_transient_raw()
-        bronze_result >> cleanup
+        raw_cleanup = expire_transient_raw()
+        staging_cleanup = cleanup_weather_staging(weather_run_id)
+        bronze_result >> [raw_cleanup, staging_cleanup]
+        finalize_weather_run(bronze_result, raw_cleanup, staging_cleanup)
 
     return weather_dag()

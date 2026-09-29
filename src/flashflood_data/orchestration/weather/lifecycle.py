@@ -1,5 +1,6 @@
 """Guarded lifecycle transitions for transient dynamic Raw objects."""
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -15,6 +16,8 @@ class _LifecycleBackend(Protocol):
     def get_keyed_rows(self, identifier, key): ...
 
     def upsert_meta_row(self, identifier, key_fields, row): ...
+
+    def upsert_meta_rows(self, identifier, key_fields, rows): ...
 
 
 def _utc(value: datetime) -> datetime:
@@ -51,6 +54,33 @@ class ObjectLifecycleStore:
         run_id: str,
     ) -> int:
         """Create the initial state, or reuse the exact retention policy on retry."""
+        return self._save(
+            self._registration_row(object_id, retention_class, published_at, run_id)
+        )
+
+    def register_many(
+        self,
+        entries: Sequence[tuple[str, RetentionClass, datetime, str]],
+    ) -> int:
+        """Register one Raw batch in a single keyed Iceberg commit."""
+        if not entries:
+            raise ValueError("lifecycle registration batch cannot be empty")
+        rows: list[dict[str, object]] = []
+        for object_id, retention_class, published_at, run_id in entries:
+            rows.append(
+                self._registration_row(
+                    object_id, retention_class, published_at, run_id
+                ).model_dump(mode="python")
+            )
+        return self.store.upsert_meta_rows(self.IDENTIFIER, self.KEY_FIELDS, rows)
+
+    def _registration_row(
+        self,
+        object_id: str,
+        retention_class: RetentionClass,
+        published_at: datetime,
+        run_id: str,
+    ) -> ObjectLifecycleRow:
         if not object_id or not run_id:
             raise ValueError("lifecycle registration requires object and run IDs")
         published_at = _utc(published_at)
@@ -69,20 +99,18 @@ class ObjectLifecycleStore:
                 or current.expires_at != expires_at
             ):
                 raise ValueError(f"conflicting lifecycle policy for object: {object_id}")
-            return self._save(current)
-        return self._save(
-            ObjectLifecycleRow(
-                object_id=object_id,
-                retention_class=retention_class,
-                storage_status="available",
-                expires_at=expires_at,
-                bronze_snapshot_id=None,
-                quality_status="pending",
-                lineage_edge_id=None,
-                deleted_at=None,
-                last_checked_at=published_at,
-                reason=None,
-            )
+            return current
+        return ObjectLifecycleRow(
+            object_id=object_id,
+            retention_class=retention_class,
+            storage_status="available",
+            expires_at=expires_at,
+            bronze_snapshot_id=None,
+            quality_status="pending",
+            lineage_edge_id=None,
+            deleted_at=None,
+            last_checked_at=published_at,
+            reason=None,
         )
 
     def mark_bronze_evidence(
@@ -94,6 +122,37 @@ class ObjectLifecycleStore:
         checked_at: datetime,
     ) -> int:
         """Attach the three proofs required before a transient payload may expire."""
+        return self._save(
+            self._bronze_evidence_row(
+                object_id,
+                snapshot_id,
+                quality_status,
+                lineage_edge_id,
+                checked_at,
+            )
+        )
+
+    def mark_bronze_evidence_many(
+        self,
+        entries: Sequence[tuple[str, int, str, str, datetime]],
+    ) -> int:
+        """Attach per-object Bronze evidence for one published batch in one commit."""
+        if not entries:
+            raise ValueError("Bronze lifecycle evidence batch cannot be empty")
+        rows = [
+            self._bronze_evidence_row(*entry).model_dump(mode="python")
+            for entry in entries
+        ]
+        return self.store.upsert_meta_rows(self.IDENTIFIER, self.KEY_FIELDS, rows)
+
+    def _bronze_evidence_row(
+        self,
+        object_id: str,
+        snapshot_id: int,
+        quality_status: str,
+        lineage_edge_id: str,
+        checked_at: datetime,
+    ) -> ObjectLifecycleRow:
         current = self._load(object_id)
         if current.storage_status == "expired":
             raise ValueError("cannot attach Bronze evidence to an expired object")
@@ -101,16 +160,14 @@ class ObjectLifecycleStore:
             raise ValueError("Bronze lifecycle evidence is incomplete")
         if quality_status not in {"passed", "warning", "failed"}:
             raise ValueError("unsupported lifecycle quality status")
-        return self._save(
-            current.model_copy(
-                update={
-                    "bronze_snapshot_id": snapshot_id,
-                    "quality_status": quality_status,
-                    "lineage_edge_id": lineage_edge_id,
-                    "last_checked_at": _utc(checked_at),
-                    "reason": None,
-                }
-            )
+        return current.model_copy(
+            update={
+                "bronze_snapshot_id": snapshot_id,
+                "quality_status": quality_status,
+                "lineage_edge_id": lineage_edge_id,
+                "last_checked_at": _utc(checked_at),
+                "reason": None,
+            }
         )
 
     def eligible(self, now: datetime) -> tuple[ObjectLifecycleRow, ...]:

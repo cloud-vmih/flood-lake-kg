@@ -47,6 +47,16 @@ class Writer:
         self.commits += 1
         return 16 + self.commits, len(incoming)
 
+    def replace_objects_rows(self, identifier, object_ids, rows):
+        assert identifier == ("bronze", "weather_raster_slice")
+        incoming = list(rows)
+        assert {row["object_id"] for row in incoming} == set(object_ids)
+        self.rows = [
+            row for row in self.rows if row["object_id"] not in set(object_ids)
+        ] + incoming
+        self.commits += 1
+        return 16 + self.commits
+
     def source_grid_indices(self, source_id, source_grid_version, spatial_scope_id):
         assert (source_id, source_grid_version, spatial_scope_id) == (
             "ifs_openmeteo", "grid-v1", "sonla-scope-v1"
@@ -71,9 +81,17 @@ class Meta:
     def record_quality(self, **row):
         return 1
 
+    def record_qualities(self, rows):
+        return len(list(rows))
+
     def record_lineage(self, **row):
         self.lineage.append(row)
         return "edge"
+
+    def record_lineages(self, rows):
+        requested = list(rows)
+        self.lineage.extend(requested)
+        return tuple(f"edge-{row['input_object_id']}" for row in requested)
 
 
 class Lifecycle:
@@ -89,6 +107,11 @@ class Lifecycle:
         self.evidence.append(
             (object_id, snapshot_id, quality_status, lineage_edge_id, checked_at)
         )
+        return 1
+
+    def mark_bronze_evidence_many(self, entries):
+        requested = list(entries)
+        self.evidence.extend(requested)
         return 1
 
 
@@ -173,7 +196,7 @@ def test_weather_bronze_discovers_then_parses_registered_raw_object(tmp_path: Pa
     assert service.discover("ifs_openmeteo", parser_version="ifs-v1") == ()
     assert meta.runs[-1]["status"] == "succeeded"
     assert meta.lineage[-1]["input_object_id"] == "raw-1"
-    assert lifecycle.evidence[0][:4] == ("raw-1", 17, "passed", "edge")
+    assert lifecycle.evidence[0][:4] == ("raw-1", 17, "passed", "edge-raw-1")
     assert writer.commits == 1
 
 
@@ -262,3 +285,112 @@ def test_revised_raw_object_remains_beside_previous_revision(tmp_path: Path) -> 
     assert {row["object_id"] for row in writer.rows} == {"raw-1", "raw-2"}
     assert {row["source_revision"] for row in writer.rows} == {3, 4}
     assert writer.commits == 2
+
+
+def test_weather_bronze_batch_commits_multiple_objects_once_with_per_object_evidence(
+    tmp_path: Path,
+) -> None:
+    def payload(value: float) -> bytes:
+        return json.dumps(
+            {
+                "responses": [
+                    {
+                        "latitude": 21.5,
+                        "longitude": 104.0,
+                        "cell_index": 121,
+                        "hourly": {
+                            "time": ["2026-09-01T01:00"],
+                            "precipitation": [value],
+                        },
+                        "hourly_units": {"precipitation": "mm"},
+                    }
+                ]
+            }
+        ).encode()
+
+    first_payload = payload(2.5)
+    second_payload = payload(3.5)
+    first = _raw_row(first_payload, object_id="raw-1", source_revision=3)
+    second = _raw_row(second_payload, object_id="raw-2", source_revision=4)
+    writer = Writer()
+    meta = Meta()
+    lifecycle = Lifecycle()
+    service = WeatherBronzeService(
+        inventory=Inventory(first, second),
+        object_store=ObjectStore(
+            {
+                "raw/weather/raw-1.json": first_payload,
+                "raw/weather/raw-2.json": second_payload,
+            }
+        ),
+        writer=writer,
+        meta=meta,
+        lifecycle=lifecycle,
+        raw_bucket="raw",
+        staging_root=tmp_path,
+    )
+
+    result = service.process_batch(
+        "ifs_openmeteo",
+        ("raw-1", "raw-2"),
+        run_id="airflow-run",
+        parser_version="ifs-v1",
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["object_ids"] == ["raw-1", "raw-2"]
+    assert result["row_count"] == 2
+    assert writer.commits == 1
+    assert {row["input_object_id"] for row in meta.lineage} == {"raw-1", "raw-2"}
+    assert {entry[0] for entry in lifecycle.evidence} == {"raw-1", "raw-2"}
+
+
+def test_weather_bronze_batch_reports_the_invalid_object_without_partial_commit(
+    tmp_path: Path,
+) -> None:
+    def payload(value: float) -> bytes:
+        return json.dumps(
+            {
+                "responses": [
+                    {
+                        "cell_index": 121,
+                        "hourly": {
+                            "time": ["2026-09-01T01:00"],
+                            "precipitation": [value],
+                        },
+                        "hourly_units": {"precipitation": "mm"},
+                    }
+                ]
+            }
+        ).encode()
+
+    valid_payload = payload(2.5)
+    invalid_payload = payload(-1.0)
+    valid = _raw_row(valid_payload, object_id="raw-1", source_revision=3)
+    invalid = _raw_row(invalid_payload, object_id="raw-2", source_revision=4)
+    writer = Writer()
+    service = WeatherBronzeService(
+        inventory=Inventory(valid, invalid),
+        object_store=ObjectStore(
+            {
+                "raw/weather/raw-1.json": valid_payload,
+                "raw/weather/raw-2.json": invalid_payload,
+            }
+        ),
+        writer=writer,
+        meta=Meta(),
+        lifecycle=Lifecycle(),
+        raw_bucket="raw",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="raw-2.*negative precipitation"):
+        service.process_batch(
+            "ifs_openmeteo",
+            ("raw-1", "raw-2"),
+            run_id="airflow-run",
+            parser_version="ifs-v1",
+        )
+
+    assert writer.commits == 0
+    assert writer.rows == []

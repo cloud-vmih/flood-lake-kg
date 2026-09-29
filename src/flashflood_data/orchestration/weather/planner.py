@@ -17,6 +17,19 @@ def _utc_text(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def batch_documents(
+    documents: Sequence[Mapping[str, object]], batch_size: int
+) -> list[list[dict[str, object]]]:
+    """Split metadata documents into bounded Airflow mapping payloads."""
+    if batch_size < 1:
+        raise ValueError("weather task batch size must be positive")
+    materialized = [dict(document) for document in documents]
+    return [
+        materialized[offset : offset + batch_size]
+        for offset in range(0, len(materialized), batch_size)
+    ]
+
+
 def operational_start(
     stream: WeatherStreamConfig, watermark: IngestWatermark | None
 ) -> datetime:
@@ -155,13 +168,19 @@ def advance_contiguous_cursor(
 
 
 def verify_weather_outcomes(
-    plan: Mapping[str, object], outcomes: Iterable[Mapping[str, object]]
+    plan: Mapping[str, object],
+    outcomes: Iterable[Mapping[str, object] | Iterable[Mapping[str, object]]],
 ) -> list[dict[str, object]]:
     """Validate mapped task coverage and return a JSON-serializable concrete list."""
     missing = plan.get("missing")
     if not isinstance(missing, list) or not all(isinstance(item, Mapping) for item in missing):
         raise ValueError("weather plan missing objects must be a list of mappings")
-    materialized = [dict(item) for item in outcomes]
+    materialized: list[dict[str, object]] = []
+    for item in outcomes:
+        if isinstance(item, Mapping):
+            materialized.append(dict(item))
+        else:
+            materialized.extend(dict(nested) for nested in item)
     expected_missing = {str(item["asset_id"]) for item in missing}
     actual = {str(item["asset_id"]) for item in materialized}
     if expected_missing != actual:

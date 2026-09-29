@@ -8,6 +8,7 @@ from flashflood_data.orchestration.weather.lifecycle import ObjectLifecycleStore
 class MemoryStore:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, object]] = {}
+        self.batch_upserts = 0
 
     def get_meta_row(self, identifier, key):
         assert identifier == ("meta", "object_lifecycle")
@@ -23,6 +24,14 @@ class MemoryStore:
         assert identifier == ("meta", "object_lifecycle")
         assert key_fields == ("object_id",)
         self.rows[row["object_id"]] = dict(row)
+        return len(self.rows)
+
+    def upsert_meta_rows(self, identifier, key_fields, rows):
+        assert identifier == ("meta", "object_lifecycle")
+        assert key_fields == ("object_id",)
+        self.batch_upserts += 1
+        for row in rows:
+            self.rows[row["object_id"]] = dict(row)
         return len(self.rows)
 
 
@@ -75,3 +84,22 @@ def test_durable_object_never_becomes_expiry_candidate() -> None:
     assert lifecycle.eligible(published + timedelta(days=365)) == ()
     with pytest.raises(ValueError, match="eligible"):
         lifecycle.mark_expired("object-1", published + timedelta(days=365))
+
+
+def test_bronze_evidence_for_an_object_batch_uses_one_lifecycle_upsert() -> None:
+    backend = MemoryStore()
+    lifecycle = ObjectLifecycleStore(backend)
+    published = datetime(2026, 9, 1, tzinfo=UTC)
+    lifecycle.register("object-1", "transient_7d", published, "run-1")
+    lifecycle.register("object-2", "transient_7d", published, "run-1")
+
+    lifecycle.mark_bronze_evidence_many(
+        [
+            ("object-1", 42, "passed", "edge-1", published),
+            ("object-2", 42, "passed", "edge-2", published),
+        ]
+    )
+
+    assert backend.batch_upserts == 1
+    assert backend.rows["object-1"]["lineage_edge_id"] == "edge-1"
+    assert backend.rows["object-2"]["lineage_edge_id"] == "edge-2"

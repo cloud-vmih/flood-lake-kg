@@ -1,8 +1,10 @@
 """Production dependency composition and restart-safe weather planning."""
 
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
@@ -11,6 +13,7 @@ from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.orchestration.meta.service import MetaRecorder
 from flashflood_data.orchestration.weather.bronze import WeatherBronzeService
 from flashflood_data.orchestration.weather.config import load_weather_config
+from flashflood_data.orchestration.weather.fetch_audit import FetchAttemptSpool
 from flashflood_data.orchestration.weather.grids import (
     GridRegistration,
     WeatherGridRegistry,
@@ -19,6 +22,7 @@ from flashflood_data.orchestration.weather.grids import (
 from flashflood_data.orchestration.weather.landing import WeatherLandingService
 from flashflood_data.orchestration.weather.lifecycle import ObjectLifecycleStore
 from flashflood_data.orchestration.weather.models import (
+    FetchAttemptRecord,
     FetchedWeatherObject,
     IngestWatermark,
     PlannedWeatherObject,
@@ -111,6 +115,27 @@ class WeatherRuntime:
     @property
     def watermarks(self) -> IngestWatermarkStore:
         return IngestWatermarkStore(self.table_store)
+
+    @property
+    def pipeline_id(self) -> str:
+        """Stable identity separating staging for DAGs that share a source ID."""
+        streams = ",".join(sorted(stream.stream_id for stream in self.config.streams))
+        return (
+            f"{self.config.source_id}:{self.config.source_version}:"
+            f"{self.config.provider}:{streams}"
+        )
+
+    def run_staging_dir(self, run_id: str) -> Path:
+        """Return a credential-free and path-safe directory for one pipeline run."""
+        pipeline_token = sha256(self.pipeline_id.encode("utf-8")).hexdigest()[:24]
+        run_token = sha256(run_id.encode("utf-8")).hexdigest()[:24]
+        return (
+            self.settings.staging_root
+            / "weather"
+            / "runs"
+            / pipeline_token
+            / run_token
+        )
 
     def stream(self, stream_id: str):
         try:
@@ -297,37 +322,54 @@ class WeatherRuntime:
         planned: PlannedWeatherObject,
         run_id: str,
         *,
-        attempt_no: int = 1,
         grid: GridRegistration | None = None,
     ) -> FetchedWeatherObject:
-        target = self.settings.staging_root / "weather" / run_id / planned.source_id
-        started_at = datetime.now(UTC)
-        attempt = {
-            "ingest_run_id": run_id,
-            "source_id": planned.source_id,
-            "asset_id": planned.asset_id,
-            "attempt_no": attempt_no,
-            "request_fingerprint": planned.request_fingerprint,
-            "started_at": started_at,
-        }
-        self.meta.record_attempt(**attempt, status="running")
-        try:
-            provider = (
-                self.provider(planned.stream_id)
-                if grid is None
-                else self.provider(planned.stream_id, grid)
-            )
-            return provider.fetch(planned, target)
-        except Exception as error:
-            response = getattr(error, "response", None)
-            self.meta.record_attempt(
-                **attempt,
-                status="failed",
-                ended_at=datetime.now(UTC),
-                http_status=getattr(response, "status_code", None),
-                error_code=type(error).__name__,
-            )
-            raise
+        target = self.run_staging_dir(run_id) / "provider"
+        provider = (
+            self.provider(planned.stream_id)
+            if grid is None
+            else self.provider(planned.stream_id, grid)
+        )
+        return provider.fetch(planned, target)
+
+    def stage_fetch_attempts(
+        self,
+        run_id: str,
+        *,
+        batch_index: int,
+        attempt_no: int,
+        rows: list[FetchAttemptRecord],
+    ) -> Path:
+        """Persist task-local attempt evidence without touching shared Iceberg state."""
+        return FetchAttemptSpool(self.settings.staging_root).write_batch(
+            self.pipeline_id,
+            run_id,
+            batch_index=batch_index,
+            attempt_no=attempt_no,
+            rows=rows,
+        )
+
+    def commit_fetch_attempts(self, run_id: str) -> dict[str, int]:
+        """Commit all mapped fetch attempts once through the serialized writer task."""
+        spool = FetchAttemptSpool(self.settings.staging_root)
+        rows = spool.read_run(self.pipeline_id, run_id)
+        if not rows:
+            return {"attempt_rows": 0, "snapshot_id": 0}
+        snapshot_id = self.meta.record_attempts(
+            [row.model_dump(mode="python") for row in rows]
+        )
+        spool.cleanup_run(self.pipeline_id, run_id)
+        return {"attempt_rows": len(rows), "snapshot_id": snapshot_id}
+
+    def cleanup_run_staging(self, run_id: str) -> dict[str, object]:
+        """Remove local provider, scoped, and audit files after the run is terminal."""
+        run_dir = self.run_staging_dir(run_id)
+        existed = run_dir.exists()
+        shutil.rmtree(run_dir, ignore_errors=True)
+        FetchAttemptSpool(self.settings.staging_root).cleanup_run(
+            self.pipeline_id, run_id
+        )
+        return {"removed": existed, "run_token": run_dir.name}
 
     def scope_fetched(
         self, fetched: FetchedWeatherObject, grid: GridRegistration

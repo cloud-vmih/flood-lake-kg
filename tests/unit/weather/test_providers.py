@@ -91,6 +91,10 @@ class FakeFtp:
         self.command = command
         callback(b"ftp-rain")
 
+    def nlst(self, pattern: str) -> list[str]:
+        self.pattern = pattern
+        return [pattern.replace("*", "0000.1")]
+
 
 def test_gsmap_supports_jaxa_ftp_without_embedding_credentials(tmp_path: Path) -> None:
     config, stream, plan = _first_plan("config/dynamic/gsmap_standard.yaml")
@@ -121,6 +125,60 @@ def test_gsmap_supports_jaxa_ftp_without_embedding_credentials(tmp_path: Path) -
     assert clients[0].login_values == ("alice", "secret")
     assert clients[0].command == "RETR /2020/01/01/rain-0000.dat.gz"
     assert "alice" not in fetched.source_uri and "secret" not in fetched.source_uri
+
+
+def test_gsmap_ftp_resolves_historical_revision_wildcard(tmp_path: Path) -> None:
+    config, stream, plan = _first_plan("config/dynamic/gsmap_standard.yaml")
+    clients = []
+
+    def ftp_factory(host: str):
+        client = FakeFtp(host)
+        clients.append(client)
+        return client
+
+    provider = GsmapProvider(
+        config,
+        stream,
+        environment={
+            "GSMAP_STANDARD_URL_TEMPLATE": (
+                "ftp://archive.test/{year}/{month}/{day}/"
+                "gsmap_gauge.{year}{month}{day}.{hour}{minute}.v8.*.dat.gz"
+            ),
+            "GSMAP_USERNAME": "alice",
+            "GSMAP_PASSWORD": "secret",
+        },
+        ftp_factory=ftp_factory,
+    )
+
+    fetched = provider.fetch(plan, tmp_path)
+
+    assert clients[0].pattern.endswith("gsmap_gauge.20200101.0000.v8.*.dat.gz")
+    assert clients[0].command.endswith("gsmap_gauge.20200101.0000.v8.0000.1.dat.gz")
+    assert fetched.source_uri.endswith("gsmap_gauge.20200101.0000.v8.0000.1.dat.gz")
+
+
+def test_gsmap_ftp_rejects_ambiguous_revision_wildcard(tmp_path: Path) -> None:
+    config, stream, plan = _first_plan("config/dynamic/gsmap_standard.yaml")
+
+    class AmbiguousFtp(FakeFtp):
+        def nlst(self, pattern: str) -> list[str]:
+            return [pattern.replace("*", revision) for revision in ("0000.1", "1000.0")]
+
+    provider = GsmapProvider(
+        config,
+        stream,
+        environment={
+            "GSMAP_STANDARD_URL_TEMPLATE": "ftp://archive.test/rain.v8.*.dat.gz",
+            "GSMAP_USERNAME": "alice",
+            "GSMAP_PASSWORD": "secret",
+        },
+        ftp_factory=AmbiguousFtp,
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="exactly one file"):
+        provider.fetch(plan, tmp_path)
 
 
 class FakeCdsResult:

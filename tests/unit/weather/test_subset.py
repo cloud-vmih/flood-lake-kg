@@ -96,7 +96,8 @@ def test_gsmap_subset_contains_only_scope_cells_and_original_checksum(
     assert scoped.provider_payload_checksum == original_checksum
     assert scoped.provider_payload_size_bytes == original_size
     assert scoped.scoped_payload_size_bytes == scoped.path.stat().st_size
-    assert not source.exists()
+    # Batch retries need every provider response until the whole DAG run finishes.
+    assert source.exists()
 
 
 def test_era_subset_masks_cells_outside_polygon(tmp_path: Path) -> None:
@@ -144,7 +145,7 @@ def test_era_subset_masks_cells_outside_polygon(tmp_path: Path) -> None:
         assert set(subset.data_vars) == {"total_precipitation", "surface_runoff"}
         assert subset["total_precipitation"].attrs["units"] == "m"
         assert subset.attrs["provider"] == "Copernicus"
-    assert not source.exists()
+    assert source.exists()
 
 
 def test_ifs_subset_rejects_response_outside_requested_scope(tmp_path: Path) -> None:

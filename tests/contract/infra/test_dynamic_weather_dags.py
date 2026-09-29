@@ -29,16 +29,19 @@ def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
         "load_cursor",
         "determine_available_end",
         "plan_expected_windows",
-        "extract_missing_objects",
+        "extract_missing_batches",
         "ensure_source_grid",
         "fetch_missing_or_revised",
+        "commit_fetch_attempts",
         "scope_fetched_payload",
         "register_raw_and_meta",
         "verify_contiguous_coverage",
         "advance_cursor",
-        "discover_unparsed_objects",
+        "discover_unparsed_batches",
         "parse_bronze",
+        "finalize_weather_run",
         "expire_transient_raw",
+        "cleanup_weather_staging",
     ):
         assert task_name in source
     assert "landing_raw" in source
@@ -47,12 +50,16 @@ def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
     assert "max_active_runs=1" in source
     assert "is_paused_upon_creation=True" in source
     assert ".expand(" in source
+    assert "bronze_task_batch_size" in source
     assert '.expand(planned_document=plan["missing"])' not in source
     assert '@task(retries=0, trigger_rule="none_failed")\n    def verify_contiguous_coverage' in source
     assert '@task(retries=0, outlets=[WEATHER_BRONZE_ASSET])' in source
     assert "weather_bronze_updated" in source
     assert "outlets=" in source
     assert 'pool="weather_fetch"' in source
+    assert 'pool="weather_raw_writer"' in source
+    assert 'trigger_rule="all_done"' in source
+    assert "finalize_weather_run(bronze_result, raw_cleanup, staging_cleanup)" in source
     assert "retry_exponential_backoff=True" in source
     assert source.index("ensure_source_grid") < source.index("scope_fetched_payload")
     assert source.index("scope_fetched_payload") < source.index("register_raw_and_meta")

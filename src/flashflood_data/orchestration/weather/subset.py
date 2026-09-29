@@ -172,7 +172,7 @@ def scope_fetched_object(
     config: WeatherPipelineConfig,
     grid: GridRegistration,
 ) -> ScopedWeatherObject:
-    """Write and validate the current AOI subset, then discard provider staging."""
+    """Write and validate the current AOI subset without mutating its input."""
     provider_checksum = _checksum(fetched.path)
     provider_size = fetched.path.stat().st_size
     if config.provider == "gsmap":
@@ -199,7 +199,6 @@ def scope_fetched_object(
         raise ValueError(f"unsupported weather subset provider: {config.provider}")
     scoped_checksum = _checksum(output)
     scoped_size = output.stat().st_size
-    fetched.path.unlink()
     return ScopedWeatherObject(
         planned=fetched.planned,
         path=output,

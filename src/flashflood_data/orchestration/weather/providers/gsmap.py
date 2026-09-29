@@ -67,8 +67,19 @@ class GsmapProvider:
                 raise ValueError("GSMaP FTP URL has no host")
             with self.ftp_factory(parsed.hostname) as ftp, path.open("wb") as destination:
                 ftp.login(username, password)
-                ftp.retrbinary(f"RETR {parsed.path}", destination.write)
+                source_path = parsed.path
+                if "*" in source_path:
+                    matches = ftp.nlst(source_path)
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            "GSMaP FTP revision wildcard must resolve exactly one file"
+                        )
+                    source_path = matches[0]
+                    url = parsed._replace(path=source_path).geturl()
+                ftp.retrbinary(f"RETR {source_path}", destination.write)
         elif parsed.scheme in {"http", "https"}:
+            if "*" in parsed.path:
+                raise ValueError("GSMaP revision wildcards require an FTP endpoint")
             response = self.client.get(
                 url,
                 auth=(username, password) if username or password else None,

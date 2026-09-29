@@ -1,6 +1,6 @@
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -47,8 +47,10 @@ class MemoryObjectStore:
 class MemoryInventory:
     def __init__(self) -> None:
         self.rows = {}
+        self.register_calls = 0
 
     def register_many(self, rows):
+        self.register_calls += 1
         reused = 0
         for row in rows:
             if row.object_id in self.rows:
@@ -66,15 +68,22 @@ class MemoryInventory:
 class MemoryMeta:
     def __init__(self) -> None:
         self.attempts = []
+        self.batch_calls = 0
 
     def record_attempt(self, **values):
         self.attempts.append(values)
+        return 1
+
+    def record_attempts(self, rows):
+        self.batch_calls += 1
+        self.attempts.extend(rows)
         return 1
 
 
 class MemoryLifecycleBackend:
     def __init__(self) -> None:
         self.rows = {}
+        self.batch_upserts = 0
 
     def get_meta_row(self, identifier, key):
         assert identifier == ("meta", "object_lifecycle")
@@ -92,21 +101,31 @@ class MemoryLifecycleBackend:
         self.rows[row["object_id"]] = dict(row)
         return 13
 
+    def upsert_meta_rows(self, identifier, key_fields, rows):
+        assert identifier == ("meta", "object_lifecycle")
+        assert key_fields == ("object_id",)
+        self.batch_upserts += 1
+        for row in rows:
+            self.rows[row["object_id"]] = dict(row)
+        return 13
 
-def _scoped(tmp_path: Path, payload: bytes = b"weather") -> ScopedWeatherObject:
+
+def _scoped(
+    tmp_path: Path, payload: bytes = b"weather", hour: int = 0
+) -> ScopedWeatherObject:
     from hashlib import sha256
 
-    path = tmp_path / "rain.json"
+    path = tmp_path / f"rain-{hour:02d}.json"
     path.write_bytes(payload)
-    start = datetime(2026, 9, 1, 0, tzinfo=UTC)
+    start = datetime(2026, 9, 1, hour, tzinfo=UTC)
     planned = PlannedWeatherObject(
         source_id="rain_source",
         source_version="v1",
         spatial_scope_id="sonla-l12-h1-deadbeef",
         stream_id="hourly",
         product="rain",
-        asset_id="hourly-20260901T0000Z",
-        window=WeatherWindow(start=start, end=start.replace(hour=1)),
+        asset_id=f"hourly-20260901T{hour:02d}00Z",
+        window=WeatherWindow(start=start, end=start + timedelta(hours=1)),
         variables=("precipitation",),
         request_fingerprint="f" * 64,
         source_cycle_id="20260901T0000Z",
@@ -148,7 +167,8 @@ def test_publish_registers_dynamic_raw_payload_and_credential_free_manifest(tmp_
     lifecycle = MemoryLifecycleBackend()
     service = _service(object_store, inventory, meta, lifecycle)
 
-    result = service.publish_and_register(_scoped(tmp_path), run_id="run-1")
+    scoped = _scoped(tmp_path)
+    result = service.publish_and_register(scoped, run_id="run-1")
 
     assert result.status == "available"
     assert result.snapshot_id == 9
@@ -165,7 +185,8 @@ def test_publish_registers_dynamic_raw_payload_and_credential_free_manifest(tmp_
     assert manifest["provider_metadata"]["provider_payload_checksum"] == "a" * 64
     assert "password" not in json.dumps(manifest).lower()
     assert meta.attempts[-1]["status"] == "succeeded"
-    assert not (tmp_path / "rain.json").exists()
+    # Airflow removes the run staging directory only after all mapped batches finish.
+    assert scoped.path.exists()
     assert lifecycle.rows[result.object_id]["retention_class"] == "durable"
     assert lifecycle.rows[result.object_id]["expires_at"] is None
 
@@ -183,6 +204,28 @@ def test_rerun_reuses_identical_raw_object_without_duplicate_inventory(tmp_path:
     assert second.reused is True
     assert len(inventory.rows) == 1
     assert len(lifecycle.rows) == 1
+
+
+def test_publish_many_commits_one_inventory_lifecycle_and_attempt_batch(
+    tmp_path: Path,
+) -> None:
+    object_store = MemoryObjectStore()
+    inventory = MemoryInventory()
+    meta = MemoryMeta()
+    lifecycle = MemoryLifecycleBackend()
+    service = _service(object_store, inventory, meta, lifecycle)
+
+    results = service.publish_many(
+        [_scoped(tmp_path, b"hour-0", 0), _scoped(tmp_path, b"hour-1", 1)],
+        run_id="run-batch",
+        attempt_no=1,
+    )
+
+    assert len(results) == 2
+    assert inventory.register_calls == 1
+    assert lifecycle.batch_upserts == 1
+    assert meta.batch_calls == 1
+    assert [row["status"] for row in meta.attempts] == ["succeeded", "succeeded"]
 
 
 def test_revised_payload_gets_a_new_immutable_object(tmp_path: Path) -> None:

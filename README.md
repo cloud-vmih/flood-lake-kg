@@ -169,10 +169,10 @@ Không ghi credential vào YAML, Git, chat hoặc log.
 Bốn DAG weather chỉ đọc tên credential từ môi trường. Điền các giá trị cần dùng vào `.env`:
 
 ```dotenv
-# JAXA GSMaP: URL template do tài khoản/archive cung cấp; hỗ trợ placeholder
-# {year}, {month}, {day}, {hour}, {minute}, {product}.
-GSMAP_STANDARD_URL_TEMPLATE=https://host/path/{year}/{month}/{day}/file-{hour}{minute}.dat.gz
-GSMAP_NOW_URL_TEMPLATE=https://host/path/{year}/{month}/{day}/file-{hour}{minute}.dat.gz
+# JAXA GSMaP: Standard dùng wildcard revision vì tên file lịch sử và hiện tại khác nhau.
+# Provider chỉ chấp nhận wildcard trên FTP và yêu cầu nó resolve đúng một file.
+GSMAP_STANDARD_URL_TEMPLATE=ftp://hokusai.eorc.jaxa.jp/standard/v8/hourly_G/{year}/{month}/{day}/gsmap_gauge.{year}{month}{day}.{hour}{minute}.v8.*.dat.gz
+GSMAP_NOW_URL_TEMPLATE=ftp://hokusai.eorc.jaxa.jp/now/half_hour_G/{year}/{month}/{day}/gsmap_gauge_now.{year}{month}{day}.{hour}{minute}.dat.gz
 GSMAP_USERNAME=...
 GSMAP_PASSWORD=...
 
@@ -460,9 +460,17 @@ docker compose exec -T airflow-scheduler airflow dags trigger gsmap_standard_ing
 `max_objects` trong DAG conf cho phép giảm/tăng batch của một lần chạy. Khoảng lớn hơn giới hạn
 sẽ được xử lý qua các lần catch-up tiếp theo; không truyền hàng chục nghìn object qua một XCom.
 
-Bốn DAG được tạo với `is_paused_upon_creation=True` và `max_active_runs=1`. Fetch dùng pool
-`weather_fetch` có bốn slot, retry exponential backoff tối đa 30 phút; ghi Raw/Meta và Bronze dùng
-hai pool một slot riêng để tránh nhiều writer cùng commit Iceberg. Hiện `publish_bronze_update`
+Bốn DAG được tạo với `is_paused_upon_creation=True` và `max_active_runs=1`. GSMaP Standard gom
+24 giờ vào một mapped task, GSMaP NOW gom 48 nửa giờ vào một task; một run 336 object lần lượt
+tạo khoảng 14 và 7 fetch instance. Fetch dùng pool `weather_fetch` có bốn slot và retry exponential
+backoff tối đa 30 phút. Mỗi fetch task ghi audit vào spool riêng trên staging; task
+`commit_fetch_attempts` dùng `weather_raw_writer` một slot để commit toàn bộ audit vào Iceberg một
+lần. Publish Raw/Meta theo batch và Bronze dùng các writer pool một slot để tránh commit xung đột.
+Provider payload và bản scoped được giữ trong staging riêng theo pipeline/run để retry cả batch
+không mất input; task `cleanup_weather_staging` chỉ dọn chúng sau khi run đã kết thúc.
+Bronze cũng gom GSMaP Standard theo 24 object và NOW theo 48 object trong một mapped task; mỗi
+batch tạo một snapshot nhưng DQ, lineage và lifecycle vẫn được ghi theo từng `object_id`.
+Hiện `publish_bronze_update`
 vẫn chạy sau khi nhóm Bronze thành công kể cả khi danh sách object cần parse rỗng; downstream về
 sau phải dựa vào snapshot/lineage hoặc reconciliation, không dùng asset event làm nguồn sự thật.
 
