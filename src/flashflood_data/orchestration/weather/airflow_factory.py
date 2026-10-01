@@ -98,10 +98,11 @@ def build_weather_dag(dag_id: str, config_path: Path):
         fetched_documents: list[dict[str, object]] = []
         attempts: list[FetchAttemptRecord] = []
         failure: Exception | None = None
+        fetched_batch = runtime.fetch_many(tuple(plans), weather_run_id, grid=grid)
         for planned in plans:
             started_at = datetime.now(UTC)
             try:
-                fetched = runtime.fetch(planned, weather_run_id, grid=grid)
+                fetched = next(fetched_batch)
                 fetched_documents.append(
                     {
                         "status": "available",

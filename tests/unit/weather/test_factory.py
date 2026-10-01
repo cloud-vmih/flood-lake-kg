@@ -59,6 +59,41 @@ def test_inventory_coverage_requires_the_complete_expected_request_identity() ->
     )
 
 
+def test_backfill_filters_existing_objects_before_applying_run_limit() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_weather_config(root / "config/dynamic/gsmap_standard.yaml")
+
+    def runtime(rows=()):
+        return WeatherRuntime(
+            root=root,
+            config=config,
+            settings=SimpleNamespace(),
+            inventory=SimpleNamespace(available_objects=lambda _source_id: rows),
+            table_store=SimpleNamespace(),
+            meta=SimpleNamespace(),
+            object_store=SimpleNamespace(),
+        )
+
+    initial = runtime().plan_document(
+        {}, {"gauge_standard": "2020-01-05T00:00:00+00:00"},
+        mode="backfill", requested_start="2020-01-01T00:00:00Z",
+        requested_end="2020-01-05T00:00:00Z", requested_limit="4",
+        spatial_scope_id="sonla-scope-v1",
+    )
+    planned = [PlannedWeatherObject.model_validate(item) for item in initial["missing"]]
+
+    resumed = runtime(tuple(_stored(item) for item in planned[:2])).plan_document(
+        {}, {"gauge_standard": "2020-01-05T00:00:00+00:00"},
+        mode="backfill", requested_start="2020-01-01T00:00:00Z",
+        requested_end="2020-01-05T00:00:00Z", requested_limit="2",
+        spatial_scope_id="sonla-scope-v1",
+    )
+
+    assert [item["asset_id"] for item in resumed["missing"]] == [
+        item.asset_id for item in planned[2:4]
+    ]
+
+
 def test_fetch_does_not_write_shared_iceberg_audit_from_parallel_task(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -116,9 +116,10 @@ def test_airflow_uses_basic_v3_local_executor_topology() -> None:
         assert items[name]["healthcheck"]
     env = items["airflow-scheduler"]["environment"]
     assert env["AIRFLOW__CORE__EXECUTOR"] == "LocalExecutor"
-    assert env["AIRFLOW__CORE__PARALLELISM"] == "2"
+    assert env["AIRFLOW__CORE__PARALLELISM"] == "4"
     assert env["AIRFLOW__CORE__LOAD_EXAMPLES"] == "false"
     assert items["airflow-api-server"]["ports"] == ["127.0.0.1:8080:8080"]
+    assert items["airflow-scheduler"]["mem_limit"] == "1280m"
     assert "entrypoint" not in items["airflow-init"]
     assert items["airflow-init"]["command"][:2] == ["bash", "-c"]
 

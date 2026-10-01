@@ -1,7 +1,7 @@
 """GSMaP Standard and Gauge NOW file acquisition."""
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from ftplib import FTP
 from pathlib import Path
@@ -100,3 +100,60 @@ class GsmapProvider:
             available_at=now,
             provider_metadata={"provider": "JAXA", "product": planned.product},
         )
+
+    def fetch_many(
+        self, planned_objects: Iterable[PlannedWeatherObject], target_dir: Path
+    ) -> Iterator[FetchedWeatherObject]:
+        """Fetch one mapped batch, reusing a single authenticated FTP session."""
+        plans = tuple(planned_objects)
+        if not plans:
+            return
+        urls = [(planned, self._url(planned)) for planned in plans]
+        parsed_urls = [
+            (planned, url, urlsplit(url)) for planned, url in urls
+        ]
+        if any(parsed.scheme != "ftp" for _planned, _url, parsed in parsed_urls):
+            for planned in plans:
+                yield self.fetch(planned, target_dir)
+            return
+        hosts = {parsed.hostname for _planned, _url, parsed in parsed_urls}
+        if None in hosts or len(hosts) != 1:
+            raise ValueError("one GSMaP FTP batch must use exactly one host")
+        if any(
+            parsed.username is not None or parsed.password is not None
+            for _planned, _url, parsed in parsed_urls
+        ):
+            raise ValueError("GSMaP URL templates cannot contain credentials")
+        username = self.environment.get("GSMAP_USERNAME", "")
+        password = self.environment.get("GSMAP_PASSWORD", "")
+        host = next(iter(hosts))
+        assert host is not None
+        with self.ftp_factory(host) as ftp:
+            ftp.login(username, password)
+            for planned, url, parsed in parsed_urls:
+                path = target_path(target_dir, planned, self.stream.filename_suffix)
+                source_path = parsed.path
+                if "*" in source_path:
+                    matches = ftp.nlst(source_path)
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            "GSMaP FTP revision wildcard must resolve exactly one file"
+                        )
+                    source_path = matches[0]
+                    url = parsed._replace(path=source_path).geturl()
+                with path.open("wb") as destination:
+                    ftp.retrbinary(f"RETR {source_path}", destination.write)
+                now = datetime.now(UTC)
+                yield FetchedWeatherObject(
+                    planned=planned,
+                    path=path,
+                    filename=path.name,
+                    media_type=self.stream.media_type,
+                    source_uri=url,
+                    retrieved_at=now,
+                    available_at=now,
+                    provider_metadata={
+                        "provider": "JAXA",
+                        "product": planned.product,
+                    },
+                )

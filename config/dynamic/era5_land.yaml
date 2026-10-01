@@ -10,7 +10,8 @@ retention_class: durable
 parser_version: era5-land-raster-slice-v2
 license_id: copernicus-cds-licence
 license_uri: https://cds.climate.copernicus.eu/api/v2/terms/static/licence-to-use-copernicus-products.pdf
-max_objects_per_run: 3
+max_objects_per_run: 12
+backfill_max_objects_per_run: 12
 streams:
   - stream_id: hourly_reanalysis
     product: reanalysis-era5-land

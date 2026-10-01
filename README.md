@@ -40,7 +40,7 @@ Cập nhật ngày **28/09/2026**:
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
 | Spark/Iceberg | Đã có profile tùy chọn và smoke test ghi–đọc bảng tạm |
 | Silver L12 | Chưa triển khai |
-| GSMaP, ERA5-Land và IFS | Bốn DAG scoped Raw → Meta → Bronze đã hoàn tất; cần reset local một lần để thay contract row cũ bằng raster slice mới; các DAG tạo mới đều pause |
+| GSMaP, ERA5-Land và IFS | Bốn DAG scoped Raw → Meta → Bronze đã hoàn tất; GSMaP Standard và ERA5-Land đã tối ưu giới hạn backfill, resume theo object thiếu và bốn fetch task song song; các DAG tạo mới đều pause |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
 Snapshot Iceberg được kiểm tra gần nhất:
@@ -381,11 +381,11 @@ docker compose exec -T airflow-scheduler airflow dags trigger \
 
 ## Bước 4 — Bốn DAG weather động
 
-| DAG | Schedule | Product | Giới hạn mặc định mỗi run |
+| DAG | Schedule | Product | Giới hạn hiện tại mỗi run |
 | --- | --- | --- | ---: |
-| `gsmap_now_ingest` | phút 07 và 37 mỗi giờ | Gauge NOW v8 | 336 object |
-| `gsmap_standard_ingest` | phút 27 mỗi 6 giờ | Gauge Standard v8 | 336 object |
-| `era5_land_ingest` | 02:43 hằng ngày | ERA5-Land hourly | 3 tháng hoàn chỉnh |
+| `gsmap_now_ingest` | phút 07 và 37 mỗi giờ | Gauge NOW v8 | 336 object = 7 ngày ở cadence 30 phút |
+| `gsmap_standard_ingest` | phút 27 mỗi 6 giờ | Gauge Standard v8 | 2.160 object = 90 ngày ở cadence 1 giờ |
+| `era5_land_ingest` | 02:43 hằng ngày | ERA5-Land hourly | 12 tháng hoàn chỉnh |
 | `ifs_ingest` | phút 12 mỗi 6 giờ | IFS HRES Single Runs | 28 cycle |
 
 Schedule chỉ đánh thức DAG. Planner đọc watermark theo cả product và `spatial_scope_id`, lập các
@@ -457,13 +457,27 @@ docker compose exec -T airflow-scheduler airflow dags trigger gsmap_standard_ing
   --conf '{"mode":"backfill","start":"2020-01-01T00:00:00Z","end":"2020-02-01T00:00:00Z"}'
 ```
 
-`max_objects` trong DAG conf cho phép giảm/tăng batch của một lần chạy. Khoảng lớn hơn giới hạn
-sẽ được xử lý qua các lần catch-up tiếp theo; không truyền hàng chục nghìn object qua một XCom.
+`max_objects` trong DAG conf cho phép override giới hạn của một run. Mặc định GSMaP Standard xử
+lý 2.160 object giờ, tương đương 90 ngày; ERA5-Land xử lý 12 object tháng. Trong
+`mode=backfill`, planner loại object immutable đã có trước khi áp giới hạn và không replay overlap,
+nên trigger lại cùng khoảng sẽ lấy tiếp phần còn thiếu. Catch-up operational vẫn giữ overlap để
+nhận revision: GSMaP Standard tiến ròng khoảng 87 ngày/run và ERA5-Land khoảng 11 tháng/run khi
+đang bù lịch sử.
+
+Backfill cả khoảng có thể được trigger lại cho tới khi không còn object thiếu:
+
+```bash
+docker compose exec -T airflow-scheduler airflow dags trigger \
+  gsmap_standard_ingest \
+  --conf '{"mode":"backfill","start":"2020-01-01T00:00:00Z","end":"2021-01-01T00:00:00Z"}'
+```
 
 Bốn DAG được tạo với `is_paused_upon_creation=True` và `max_active_runs=1`. GSMaP Standard gom
-24 giờ vào một mapped task, GSMaP NOW gom 48 nửa giờ vào một task; một run 336 object lần lượt
-tạo khoảng 14 và 7 fetch instance. Fetch dùng pool `weather_fetch` có bốn slot và retry exponential
-backoff tối đa 30 phút. Mỗi fetch task ghi audit vào spool riêng trên staging; task
+24 giờ vào một mapped task, GSMaP NOW gom 48 nửa giờ vào một task; một run Standard 90 ngày tạo
+90 fetch instance nhưng chỉ tối đa bốn instance chạy đồng thời. Mỗi task Standard tái sử dụng một
+FTP session cho 24 file giờ. Fetch dùng pool `weather_fetch` bốn slot, Airflow global parallelism
+bốn và retry exponential backoff tối đa 30 phút. Mỗi fetch task ghi audit vào spool riêng trên
+staging; task
 `commit_fetch_attempts` dùng `weather_raw_writer` một slot để commit toàn bộ audit vào Iceberg một
 lần. Publish Raw/Meta theo batch và Bronze dùng các writer pool một slot để tránh commit xung đột.
 Provider payload và bản scoped được giữ trong staging riêng theo pipeline/run để retry cả batch

@@ -87,6 +87,7 @@ class WeatherPipelineConfig(ImmutableModel):
     license_id: str
     license_uri: str
     max_objects_per_run: int = Field(gt=0)
+    backfill_max_objects_per_run: int | None = Field(default=None, gt=0)
     task_batch_size: int = Field(default=1, gt=0)
     bronze_task_batch_size: int = Field(default=1, gt=0)
     streams: tuple[WeatherStreamConfig, ...]

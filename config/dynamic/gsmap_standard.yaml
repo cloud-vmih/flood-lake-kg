@@ -10,7 +10,8 @@ retention_class: durable
 parser_version: gsmap-raster-slice-v2
 license_id: jaxa-gsmap-terms
 license_uri: https://sharaku.eorc.jaxa.jp/GSMaP/guide.html
-max_objects_per_run: 336
+max_objects_per_run: 2160
+backfill_max_objects_per_run: 2160
 task_batch_size: 24
 bronze_task_batch_size: 24
 streams:

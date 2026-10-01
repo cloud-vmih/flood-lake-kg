@@ -234,7 +234,12 @@ class WeatherRuntime:
             raise ValueError("weather mode must be catchup or backfill")
         if mode == "backfill" and (not requested_start or not requested_end):
             raise ValueError("weather backfill requires start and end")
-        limit = int(requested_limit) if requested_limit else self.config.max_objects_per_run
+        configured_limit = (
+            self.config.backfill_max_objects_per_run
+            if mode == "backfill" and self.config.backfill_max_objects_per_run is not None
+            else self.config.max_objects_per_run
+        )
+        limit = int(requested_limit) if requested_limit else configured_limit
         if limit < 1:
             raise ValueError("weather object limit must be positive")
         bounds = _aoi_bounds(self.root, self.config.aoi_path)
@@ -254,7 +259,7 @@ class WeatherRuntime:
                 start = operational_start(stream, watermark)
                 end = safe_end
             request_options = {**stream.options, "aoi_bounds": list(bounds)}
-            expected = plan_expected_objects(
+            planned = plan_expected_objects(
                 source_id=self.config.source_id,
                 source_version=self.config.source_version,
                 spatial_scope_id=spatial_scope_id,
@@ -262,31 +267,41 @@ class WeatherRuntime:
                 start=start,
                 end=end,
                 request_options=request_options,
-            )[:limit]
-            expected_by_asset = {item.asset_id: item for item in expected}
+            )
+            planned_by_asset = {item.asset_id: item for item in planned}
             matching_rows = [
                 row
                 for row in available_rows
-                if (planned := expected_by_asset.get(row.asset_id)) is not None
-                and _matches_planned_object(row, planned)
+                if (item := planned_by_asset.get(row.asset_id)) is not None
+                and _matches_planned_object(row, item)
             ]
-            existing = {
-                row.asset_id
-                for row in matching_rows
-            }
-            recently_committed = {
-                row.asset_id
-                for row in matching_rows
-                if watermark is not None
-                and row.first_seen_at >= watermark.updated_at
-            }
-            overlap = operational_start(stream, watermark) if watermark else safe_end
-            missing = select_missing_or_overlap(
-                expected,
-                existing_asset_ids=existing,
-                overlap_start=overlap,
-                recently_committed_asset_ids=recently_committed,
-            )
+            existing = {row.asset_id for row in matching_rows}
+            if mode == "backfill":
+                expected = tuple(
+                    item for item in planned if item.asset_id not in existing
+                )[:limit]
+                missing = expected
+                expected_existing: set[str] = set()
+            else:
+                expected = planned[:limit]
+                expected_ids = {item.asset_id for item in expected}
+                expected_existing = existing.intersection(expected_ids)
+                recent_rows = [
+                    row for row in matching_rows if row.asset_id in expected_ids
+                ]
+                recently_committed = {
+                    row.asset_id
+                    for row in recent_rows
+                    if watermark is not None
+                    and row.first_seen_at >= watermark.updated_at
+                }
+                overlap = operational_start(stream, watermark) if watermark else safe_end
+                missing = select_missing_or_overlap(
+                    expected,
+                    existing_asset_ids=expected_existing,
+                    overlap_start=overlap,
+                    recently_committed_asset_ids=recently_committed,
+                )
             all_missing.extend(item.model_dump(mode="json") for item in missing)
             stream_documents.append(
                 {
@@ -294,7 +309,7 @@ class WeatherRuntime:
                     "product": stream.product,
                     "safe_end": safe_end.isoformat(),
                     "expected": [item.model_dump(mode="json") for item in expected],
-                    "existing_asset_ids": sorted(existing),
+                    "existing_asset_ids": sorted(expected_existing),
                 }
             )
         return {
@@ -331,6 +346,23 @@ class WeatherRuntime:
             else self.provider(planned.stream_id, grid)
         )
         return provider.fetch(planned, target)
+
+    def fetch_many(
+        self,
+        planned: tuple[PlannedWeatherObject, ...],
+        run_id: str,
+        *,
+        grid: GridRegistration | None = None,
+    ):
+        """Fetch one mapped batch while allowing providers to reuse connections."""
+        if not planned:
+            return iter(())
+        target = self.run_staging_dir(run_id) / "provider"
+        provider = self.provider(planned[0].stream_id, grid)
+        fetch_many = getattr(provider, "fetch_many", None)
+        if callable(fetch_many):
+            return iter(fetch_many(planned, target))
+        return (provider.fetch(item, target) for item in planned)
 
     def stage_fetch_attempts(
         self,

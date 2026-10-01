@@ -50,8 +50,8 @@ Không truyền file lớn qua Airflow XCom. Task chỉ truyền `source_id`, `o
 | `static_source_landing` | Đã triển khai và đã chạy | Chọn/tải dữ liệu tĩnh, publish payload + manifest vào MinIO, đăng ký `meta.source_objects`, audit Meta. |
 | `static_source_to_bronze` | Đã triển khai và đã chạy | Discover raw object chưa có kết quả hợp lệ, parse theo nguồn, chạy QA, ghi bảng Bronze và lineage. |
 | `gsmap_now_ingest` | Đã triển khai | Gauge NOW: fetch vào staging, cắt AOI, commit scoped Raw/Meta, parse raster slice và cleanup Raw transient sau 7 ngày. |
-| `gsmap_standard_ingest` | Đã triển khai | Gauge Standard: fetch, cắt AOI, commit scoped Raw durable, parse raster slice và cập nhật watermark riêng. |
-| `era5_land_ingest` | Đã triển khai, chưa chạy provider thật | ERA5-Land theo tháng hoàn chỉnh: request CDS theo AOI, commit Raw/Meta và giữ accumulation gốc trong Bronze. |
+| `gsmap_standard_ingest` | Đã triển khai và tối ưu backfill | Gauge Standard: 90 ngày/run, resume theo object thiếu, một FTP session/ngày, scoped Raw durable → Bronze. |
+| `era5_land_ingest` | Đã chạy provider thật | ERA5-Land 12 tháng/run, bbox phủ đủ cell biên AOI, scoped Raw durable và accumulation gốc trong Bronze. |
 | `ifs_ingest` | Đã triển khai, chưa chạy provider thật | IFS HRES Single Runs theo cycle 6 giờ: request Open-Meteo, commit Raw/Meta và parse forecast grid vào Bronze. |
 
 Hai DAG static đều `schedule=None`, `catchup=False` và mặc định pause khi tạo. Bốn DAG weather có
@@ -657,8 +657,18 @@ Quy tắc:
 - `mode=catchup` hoặc không truyền conf dùng watermark → provider safe end.
 - Cả hai mode gọi cùng planner, adapter, publisher, parser và QA.
 - Backfill không tự đẩy watermark operational vượt qua gap chưa đầy.
-- Khoảng backfill lớn tạo nhiều bounded batch để retry một phần, không tạo một task tải cả năm.
+- Overlap revision chỉ áp dụng cho catch-up operational. Backfill lịch sử không replay 72 giờ
+  GSMaP Standard ở mỗi run.
+- Planner backfill phải lập toàn bộ identity trong khoảng yêu cầu, loại object immutable đã có,
+  rồi mới áp `max_objects`. Nhờ đó trigger lại cùng khoảng luôn tiến tới object còn thiếu tiếp theo.
+- GSMaP Standard backfill dùng chunk mặc định 90 ngày (`2160` object giờ), sau đó chia thành
+  mapped task 24 object/ngày. Không tạo một task tải cả năm.
 - Retry luôn đối chiếu `meta.source_objects` trước khi gọi provider để tránh tải lại bytes đã commit.
+- ERA5-Land xử lý tối đa 12 tháng/run. Request mở rộng nửa cell quanh bbox AOI để giữ các cell
+  biên đã đăng ký trong `silver.source_grid`.
+- Bốn fetch task chạy đồng thời; Iceberg writer vẫn một slot để không đưa nhiều writer cùng commit
+  một bảng.
+- Mỗi mapped task GSMaP Standard giữ phạm vi một ngày và dùng một FTP session cho 24 file giờ.
 
 ### 9.8. Temporal contract bắt buộc
 
@@ -827,6 +837,12 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
   giảm mapped task cùng số commit Iceberg.
 - [x] Gom Raw GSMaP thành batch Bronze ngày, commit một snapshot/batch và giữ evidence theo object.
 - [x] Xác minh GSMaP provider error sau sample thật; log không ghi credential và lỗi file thiếu đi qua retry/audit.
+- [x] Áp giới hạn backfill sau bước loại object đã có để trigger lại cùng khoảng tự tiến tiếp.
+- [x] Tắt revision overlap trong `mode=backfill`; chỉ giữ overlap cho catch-up operational.
+- [x] Đặt chunk GSMaP Standard backfill 90 ngày và tăng Airflow global parallelism lên bốn để dùng
+  đủ pool `weather_fetch`.
+- [x] Đặt ERA5-Land 12 tháng/run và mở rộng request nửa cell để giữ cell biên AOI.
+- [x] Tái sử dụng một FTP session cho 24 file giờ của mỗi mapped task GSMaP Standard.
 
 **Nghiệm thu:** một provider lỗi không chặn provider khác; Docker tắt rồi bật lại tự lấp time slot thiếu; manual trigger và schedule dùng cùng code.
 

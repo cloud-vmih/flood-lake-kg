@@ -51,6 +51,8 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     assert standard.retention_days is None
     assert standard.task_batch_size == 24
     assert standard.bronze_task_batch_size == 24
+    assert standard.max_objects_per_run == 2160
+    assert standard.backfill_max_objects_per_run == 2160
     assert now.schedule == "7,37 * * * *"
     assert now.retention_class == "transient_7d"
     assert now.retention_days == 7
@@ -97,6 +99,8 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     }
     assert ifs.streams[0].options["model"] == "ecmwf_ifs"
     assert era5.retention_class == "durable"
+    assert era5.max_objects_per_run == 12
+    assert era5.backfill_max_objects_per_run == 12
     assert era5.bronze_task_batch_size == 1
     assert ifs.retention_class == "transient_7d"
     assert ifs.retention_days == 7

@@ -10,7 +10,7 @@ x-airflow-common: &airflow-common
   user: "${AIRFLOW_UID:?run make lakehouse-init}:0"
   environment: &airflow-environment
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__PARALLELISM: "4"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -258,7 +258,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
-    mem_limit: 1g
+    mem_limit: 1280m
     depends_on:
       airflow-init:
         condition: service_completed_successfully

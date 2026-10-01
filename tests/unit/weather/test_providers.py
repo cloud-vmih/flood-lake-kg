@@ -77,6 +77,7 @@ class FakeFtp:
         self.host = host
         self.login_values = None
         self.command = None
+        self.commands = []
 
     def __enter__(self):
         return self
@@ -89,6 +90,7 @@ class FakeFtp:
 
     def retrbinary(self, command: str, callback) -> None:
         self.command = command
+        self.commands.append(command)
         callback(b"ftp-rain")
 
     def nlst(self, pattern: str) -> list[str]:
@@ -125,6 +127,46 @@ def test_gsmap_supports_jaxa_ftp_without_embedding_credentials(tmp_path: Path) -
     assert clients[0].login_values == ("alice", "secret")
     assert clients[0].command == "RETR /2020/01/01/rain-0000.dat.gz"
     assert "alice" not in fetched.source_uri and "secret" not in fetched.source_uri
+
+
+def test_gsmap_batch_reuses_one_ftp_session_for_multiple_hours(tmp_path: Path) -> None:
+    config, stream, first = _first_plan("config/dynamic/gsmap_standard.yaml")
+    plans = plan_expected_objects(
+        source_id=config.source_id,
+        source_version=config.source_version,
+        spatial_scope_id="sonla-scope-v1",
+        stream=stream,
+        start=first.window.start,
+        end=first.window.start + timedelta(hours=2),
+    )
+    clients = []
+
+    def ftp_factory(host: str):
+        client = FakeFtp(host)
+        clients.append(client)
+        return client
+
+    provider = GsmapProvider(
+        config,
+        stream,
+        environment={
+            "GSMAP_STANDARD_URL_TEMPLATE": (
+                "ftp://archive.test/{year}/{month}/{day}/rain-{hour}{minute}.dat.gz"
+            ),
+            "GSMAP_USERNAME": "alice",
+            "GSMAP_PASSWORD": "secret",
+        },
+        ftp_factory=ftp_factory,
+    )
+
+    fetched = list(provider.fetch_many(plans, tmp_path))
+
+    assert len(fetched) == 2
+    assert len(clients) == 1
+    assert clients[0].commands == [
+        "RETR /2020/01/01/rain-0000.dat.gz",
+        "RETR /2020/01/01/rain-0100.dat.gz",
+    ]
 
 
 def test_gsmap_ftp_resolves_historical_revision_wildcard(tmp_path: Path) -> None:
@@ -199,7 +241,7 @@ class FakeCdsClient:
         return FakeCdsResult(target)
 
 
-def test_era5_builds_aoi_hourly_cds_request(tmp_path: Path) -> None:
+def test_era5_expands_request_to_cover_cells_intersecting_the_aoi(tmp_path: Path) -> None:
     config, stream, plan = _first_plan("config/dynamic/era5_land.yaml")
     client = FakeCdsClient()
     provider = Era5LandProvider(
@@ -213,7 +255,7 @@ def test_era5_builds_aoi_hourly_cds_request(tmp_path: Path) -> None:
 
     dataset, request, _ = client.calls[0]
     assert dataset == "reanalysis-era5-land"
-    assert request["area"] == [22.0, 103.0, 20.0, 105.0]
+    assert request["area"] == [22.05, 102.95, 19.95, 105.05]
     assert request["variable"] == list(stream.variables)
     assert fetched.path.read_bytes() == b"netcdf-fixture"
 
