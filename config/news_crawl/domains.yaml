@@ -1,0 +1,8 @@
+# Selector boc than bai theo tung bao (dung o vong sau).
+# Hien tai de khung: parser chung (article-scope + furniture) van dung duoc
+# cho triage giu/loai. Khi can trich so lieu cau truc thi dien selector that
+# sau khi soi HTML tung bao, vi du:
+# vtv.vn:
+#   body: "<selector CSS/XPath da xac minh>"
+#   note: "bo khoi tin-lien-quan cuoi bai"
+# Quy tac: chi them selector da kiem tra tren >=2 bai that, ghi ngay kiem tra.

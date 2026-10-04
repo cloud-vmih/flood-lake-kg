@@ -1,0 +1,122 @@
+# Keyword v2: sinh tu dong, khong sua tay.
+# Nguon dia danh: dataset/harmonized/admin/admin_commune_2025.geoparquet
+# Quy tac: flood AND place AND NOT exclude (exclude khuyen nghi chi lam co review: --no-exclude)
+
+flood:
+  - lũ quét
+  - lũ ống
+  - ngập úng
+  - ngập
+  - sạt lở
+  - lũ lụt
+  - mưa lũ
+  - lũ
+  - vượt báo động
+  - báo động
+place_tinh:
+  - sơn la
+# 75 xa/phuong 2025
+place_xa_phuong:
+  - Bình Thuận
+  - Bó Sinh
+  - Bắc Yên
+  - Chiềng An
+  - Chiềng Cơi
+  - Chiềng Hoa
+  - Chiềng Hặc
+  - Chiềng Khoong
+  - Chiềng Khương
+  - Chiềng La
+  - Chiềng Lao
+  - Chiềng Mai
+  - Chiềng Mung
+  - Chiềng Sinh
+  - Chiềng Sung
+  - Chiềng Sơ
+  - Chiềng Sơn
+  - Chiềng Sại
+  - Co Mạ
+  - Gia Phù
+  - Huổi Một
+  - Kim Bon
+  - Long Hẹ
+  - Lóng Phiêng
+  - Lóng Sập
+  - Mai Sơn
+  - Muổi Nọi
+  - Mường Bang
+  - Mường Bám
+  - Mường Bú
+  - Mường Chanh
+  - Mường Chiên
+  - Mường Cơi
+  - Mường Giôn
+  - Mường Hung
+  - Mường Khiêng
+  - Mường La
+  - Mường Lèo
+  - Mường Lạn
+  - Mường Lầm
+  - Mường Sại
+  - Mường É
+  - Mộc Châu
+  - Mộc Sơn
+  - Ngọc Chiến
+  - Nậm Lầu
+  - Nậm Ty
+  - Phiêng Cằm
+  - Phiêng Khoài
+  - Phiêng Pằn
+  - Phù Yên
+  - Púng Bánh
+  - Pắc Ngà
+  - Quỳnh Nhai
+  - Song Khủa
+  - Suối Tọ
+  - Sông Mã
+  - Sốp Cộp
+  - Thuận Châu
+  - Thảo Nguyên
+  - Tà Hộc
+  - Tà Xùa
+  - Tân Phong
+  - Tân Yên
+  - Tô Hiệu
+  - Tô Múa
+  - Tường Hạ
+  - Tạ Khoa
+  - Vân Hồ
+  - Vân Sơn
+  - Xuân Nha
+  - Xím Vàng
+  - Yên Châu
+  - Yên Sơn
+  - Đoàn Kết
+place_song_suoi:
+  - sông mã
+  - nậm păm
+  - nậm pàn
+  - suối ban
+  - suối thì
+  - suối mong
+# ten ban tu bai bao da xac minh
+place_ban:
+  - pá kìm
+  - bản bon
+  - bản phặng
+  - bản lẩy
+  - hua pư
+  - pá hốc
+  - pa kha
+  - ít ong
+  - hua trai
+  - mường trai
+  - mé bon
+  - bản kẻ
+  - bản công
+# cum loai tru (khop cum, khong khop tu don)
+exclude:
+  - xả lũ
+  - dự báo thời tiết
+  - xổ số
+  - giá vàng
