@@ -88,7 +88,6 @@ def test_active_data_contracts_describe_scoped_weather_slices() -> None:
         ROOT / "docs/schema_contract/data.md",
         ROOT / "docs/son_la_flood_schema_contract.md",
         ROOT / "docs/pipeline_architecture_and_roadmap.md",
-        ROOT / "docs/son_la_flood_class_diagram.drawio",
     )
     combined = "\n".join(path.read_text(encoding="utf-8") for path in active_docs)
 

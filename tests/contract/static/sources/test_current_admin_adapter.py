@@ -13,8 +13,14 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.static.sources.admin import CurrentAdminAdapter, normalize_current_admin
-from flashflood_data.static.sources.base import SourceConfigurationError, SourceContext
+from flashflood_data.pipelines.static_landing.adapters.admin import (
+    CurrentAdminAdapter,
+    normalize_current_admin,
+)
+from flashflood_data.pipelines.static_landing.adapters.base import (
+    SourceConfigurationError,
+    SourceContext,
+)
 
 
 @pytest.fixture
@@ -167,7 +173,9 @@ def test_current_admin_reads_gzip_encoded_json_payload(
     discovered = adapter.resolve(context, [_available(compressed, "sonla-admin-2025-index")])
 
     assert validation.passed
-    geometry = next(item for item in discovered if item.asset_id.startswith("sonla-admin-2025-unit-"))
+    geometry = next(
+        item for item in discovered if item.asset_id.startswith("sonla-admin-2025-unit-")
+    )
     assert geometry.asset_id == "sonla-admin-2025-unit-03664"
 
 

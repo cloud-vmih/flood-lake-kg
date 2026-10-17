@@ -1,4 +1,4 @@
-.PHONY: doctor bootstrap setup test lint smoke inventory preflight lakehouse-aoi resolve-live live qa-map lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down spark-build spark-up spark-status spark-down spark-smoke
+.PHONY: doctor bootstrap setup test lint lakehouse-aoi lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-dq-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down spark-build spark-up spark-status spark-down spark-smoke dq-audit-plan
 MAKEFLAGS += --no-print-directory
 PYTHON ?= python3.11
 VENV_PYTHON := .venv/bin/python
@@ -30,25 +30,9 @@ test:
 lint:
 	.venv/bin/ruff check src tests
 
-smoke:
-	.venv/bin/flashflood-data run-static --profile smoke --root .
-
-inventory:
-	.venv/bin/flashflood-data inventory --root .
-
 lakehouse-aoi:
-	.venv/bin/flashflood-data run-static --profile live --root . --stop-after aoi --json-summary
+	.venv/bin/flashflood-data build-aoi --root . --json-summary
 
-resolve-live:
-	.venv/bin/flashflood-data fetch --profile live --root . --resolve-only --json-summary
-
-preflight: inventory lakehouse-aoi resolve-live
-
-live:
-	.venv/bin/flashflood-data run-static --profile live --root . --json-summary
-
-qa-map:
-	.venv/bin/python -m http.server 8000 --directory dataset/qa/map
 
 lakehouse-python-setup:
 	tools/bootstrap/setup_python_runtime.sh
@@ -89,6 +73,10 @@ lakehouse-source-landing-smoke:
 lakehouse-meta-bronze-smoke:
 	tools/bootstrap/check_docker_access.sh
 	tools/smoke/meta_bronze.sh
+
+lakehouse-dq-smoke:
+	tools/bootstrap/check_docker_access.sh
+	tools/smoke/dq_quarantine.sh
 
 
 lakehouse-down:
@@ -131,3 +119,7 @@ spark-down:
 	tools/bootstrap/check_docker_access.sh
 	docker compose --profile spark stop spark-worker spark-master
 	docker compose --profile spark rm -f spark-worker spark-master
+
+dq-audit-plan:
+	test -n "$(DATASET)" || (echo "DATASET is required, for example DATASET=bronze.weather_raster_slice" >&2; exit 2)
+	docker compose exec -T airflow-scheduler python -m flashflood_data.pipelines.quality_migration.runtime --dataset "$(DATASET)" --mode audit --object-limit "$(or $(LIMIT),100)"

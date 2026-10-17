@@ -28,6 +28,7 @@ dist/
 *.partial
 *.tmp
 *.temp
+tools/news_crawl/outputs/
 
 # Editor and office lock files
 .DS_Store

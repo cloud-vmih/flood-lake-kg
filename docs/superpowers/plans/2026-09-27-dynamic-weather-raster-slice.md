@@ -1,5 +1,7 @@
 # Dynamic Weather Raster Slice Implementation Plan
 
+> **Tài liệu lịch sử:** Kế hoạch này ghi lại cấu trúc tại thời điểm triển khai. Đường dẫn runtime hiện hành nằm trong `flashflood_data.pipelines`; xem `docs/superpowers/specs/2026-10-09-vertical-slice-pipeline-architecture.vi.md` và README của từng pipeline trước khi sửa code.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Crop dynamic weather to the Son La hydrological scope before Raw publication, store Bronze as raster slices, register stable nationwide provider grids, split GSMaP NOW and Standard DAGs, and expire NOW/IFS payloads safely after seven days.
@@ -26,11 +28,11 @@
 ### Task 1: Split GSMaP configuration and add scope/retention contracts
 
 **Files:**
-- Create: `config/dynamic/gsmap_now.yaml`
-- Create: `config/dynamic/gsmap_standard.yaml`
-- Delete: `config/dynamic/gsmap.yaml`
-- Modify: `config/dynamic/era5_land.yaml`
-- Modify: `config/dynamic/ifs.yaml`
+- Create: `config/pipelines/weather/gsmap_now.yaml`
+- Create: `config/pipelines/weather/gsmap_standard.yaml`
+- Delete: `config/pipelines/weather/gsmap.yaml`
+- Modify: `config/pipelines/weather/era5_land.yaml`
+- Modify: `config/pipelines/weather/ifs.yaml`
 - Modify: `src/flashflood_data/orchestration/weather/models.py`
 - Modify: `src/flashflood_data/orchestration/weather/config.py`
 - Modify: `tests/unit/weather/test_config.py`
@@ -44,8 +46,8 @@
 
 ```python
 def test_gsmap_products_have_independent_schedules_and_retention():
-    now = load_weather_config(ROOT / "config/dynamic/gsmap_now.yaml")
-    standard = load_weather_config(ROOT / "config/dynamic/gsmap_standard.yaml")
+    now = load_weather_config(ROOT / "config/pipelines/weather/gsmap_now.yaml")
+    standard = load_weather_config(ROOT / "config/pipelines/weather/gsmap_standard.yaml")
     assert now.schedule == "7,37 * * * *"
     assert now.retention_class == "transient_7d"
     assert standard.schedule == "27 */6 * * *"

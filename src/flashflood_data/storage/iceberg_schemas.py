@@ -1,4 +1,4 @@
-"""Physical Arrow schemas for cross-pipeline Meta and Bronze Iceberg tables."""
+"""Physical Arrow schemas for contracted Iceberg tables across lakehouse layers."""
 
 import pyarrow as pa
 
@@ -182,6 +182,41 @@ _DEFINITIONS = {
         last_checked_at timestamp !
         reason string ?
     """,
+    ("quarantine", "rejected_objects"): """
+        rejection_id string !
+        pipeline_run_id string !
+        layer string !
+        target_dataset_id string !
+        source_id string ?
+        object_id string ?
+        input_table string ?
+        input_snapshot_id long ?
+        scope_key string !
+        quality_policy_id string !
+        rule_id string !
+        rule_version string !
+        reason_code string !
+        detail_json json !
+        evidence_uri string ?
+        rejected_at timestamp !
+    """,
+    ("quarantine", "rejected_rows"): """
+        rejection_id string !
+        pipeline_run_id string !
+        layer string !
+        target_dataset_id string !
+        object_id string ?
+        input_table string ?
+        input_snapshot_id long ?
+        source_record_key string !
+        quality_policy_id string !
+        rule_ids list_string !
+        reason_codes_json json !
+        record_json json ?
+        record_uri string ?
+        parser_version string ?
+        rejected_at timestamp !
+    """,
     ("bronze", "basin_polygon_raw"): """
         object_id string !
         source_feature_id string !
@@ -281,6 +316,39 @@ _DEFINITIONS = {
         ingest_run_id string !
         parser_version string !
         quality_status string !
+    """,
+    ("silver", "dim_basin"): """
+        basin_id string !
+        basin_version string !
+        hydrobasins_level int !
+        geometry_wkb binary !
+        crs string !
+        geometry_hash string !
+        next_down_id string ?
+        main_basin_id string ?
+        pfaf_id string ?
+        topology_sort_hint long ?
+        basin_area_km2 double !
+        upstream_area_km2 double !
+        distance_to_main_sink_km double ?
+        next_sink_id string ?
+        distance_to_sink_km double ?
+        valid_from timestamp !
+        valid_to timestamp ?
+        source_object_id string !
+    """,
+    ("silver", "basin_edge"): """
+        topology_version string !
+        basin_version string !
+        upstream_basin_id string !
+        downstream_basin_id string ?
+        edge_status string !
+        river_length_km double ?
+        elevation_drop_m double ?
+        channel_slope_m_m double ?
+        cycle_check string !
+        outlet_check string !
+        source_object_id string !
     """,
     ("silver", "source_grid"): """
         source_id string !

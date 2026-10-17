@@ -1,10 +1,10 @@
 # Data schema contract — FloodLakeKG Sơn La
 
-Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Meta, các bảng Bronze static, `bronze.weather_raster_slice` và bảng tham chiếu `silver.source_grid` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Các bảng Silver nghiệp vụ trở đi vẫn là thiết kế đích.
+Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Meta, Quarantine, các bảng Bronze static, `bronze.weather_raster_slice` và bảng tham chiếu `silver.source_grid` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Các bảng Silver nghiệp vụ trở đi vẫn là thiết kế đích.
 
 Các sơ đồ Mermaid dưới đây biểu diễn quan hệ logic; bảng dữ liệu bên dưới mới là danh sách thuộc tính. `PK`/`FK` là ràng buộc cần pipeline kiểm tra vì Iceberg không tự thực thi khóa ngoại. `!` là không null, `?` là có thể null. Kiểu `timestamp` là UTC; `geometry_wkb` là WKB `binary` kèm `crs`/bbox. `json` nghĩa là chuỗi JSON có schema version cho tới khi có `struct`/`map` vật lý. ID basin luôn là chuỗi `HYBAS_ID` **level 12**; mọi tham chiếu tới basin dùng đủ `(basin_id, basin_version)`. `object_id` là SHA-256 ổn định, còn Iceberg snapshot ID là `long` và phải đi với tên bảng.
 
-Đi nhanh theo tầng: [Meta](#1-meta--quản-trị-xuyên-tầng) · [Bronze](#2-bronze--dữ-liệu-đã-parse-theo-nguồn) · [Silver](#3-silver--dữ-liệu-chuẩn-hóa-và-quan-hệ-không-gian) · [Gold/Serving](#4-gold-và-serving--mô-hình-đánh-giá-sản-phẩm) · [KG](#5-knowledge-graph-và-vector-index) · [QA](#6-kiểm-tra-contract-trước-khi-tạo-bảng).
+Đi nhanh theo tầng: [Meta](#1-meta--quản-trị-xuyên-tầng) · [Quarantine](#1a-quarantine--bằng-chứng-dữ-liệu-bị-chặn-hoặc-loại) · [Bronze](#2-bronze--dữ-liệu-đã-parse-theo-nguồn) · [Silver](#3-silver--dữ-liệu-chuẩn-hóa-và-quan-hệ-không-gian) · [Gold/Serving](#4-gold-và-serving--mô-hình-đánh-giá-sản-phẩm) · [KG](#5-knowledge-graph-và-vector-index) · [QA](#6-kiểm-tra-contract-trước-khi-tạo-bảng).
 
 ### Khóa định danh và chạy lại an toàn
 
@@ -120,14 +120,15 @@ Backfill explicit không cập nhật bảng này. Catch-up chỉ tăng `cursor_
 | `storage_status` | string ! | `available`, `eligible_for_expiry`, `delete_failed` hoặc `expired`. |
 | `expires_at` | timestamp ? | Hạn sớm nhất được xem xét xóa; null với object bền vững. |
 | `bronze_snapshot_id` | long ? | Snapshot đã materialize object vào Bronze. |
-| `quality_status` | string ! | Kết quả QA cần là `passed` trước cleanup. |
+| `quality_status` | string ! | `passed`, `warning`, `failed` hoặc `pending`; chỉ `passed|warning` đủ điều kiện cleanup. |
 | `lineage_edge_id` | string ? | Cạnh lineage Raw → Bronze dùng làm bằng chứng. |
 | `deleted_at` | timestamp ? | Lúc payload và manifest Raw đã xóa thành công. |
 | `last_checked_at` | timestamp ! | Lần cleanup đánh giá object gần nhất. |
 | `reason` | string ? | Giải thích giữ lại, đủ điều kiện hoặc lỗi xóa. |
 
-Cleanup NOW/IFS chỉ chuyển sang `expired` sau khi hết 7 ngày, có Bronze snapshot, QA passed,
-lineage và MinIO xác nhận đã xóa payload lẫn manifest. GSMaP Standard và ERA5-Land không có
+Cleanup NOW/IFS chỉ chuyển sang `expired` sau khi hết 7 ngày, có Bronze snapshot, QA
+`passed|warning`, lineage và MinIO xác nhận đã xóa payload lẫn manifest. Object có rejected slice
+mang `failed` nên tiếp tục được giữ. GSMaP Standard và ERA5-Land không có
 `expires_at`; bảng Bronze và metadata audit không bị xóa bởi policy này.
 
 ### `meta.ingest_attempts` — một dòng / `(ingest_run_id, source_id, asset_id, attempt_no)`; đích
@@ -274,6 +275,77 @@ Airflow giữ task log/retry; `meta.pipeline_runs` giữ trạng thái, row coun
 
 `meta.dataset_registry` ghi owner, classification, license và `access_policy_ref`, nhưng **MinIO, Polaris/catalog và query/API** mới là nơi thực thi quyền. Ingest, ETL và consumer dùng service account riêng; raw/restricted không tự mở cho API. Audit truy cập lấy từ log của các hệ thống thực thi, không coi một hàng registry là bằng chứng đã chặn truy cập.
 
+## 1A. Quarantine — bằng chứng dữ liệu bị chặn hoặc loại
+
+Quarantine là data plane cho bằng chứng DQ, dùng chung cho Raw, Bronze, Silver và Gold. Finding tổng hợp
+vẫn nằm ở `meta.quality_results`; hai bảng dưới đây giữ object hoặc row cụ thể không được publish.
+`rejection_id` là SHA-256 của identity logic gồm input, target, policy và rule, không chứa
+`pipeline_run_id`, nên retry upsert cùng một rejection thay vì nhân dòng.
+
+### `quarantine.rejected_objects` — một dòng / `rejection_id`; **đã có contract**
+
+**Vai trò:** Ghi object Raw hoặc input snapshot bị fatal DQ và vì vậy không được tạo output ở tầng đích.
+
+| Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
+| --- | --- | --- |
+| `rejection_id` | string ! PK | Hash ổn định của input, target, policy và rule. |
+| `pipeline_run_id` | string ! FK | Run gần nhất phát hiện hoặc repair rejection. |
+| `layer` | string ! | `raw`, `bronze`, `silver` hoặc `gold`. |
+| `target_dataset_id` | string ! | Dataset lẽ ra nhận output. |
+| `source_id` | string ? | Nguồn nếu input là Raw object. |
+| `object_id` | string ? FK | Raw object bị chặn; loại trừ với cặp input snapshot. |
+| `input_table` | string ? | Bảng input nếu block ở grain snapshot/build. |
+| `input_snapshot_id` | long ? | Snapshot đi cùng `input_table`. |
+| `scope_key` | string ! | Object, build hoặc logical group mà rule kiểm tra. |
+| `quality_policy_id` | string ! | Policy name/version/content hash. |
+| `rule_id` | string ! | Rule fatal. |
+| `rule_version` | string ! | Phiên bản rule. |
+| `reason_code` | string ! | Mã lý do dùng cho xử lý/reprocess. |
+| `detail_json` | json ! | Observed/expected evidence đã loại credential. |
+| `evidence_uri` | string ? | URI tới evidence lớn; không chứa signed credential. |
+| `rejected_at` | timestamp ! | Lúc rejection được ghi gần nhất. |
+
+Phải có đúng một input identity: `object_id`, hoặc đủ cặp `(input_table, input_snapshot_id)`.
+
+### `quarantine.rejected_rows` — một dòng / `rejection_id`; **đã có contract**
+
+**Vai trò:** Giữ row bị loại trong khi các row hợp lệ của cùng object/build vẫn được publish.
+
+| Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
+| --- | --- | --- |
+| `rejection_id` | string ! PK | Hash ổn định của input row, target, policy và tập rule. |
+| `pipeline_run_id` | string ! FK | Run gần nhất ghi rejection. |
+| `layer` | string ! | `bronze`, `silver` hoặc `gold`. |
+| `target_dataset_id` | string ! | Bảng nghiệp vụ đã loại row. |
+| `object_id` | string ? FK | Raw object sinh row; loại trừ với input snapshot. |
+| `input_table` | string ? | Bảng input cho Silver/Gold. |
+| `input_snapshot_id` | long ? | Snapshot đi cùng `input_table`. |
+| `source_record_key` | string ! | Khóa row ổn định từ nguồn/domain. |
+| `quality_policy_id` | string ! | Policy được áp dụng. |
+| `rule_ids` | list<string> ! | Các rule làm row bị reject. |
+| `reason_codes_json` | json ! | Danh sách reason code chuẩn hóa. |
+| `record_json` | json ? | Evidence nhỏ, không chứa binary lớn hoặc secret. |
+| `record_uri` | string ? | URI tới Parquet/evidence lớn. |
+| `parser_version` | string ? | Parser/transform tạo row. |
+| `rejected_at` | timestamp ! | Lúc rejection được ghi gần nhất. |
+
+Phải có ít nhất một trong `record_json` hoặc `record_uri`. Row reject không tồn tại trong bảng
+nghiệp vụ; row warning vẫn được publish với `quality_status=warning` và có finding trong Meta.
+
+### Trách nhiệm DQ theo tầng
+
+| Tầng | Fatal block | Row reject | Warning vẫn publish |
+| --- | --- | --- | --- |
+| Raw/Landing | checksum/size sai, payload hỏng hoặc không đọc được | Không áp dụng vì grain là object | Metadata hỗ trợ thiếu nhưng payload vẫn xác minh được |
+| Bronze static | container/CRS không dùng được, parse rỗng | key/geometry/bbox của feature lỗi | geometry repair, bbox clamp, field tùy chọn thiếu |
+| Bronze weather | mảng lệch, grid thiếu/thừa cell, unit/window sai | một raster slice vi phạm miền vật lý | clamp trong tolerance, null ratio mềm |
+| Silver | input snapshot/schema/topology/build invariant lỗi | business row có lỗi cô lập được | coverage, freshness hoặc match confidence dưới ngưỡng mềm |
+| Gold | input chưa đủ/fresh, source priority hoặc mass balance sai | output record cô lập được | output suy giảm chất lượng nhưng còn dùng được |
+
+Mỗi pipeline phải ghi `quality_policy_id`. Gold phải phân biệt `NO_DATA` với `LOW`; thiếu dữ liệu
+không phải bằng chứng cho rủi ro thấp. Policy, input snapshot và logical scope tham gia identity
+quarantine/checkpoint để retry không tạo bản ghi trùng.
+
 ## 2. Bronze — dữ liệu đã parse theo nguồn
 
 ```mermaid
@@ -346,7 +418,7 @@ Chỉ parse file dữ liệu vector chính của hai nguồn; metadata/license s
 **Vai trò:** Lưu node, way và relation OSM cùng tags gốc trước khi dựng road graph hoặc facility.
 
 Parser chỉ giữ các feature phục vụ bài toán lũ theo policy có phiên bản tại
-`config/bronze/osm.yaml`: thủy văn, công trình thủy, giao thông quan trọng và facility
+`config/pipelines/static_bronze_osm.yaml`: thủy văn, công trình thủy, giao thông quan trọng và facility
 thiết yếu. Facility gồm y tế, cứu hỏa/công an/cứu hộ, nơi trú ẩn, trường học, trung tâm
 cộng đồng, chính quyền, điện, cấp/thoát nước và thông tin liên lạc. File PBF đầy đủ vẫn
 được giữ ở Raw; thay đổi policy cần chạy lại object để thay thế lát dữ liệu Bronze tương ứng.
@@ -1337,6 +1409,7 @@ Vector số thực nằm trong payload/vector store của Qdrant, không lưu �
 | Phạm vi | Bất biến cần kiểm tra |
 | --- | --- |
 | Meta/Raw | `object_id` unique, URI/checksum/size khớp object; retry cùng object không tăng số hàng; run có input/output snapshot refs đúng; fatal QA chặn `published_at`; policy được thực thi ngoài bảng registry. |
+| Quarantine | `rejection_id` ổn định qua retry; object rejection có đúng một input identity; row rejection có evidence; không chứa credential hoặc signed URL. |
 | Bronze | Khóa grain unique kể cả sau retry/reparse; raw fields/geometry và parser version giữ nguyên provenance; raster bbox/CRS/band khớp header; `window_start < window_end`. |
 | Silver | Basin đúng L12, composite FK cùng version, cùng business key không có hai payload khác nhau; graph không cycle ngoài sink hợp lệ, tổng grid weight/coverage trong ngưỡng, unit/scale SoilGrids được chuẩn hóa. |
 | Gold | Tất cả input `available_at <= as_of_time`; runoff/precipitation đúng accumulation window; `q_out_m3s` ghi modeled/proxy; chọn đúng parameter/topology/source snapshot. |

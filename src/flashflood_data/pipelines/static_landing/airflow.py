@@ -1,0 +1,296 @@
+"""Airflow orchestration for immutable static source landing."""
+
+import json
+import logging
+import os
+import traceback
+from datetime import UTC, datetime
+from pathlib import Path
+from time import monotonic
+
+from airflow.exceptions import AirflowException
+from airflow.sdk import dag, get_current_context, task, task_group
+
+from flashflood_data.core.paths import ProjectPaths
+from flashflood_data.pipelines.static_landing.adapters.registry import load_source_specs
+from flashflood_data.pipelines.static_landing.audit import audit_registered_batch
+from flashflood_data.pipelines.static_landing.config import load_static_landing_config
+from flashflood_data.pipelines.static_landing.models import (
+    LandingRunSummary,
+    LandingTaskEnvelope,
+    PublishedBatch,
+    RegisteredBatch,
+)
+from flashflood_data.pipelines.static_landing.pipeline import (
+    StaticSourceLandingService,
+    cleanup_failed_staging,
+)
+from flashflood_data.pipelines.static_landing.runtime import build_static_landing_service
+from flashflood_data.shared.metadata.factory import build_meta_recorder
+from flashflood_data.shared.metadata.registry import load_static_registry
+from flashflood_data.shared.quality import DataQualityBlock
+from flashflood_data.storage.iceberg import SourceObjectInventory
+
+WRITER_POOL = "source_landing_writer"
+EXPECTED_SOURCE_IDS = (
+    "sonla_admin_2025",
+    "gadm_vnm_4_1",
+    "hydrobasins_v1c",
+    "basinatlas_v10",
+    "hydrorivers_v10",
+    "worldpop_vnm_2025",
+    "geofabrik_vietnam_snapshot",
+    "cop_dem_glo30_2024_1",
+    "soilgrids_2_0",
+    "esa_worldcover_2021_v200",
+)
+CONFIG_PATH = ProjectPaths.discover().root / "config" / "pipelines" / "static_landing.yaml"
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_source_failure(source_id: str, phase: str, error: Exception) -> None:
+    """Log failure location without exposing provider URLs or credentials."""
+    LOGGER.error(
+        "static landing source failed: source_id=%s phase=%s error_type=%s\n%s",
+        source_id,
+        phase,
+        type(error).__name__,
+        "".join(traceback.format_tb(error.__traceback__)),
+    )
+
+
+def _retry_or_failure(source_id: str, phase: str, error: Exception) -> dict[str, object]:
+    """Let Airflow retry transient failures before emitting a terminal envelope."""
+    _log_source_failure(source_id, phase, error)
+    task_instance = get_current_context()["ti"]
+    try_number = int(task_instance.try_number)
+    max_tries = int(task_instance.max_tries)
+    error_code = StaticSourceLandingService._error_code(error)
+    if isinstance(error, DataQualityBlock):
+        return LandingTaskEnvelope.failed(source_id, "data_quality_block").model_dump(mode="json")
+    if try_number <= max_tries:
+        document = {
+            "source_id": source_id,
+            "phase": phase,
+            "error_code": error_code,
+            "try_number": try_number,
+            "max_tries": max_tries,
+        }
+        raise AirflowException(json.dumps(document, sort_keys=True)) from None
+    return LandingTaskEnvelope.failed(source_id, error_code).model_dump(mode="json")
+
+
+def _staging_root() -> Path:
+    configured = os.environ.get("FLASHFLOOD_STAGING_ROOT")
+    if configured:
+        return Path(configured).resolve()
+    return ProjectPaths.discover().dataset / "lakehouse" / "staging"
+
+
+def _configured_source_ids() -> tuple[str, ...]:
+    config = load_static_landing_config(CONFIG_PATH)
+    source_ids = tuple(source.source_id for source in config.sources)
+    if source_ids != EXPECTED_SOURCE_IDS:
+        raise RuntimeError("static landing DAG source groups do not match the approved config")
+    return source_ids
+
+
+@task(retries=2)
+def register_meta_registry() -> dict[str, int]:
+    """Seed source and dataset metadata before any raw object is published."""
+    root = ProjectPaths.discover().root
+    source_specs = load_source_specs(root / "config" / "sources")
+    meta = build_meta_recorder(root)
+    sources, datasets = load_static_registry(
+        root / "config" / "shared" / "metadata.yaml",
+        source_specs,
+        catalog_name=meta.store.catalog.name,
+    )
+    for row in sources:
+        meta.register_source(row)
+    for row in datasets:
+        meta.register_dataset(row)
+    return {"sources": len(sources), "datasets": len(datasets)}
+
+
+@task(retries=2)
+def publish_source(source_id: str, landing_run_id: str) -> dict[str, object]:
+    """Publish one source or return a sanitized failure envelope."""
+    try:
+        service = build_static_landing_service()
+        batch = service.publish_source(source_id, landing_run_id)
+        envelope = LandingTaskEnvelope.succeeded("published", batch)
+    except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        return _retry_or_failure(source_id, "publish", error)
+    return envelope.model_dump(mode="json")
+
+
+@task(retries=2)
+def register_batch(envelope_json: dict[str, object]) -> dict[str, object]:
+    """Register a published source batch or pass its failure through."""
+    source_id = str(envelope_json.get("source_id", "unknown_source"))
+    try:
+        envelope = LandingTaskEnvelope.model_validate(envelope_json)
+        source_id = envelope.source_id
+        if envelope.status == "failure":
+            return envelope.model_dump(mode="json")
+        if not isinstance(envelope.batch, PublishedBatch):
+            return LandingTaskEnvelope.failed(
+                envelope.source_id, "invalid_published_envelope"
+            ).model_dump(mode="json")
+        service = build_static_landing_service()
+        registered = service.register_batch(envelope.batch)
+        result = LandingTaskEnvelope.succeeded("registered", registered)
+    except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        return _retry_or_failure(source_id, "register", error)
+    return result.model_dump(mode="json")
+
+
+@task(retries=2)
+def cleanup_batch(envelope_json: dict[str, object], landing_run_id: str) -> dict[str, object]:
+    """Remove committed run staging or pass a prior failure through."""
+    source_id = str(envelope_json.get("source_id", "unknown_source"))
+    try:
+        envelope = LandingTaskEnvelope.model_validate(envelope_json)
+        source_id = envelope.source_id
+        config = load_static_landing_config(CONFIG_PATH)
+        staging_root = _staging_root()
+        if envelope.status == "failure":
+            cleanup_failed_staging(config, staging_root, envelope.source_id, landing_run_id)
+            return envelope.model_dump(mode="json")
+        if not isinstance(envelope.batch, RegisteredBatch):
+            cleanup_failed_staging(config, staging_root, envelope.source_id, landing_run_id)
+            return LandingTaskEnvelope.failed(
+                envelope.source_id, "invalid_registered_envelope"
+            ).model_dump(mode="json")
+        service = build_static_landing_service()
+        service.cleanup_batch(envelope.batch)
+        result = LandingTaskEnvelope.succeeded("cleaned", envelope.batch)
+    except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        return _retry_or_failure(source_id, "cleanup", error)
+    return result.model_dump(mode="json")
+
+
+@task(retries=2)
+def audit_registered_meta(envelope_json: dict[str, object]) -> dict[str, object]:
+    """Audit the source-object snapshot in the existing raw landing DAG."""
+    source_id = str(envelope_json.get("source_id", "unknown_source"))
+    try:
+        envelope = LandingTaskEnvelope.model_validate(envelope_json)
+        if envelope.status == "failure":
+            return envelope.model_dump(mode="json")
+        if not isinstance(envelope.batch, RegisteredBatch):
+            raise TypeError("raw Meta audit requires a registered batch")
+        started = monotonic()
+        meta = build_meta_recorder()
+        LOGGER.info(
+            "raw Meta audit phase complete: source_id=%s phase=catalog_connect duration_s=%.3f",
+            envelope.source_id,
+            monotonic() - started,
+        )
+        inventory = SourceObjectInventory(meta.store.catalog)
+        started = monotonic()
+        rows = inventory.available_objects(
+            envelope.source_id,
+            object_ids=envelope.batch.object_ids,
+        )
+        LOGGER.info(
+            "raw Meta audit phase complete: source_id=%s phase=source_objects_scan rows=%d duration_s=%.3f",
+            envelope.source_id,
+            len(rows),
+            monotonic() - started,
+        )
+        audit_registered_batch(
+            envelope.batch,
+            rows,
+            meta,
+            catalog_name=meta.store.catalog.name,
+            checked_at=datetime.now(UTC),
+        )
+    except Exception as error:  # noqa: BLE001 - preserve independent source groups
+        return _retry_or_failure(source_id, "audit", error)
+    return envelope.model_dump(mode="json")
+
+
+@task_group
+def source_landing_group(source_id: str, landing_run_id: str):
+    """Create the three metadata-only boundaries for one source."""
+    published = publish_source.override(pool="source_landing_writer")(source_id, landing_run_id)
+    registered = register_batch.override(pool="source_landing_writer")(published)
+    cleaned = cleanup_batch.override(pool="source_landing_writer")(registered, landing_run_id)
+    audited = audit_registered_meta(cleaned)
+    return published, audited
+
+
+@task(trigger_rule="all_done", retries=0)
+def publish_run_summary(
+    landing_run_id: str,
+    source_ids: tuple[str, ...],
+    envelope_documents: list[dict[str, object] | None],
+) -> dict[str, object]:
+    """Emit a combined result and make an incomplete landing run visible."""
+    envelopes = []
+    for source_id, document in zip(source_ids, envelope_documents, strict=True):
+        try:
+            envelopes.append(LandingTaskEnvelope.model_validate(document))
+        except (TypeError, ValueError):
+            envelopes.append(LandingTaskEnvelope.failed(source_id, "upstream_task_failed"))
+    completed = sorted(envelope.source_id for envelope in envelopes if envelope.status == "success")
+    failed = sorted(envelope.source_id for envelope in envelopes if envelope.status == "failure")
+    errors = {
+        envelope.source_id: str(envelope.error_code)
+        for envelope in envelopes
+        if envelope.status == "failure"
+    }
+    snapshots = {
+        envelope.source_id: envelope.batch.snapshot_id
+        for envelope in envelopes
+        if isinstance(envelope.batch, RegisteredBatch) and envelope.batch.snapshot_id is not None
+    }
+    status = "completed" if not failed else "partial_failure" if completed else "failed"
+    summary = LandingRunSummary(
+        run_id=landing_run_id,
+        status=status,
+        completed_sources=tuple(completed),
+        failed_sources=tuple(failed),
+        errors=errors,
+        snapshots=snapshots,
+    )
+    document = summary.model_dump(mode="json")
+    print(json.dumps(document, sort_keys=True))
+    if status != "completed":
+        raise AirflowException(json.dumps(document, sort_keys=True))
+    return document
+
+
+@dag(
+    dag_id="static_source_landing",
+    description="Land immutable static source objects in MinIO and inventory them in Iceberg",
+    schedule=None,
+    start_date=datetime(2026, 1, 1, tzinfo=UTC),
+    catchup=False,
+    max_active_runs=1,
+    is_paused_upon_creation=True,
+    default_args={"retries": 2},
+    tags=["source", "static", "minio", "iceberg"],
+)
+def static_source_landing_dag():
+    """Build fixed, independent task groups from the approved landing policy."""
+    landing_run_id = "{{ run_id }}"
+    registry_ready = register_meta_registry()
+    source_ids = _configured_source_ids()
+    results = []
+    previous_cleanup = None
+    for source_id in source_ids:
+        published, cleaned = source_landing_group.override(group_id=source_id)(
+            source_id, landing_run_id
+        )
+        registry_ready >> published
+        if previous_cleanup is not None:
+            previous_cleanup >> published
+        results.append(cleaned)
+        previous_cleanup = cleaned
+    publish_run_summary(landing_run_id, source_ids, results)
+
+
+static_source_landing = static_source_landing_dag()

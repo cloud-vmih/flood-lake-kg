@@ -1,0 +1,15 @@
+policy_name: raw_landing
+policy_version: v1
+layer: raw
+defaults:
+  published_quality_status: [passed, warning]
+rules:
+  - rule_id: object_checksum
+    rule_version: v1
+    severity: fatal
+  - rule_id: object_size
+    rule_version: v1
+    severity: fatal
+  - rule_id: object_readable
+    rule_version: v1
+    severity: fatal

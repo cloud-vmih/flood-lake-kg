@@ -1,5 +1,14 @@
 # Kế hoạch triển khai đặc trưng tĩnh theo lưu vực ở Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-basin-static-features.md`
 
@@ -9,9 +18,9 @@
 
 **Mục tiêu:** Tạo bộ đặc trưng DEM, thủy văn, SoilGrids, lớp phủ đất và BasinATLAS có version cho từng lưu vực L12, kèm lineage đầy đủ tới asset nguồn và asset dẫn xuất.
 
-**Kiến trúc:** Đọc geometry lưu vực và inventory raster Bronze, tính các batch đặc trưng riêng cho từng nguồn, ghép thành một dòng cho mỗi basin/build rồi publish bằng một writer cho mỗi bảng. Raster flow direction và flow accumulation được lưu thành object dẫn xuất trong MinIO và đăng ký ở Meta riêng, không ghi nhầm thành object Raw.
+**Kiến trúc:** Đọc geometry lưu vực và inventory raster Bronze, tính các batch đặc trưng riêng cho từng nguồn, ghép thành một dòng cho mỗi basin/build rồi publish bằng một Spark application cho mỗi bảng. Raster flow direction và flow accumulation được lưu thành object dẫn xuất trong MinIO và đăng ký ở Meta riêng, không ghi nhầm thành object Raw.
 
-**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, Rasterio, NumPy, SciPy, GeoPandas, PyProj, PyArrow, PyIceberg, MinIO, pytest.
+**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, Rasterio, NumPy, SciPy, GeoPandas, PyProj, PyArrow, PySpark, Apache Spark/Sedona, Apache Iceberg, MinIO, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
@@ -23,16 +32,16 @@
 - `awc_m3m3_0_30 = field_capacity_m3m3_0_30 - wilting_point_m3m3_0_30` và không được âm sau QA.
 - Channel slope dùng cao độ đầu nguồn/cửa ra của longest flow path, không dùng mean terrain slope.
 - Identity của raster dẫn xuất gồm snapshot/object ID DEM đầu vào, cấu hình xử lý và checksum.
-- Tính toán fan-out theo batch basin; mỗi bảng Iceberg được commit bởi một writer task.
+- Tính toán fan-out theo batch basin; mỗi bảng Iceberg được commit bởi một Spark publish application.
 
 ---
 
 ## Cấu trúc file
 
 ```text
-config/silver/basin_static_features.yaml
+config/pipelines/silver/basin_static_features.yaml
 airflow/dags/silver_basin_static_features.py
-src/flashflood_data/orchestration/silver/static_features/
+src/flashflood_data/pipelines/silver_static_features/
   __init__.py
   config.py
   models.py
@@ -46,9 +55,9 @@ src/flashflood_data/orchestration/silver/static_features/
   assemble.py
   lineage.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/static_features/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_static_features/
   test_config.py
   test_raster_inputs.py
   test_terrain.py
@@ -59,24 +68,24 @@ tests/unit/silver/static_features/
   test_assemble.py
   test_lineage.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_static_features_pipeline.py
 ```
 
-`service.py` gọi reader và calculator riêng theo nguồn, sau đó gọi `assemble.py`, `lineage.py` và `quality.py`. Calculator có thể import kernel thuần đã có test trong `src/flashflood_data/static/features/`; không được import `static/workflow/runner.py`, handler hoặc state file-first local.
+`pipeline.py` gọi reader và calculator riêng theo nguồn, sau đó gọi `assemble.py`, `lineage.py` và `quality.py`. Calculator có thể import kernel thuần đã có test trong `src/flashflood_data/pipelines/silver_static_features/`; không được import workflow file-first đã xóa, handler hoặc state file-first local.
 
 ### Công việc 1: Hoàn thiện contract asset dẫn xuất và đăng ký schema
 
 **Các file:**
 - Sửa: `docs/schema_contract/data.md`
-- Tạo: `config/silver/basin_static_features.yaml`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/config.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/models.py`
+- Tạo: `config/pipelines/silver/basin_static_features.yaml`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/__init__.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/config.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/models.py`
 - Sửa: `src/flashflood_data/storage/iceberg_schemas.py`
-- Sửa: `config/meta/static.yaml`
+- Sửa: `config/shared/metadata.yaml`
 - Sửa: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Tạo: `tests/unit/silver/static_features/test_config.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_config.py`
 
 **Giao diện:**
 - Đầu ra: physical `meta.derived_objects`, `silver.basin_static_feature`, và `silver.basin_feature_lineage` tables.
@@ -98,7 +107,7 @@ def test_feature_lineage_disambiguates_object_kind():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: FAIL vì Silver/derived contracts are absent.
 
 - [ ] **Bước 3: Định nghĩa registry asset dẫn xuất và cấu hình**
@@ -125,30 +134,30 @@ YAML phải khai báo chính xác trọng số độ sâu, scale factor, ngưỡ
 
 - [ ] **Bước 4: Chạy kiểm thử contract**
 
-Chạy: `pytest tests/unit/silver/static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit contracts**
 
 ```bash
-git add docs/schema_contract/data.md config/silver/basin_static_features.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/static_features src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add docs/schema_contract/data.md config/pipelines/silver/basin_static_features.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_static_features src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define static feature and derived asset contracts"
 ```
 
 ### Công việc 2: Xử lý raster đầu vào và tính đặc trưng ngoài thủy văn
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/reader.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/raster_inputs.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/terrain.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/soil.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/landcover.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/atlas.py`
-- Tạo: `tests/unit/silver/static_features/test_raster_inputs.py`
-- Tạo: `tests/unit/silver/static_features/test_terrain.py`
-- Tạo: `tests/unit/silver/static_features/test_soil.py`
-- Tạo: `tests/unit/silver/static_features/test_landcover.py`
-- Tạo: `tests/unit/silver/static_features/test_atlas.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/reader.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/raster_inputs.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/terrain.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/soil.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/landcover.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/atlas.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_raster_inputs.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_terrain.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_soil.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_landcover.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_atlas.py`
 
 **Giao diện:**
 - Đầu vào: `silver.dim_basin`, `bronze.raster_coverage`, BasinATLAS Bronze rows, Meta source objects.
@@ -175,7 +184,7 @@ def test_atlas_mapper_drops_unapproved_columns():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/static_features/test_raster_inputs.py tests/unit/silver/static_features/test_terrain.py tests/unit/silver/static_features/test_soil.py tests/unit/silver/static_features/test_landcover.py tests/unit/silver/static_features/test_atlas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_raster_inputs.py tests/unit/pipelines/silver_static_features/test_terrain.py tests/unit/pipelines/silver_static_features/test_soil.py tests/unit/pipelines/silver_static_features/test_landcover.py tests/unit/pipelines/silver_static_features/test_atlas.py -q`
 Mong đợi: FAIL vì modules chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai reader gắn với snapshot và các phép tính thuần**
@@ -197,23 +206,23 @@ Chỉ tính AWC sau khi chuyển đổi FC/WP. Giữ Q05/Q50/Q95 theo từng pro
 
 - [ ] **Bước 4: Chạy kiểm thử phép tính**
 
-Chạy: `pytest tests/unit/silver/static_features/test_raster_inputs.py tests/unit/silver/static_features/test_terrain.py tests/unit/silver/static_features/test_soil.py tests/unit/silver/static_features/test_landcover.py tests/unit/silver/static_features/test_atlas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_raster_inputs.py tests/unit/pipelines/silver_static_features/test_terrain.py tests/unit/pipelines/silver_static_features/test_soil.py tests/unit/pipelines/silver_static_features/test_landcover.py tests/unit/pipelines/silver_static_features/test_atlas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit source calculators**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features tests/unit/silver/static_features
+git add src/flashflood_data/pipelines/silver_static_features tests/unit/pipelines/silver_static_features
 git commit -m "feat: compute static raster and Atlas features"
 ```
 
 ### Công việc 3: Tính thủy văn và publish raster dẫn xuất an toàn
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/hydrology.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/lineage.py`
-- Tạo: `tests/unit/silver/static_features/test_hydrology.py`
-- Tạo: `tests/unit/silver/static_features/test_lineage.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/hydrology.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/lineage.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_hydrology.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_lineage.py`
 
 **Giao diện:**
 - Đầu vào: conditioned DEM window, basin polygon, hydrology config, object-store publisher.
@@ -237,7 +246,7 @@ Kiểm thử thêm việc snap outlet, Tc dương, Kb bằng `0.5/1/2 × Tc`, v�
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/static_features/test_hydrology.py tests/unit/silver/static_features/test_lineage.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_hydrology.py tests/unit/pipelines/silver_static_features/test_lineage.py -q`
 Mong đợi: FAIL vì hydrology/derived lineage modules chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai kết quả thủy văn và publish object nguyên tử**
@@ -253,23 +262,23 @@ Upload qua staging, kiểm tra checksum rồi copy sang key cuối. Chỉ đăng
 
 - [ ] **Bước 4: Chạy kiểm thử thủy văn**
 
-Chạy: `pytest tests/unit/silver/static_features/test_hydrology.py tests/unit/silver/static_features/test_lineage.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_hydrology.py tests/unit/pipelines/silver_static_features/test_lineage.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit hydrology và lineage**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features/hydrology.py src/flashflood_data/orchestration/silver/static_features/lineage.py tests/unit/silver/static_features/test_hydrology.py tests/unit/silver/static_features/test_lineage.py
+git add src/flashflood_data/pipelines/silver_static_features/hydrology.py src/flashflood_data/pipelines/silver_static_features/lineage.py tests/unit/pipelines/silver_static_features/test_hydrology.py tests/unit/pipelines/silver_static_features/test_lineage.py
 git commit -m "feat: derive and register basin hydrology assets"
 ```
 
 ### Công việc 4: Ghép các dòng và kiểm soát chất lượng đặc trưng tĩnh
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/assemble.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/quality.py`
-- Tạo: `tests/unit/silver/static_features/test_assemble.py`
-- Tạo: `tests/unit/silver/static_features/test_quality.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/assemble.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/quality.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_assemble.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_quality.py`
 
 **Giao diện:**
 - Đầu vào: toàn bộ value/contribution `PartialFeatureRow` của một basin/build.
@@ -290,7 +299,7 @@ def test_negative_awc_is_fatal():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/static_features/test_assemble.py tests/unit/silver/static_features/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_assemble.py tests/unit/pipelines/silver_static_features/test_quality.py -q`
 Mong đợi: FAIL vì assembler và DQ chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai phép ghép xác định và các rule có tên**
@@ -299,23 +308,23 @@ Yêu cầu đúng một feature row cho mỗi `(basin_id, basin_version, feature
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/static_features/test_assemble.py tests/unit/silver/static_features/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_assemble.py tests/unit/pipelines/silver_static_features/test_quality.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit ghép dữ liệu và DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features/assemble.py src/flashflood_data/orchestration/silver/static_features/quality.py tests/unit/silver/static_features/test_assemble.py tests/unit/silver/static_features/test_quality.py
+git add src/flashflood_data/pipelines/silver_static_features/assemble.py src/flashflood_data/pipelines/silver_static_features/quality.py tests/unit/pipelines/silver_static_features/test_assemble.py tests/unit/pipelines/silver_static_features/test_quality.py
 git commit -m "feat: assemble and validate basin static features"
 ```
 
 ### Công việc 5: Thêm service, DAG theo batch, kiểm thử tích hợp và tài liệu
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/service.py`
-- Tạo: `src/flashflood_data/orchestration/silver/static_features/factory.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/pipeline.py`
+- Tạo: `src/flashflood_data/pipelines/silver_static_features/runtime.py`
 - Tạo: `airflow/dags/silver_basin_static_features.py`
-- Tạo: `tests/unit/silver/static_features/test_service.py`
+- Tạo: `tests/unit/pipelines/silver_static_features/test_pipeline.py`
 - Tạo: `tests/integration/silver/test_static_features_pipeline.py`
 - Sửa: `tests/contract/infra/test_silver_dags.py`
 - Sửa: `README.md`
@@ -343,7 +352,7 @@ def test_static_feature_dag_is_manual(dag_bag):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/static_features/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: FAIL vì service/DAG chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai compute fan-out và publish fan-in**
@@ -367,21 +376,30 @@ Fixture integration dùng hai basin nhỏ và các raster DEM/soil/landcover nh�
 
 - [ ] **Bước 4: Chạy kiểm thử domain**
 
-Chạy: `pytest tests/unit/silver/static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Chạy kiểm thử hồi quy các kernel static**
 
-Chạy: `pytest tests/unit/static/test_terrain_features.py tests/unit/static/test_hydrology_features.py tests/unit/static/test_soil_features.py tests/unit/static/test_landcover_features.py -q`  
+Chạy: `pytest tests/unit/static/test_terrain_features.py tests/unit/static/test_hydrology_features.py tests/unit/static/test_soil_features.py tests/unit/static/test_landcover_features.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 6: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features airflow/dags/silver_basin_static_features.py tests/unit/silver/static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_static_features airflow/dags/silver_basin_static_features.py tests/unit/pipelines/silver_static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver basin static feature DAG"
 ```
 
 ## Điểm kiểm tra
 
 Dừng sau run hai basin. Review từng công thức/unit, kiểm tra hai raster dẫn xuất cùng Meta registry/lineage, rồi đối chiếu field từ DEM với field QA BasinATLAS trước khi chạy toàn bộ basin.
+
+## Bổ sung DQ domain (11/10/2026)
+
+- Fatal: basin/version thiếu, source role bắt buộc thiếu, flow path không dương, cao độ đầu nguồn
+  thấp hơn outlet, channel slope hoặc AWC âm, lineage object thiếu.
+- Reject row: feature có unit không đổi được, tỷ lệ ngoài miền hoặc outlet ngoài tolerance snap.
+- Warning: raster coverage thấp nhưng trên ngưỡng publish, DEM lệch BasinATLAS, field hỗ trợ thiếu.
+
+Nodata không được tự điền `0`; row warning giữ observed/expected coverage trong Meta.

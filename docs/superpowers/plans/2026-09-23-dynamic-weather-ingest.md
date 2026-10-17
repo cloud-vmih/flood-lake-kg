@@ -1,5 +1,7 @@
 # Dynamic Weather Ingest Implementation Plan
 
+> **Tài liệu lịch sử:** Kế hoạch này ghi lại cấu trúc tại thời điểm triển khai. Đường dẫn runtime hiện hành nằm trong `flashflood_data.pipelines`; xem `docs/superpowers/specs/2026-10-09-vertical-slice-pipeline-architecture.vi.md` và README của từng pipeline trước khi sửa code.
+
 > **For Codex:** Execute this plan with `executing-plans`; keep network calls outside tests and leave production DAGs paused on creation.
 
 **Goal:** Add restart-safe Raw-to-Bronze Airflow pipelines for GSMaP, ERA5-Land, and IFS/Open-Meteo that recover missing time windows after Docker downtime.
@@ -13,9 +15,9 @@
 ### Task 1: Freeze dynamic contracts and configuration
 
 **Files:**
-- Create: `config/dynamic/gsmap.yaml`
-- Create: `config/dynamic/era5_land.yaml`
-- Create: `config/dynamic/ifs.yaml`
+- Create: `config/pipelines/weather/gsmap.yaml`
+- Create: `config/pipelines/weather/era5_land.yaml`
+- Create: `config/pipelines/weather/ifs.yaml`
 - Create: `src/flashflood_data/orchestration/weather/models.py`
 - Create: `src/flashflood_data/orchestration/weather/config.py`
 - Test: `tests/unit/weather/test_config.py`

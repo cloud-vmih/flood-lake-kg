@@ -21,6 +21,5 @@ def test_http_responsibilities_are_split_into_reviewable_modules() -> None:
     }
     assert required <= {path.name for path in HTTP_DIR.glob("*.py")}
     assert all(
-        len(path.read_text(encoding="utf-8").splitlines()) <= 500
-        for path in HTTP_DIR.glob("*.py")
+        len(path.read_text(encoding="utf-8").splitlines()) <= 500 for path in HTTP_DIR.glob("*.py")
     )

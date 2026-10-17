@@ -15,6 +15,18 @@ def make_smoke_namespace() -> str:
     return f"smoke_{uuid.uuid4().hex}"
 
 
+def run_spatial_smoke(spark) -> None:
+    """Fail early when the Sedona SQL extension or JARs are unavailable."""
+    rows = [
+        tuple(row)
+        for row in spark.sql(
+            "SELECT ST_AsText(ST_Point(102.0, 21.0)) AS wkt"
+        ).collect()
+    ]
+    if rows != [("POINT (102 21)",)]:
+        raise RuntimeError(f"Sedona spatial smoke returned unexpected rows: {rows!r}")
+
+
 def run_roundtrip(spark, namespace: str) -> None:
     if NAMESPACE_PATTERN.fullmatch(namespace) is None:
         raise ValueError(f"unsafe smoke namespace: {namespace!r}")
@@ -67,8 +79,9 @@ def main() -> None:
     print(f"Spark Iceberg smoke namespace: {namespace}")
     spark = build_spark_session("flood-lakehouse-iceberg-smoke")
     try:
+        run_spatial_smoke(spark)
         run_roundtrip(spark, namespace)
-        print("Spark Iceberg round trip passed; temporary table and namespace removed.")
+        print("Spark Sedona and Iceberg smoke passed; temporary table and namespace removed.")
     finally:
         spark.stop()
 

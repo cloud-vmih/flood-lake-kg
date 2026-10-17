@@ -196,6 +196,62 @@ class IcebergTableStore:
             transaction.append(payload)
         return _snapshot_id(table)
 
+    def replace_object_partitions(
+        self,
+        identifier: tuple[str, str],
+        accepted_by_object: Mapping[str, Sequence[Mapping[str, Any]]],
+        blocked_object_ids: Sequence[str] = (),
+    ) -> int | None:
+        """Replace accepted object slices and remove explicitly blocked slices atomically."""
+        if (
+            identifier[0] != "bronze" and not identifier[0].startswith("smoke_")
+        ) or identifier[1] not in BRONZE_KEYS:
+            raise ValueError("object partition replacement requires a Bronze contract table")
+        blocked = tuple(map(str, blocked_object_ids))
+        accepted_ids = tuple(map(str, accepted_by_object))
+        if not accepted_ids and not blocked:
+            raise ValueError("object partition replacement cannot be empty")
+        if len(set(blocked)) != len(blocked) or set(blocked) & set(accepted_ids):
+            raise ValueError("accepted and blocked object IDs must be unique and disjoint")
+
+        requested: list[dict[str, Any]] = []
+        for object_id, object_rows in accepted_by_object.items():
+            current = [dict(row) for row in object_rows]
+            if not current or any(row.get("object_id") != object_id for row in current):
+                raise ValueError("accepted object partitions require matching non-empty rows")
+            requested.extend(current)
+        keys = ("object_id", *BRONZE_KEYS[identifier[1]])
+        record_keys = [tuple(row.get(name) for name in keys) for row in requested]
+        if any(None in key for key in record_keys) or len(set(record_keys)) != len(record_keys):
+            raise ValueError("duplicate or missing Bronze business key in object partitions")
+
+        object_ids = (*accepted_ids, *blocked)
+        expression = (
+            EqualTo("object_id", object_ids[0])
+            if len(object_ids) == 1
+            else In("object_id", object_ids)
+        )
+        table = self.ensure_table(identifier)
+        table.refresh()
+        stored = table.scan(row_filter=expression).to_arrow().to_pylist()
+        schema = table_schema(identifier)
+        payload = pa.Table.from_pylist(requested, schema=schema)
+        if _canonical_rows(stored, keys) == _canonical_rows(payload.to_pylist(), keys):
+            snapshot = table.current_snapshot()
+            return None if snapshot is None else int(snapshot.snapshot_id)
+        if not stored:
+            if not requested:
+                return None
+            table.append(payload)
+            return _snapshot_id(table)
+        if not requested:
+            table.delete(expression)
+            return _snapshot_id(table)
+        with table.transaction() as transaction:
+            transaction.delete(expression)
+            transaction.append(payload)
+        return _snapshot_id(table)
+
     def upsert_meta_row(
         self,
         identifier: tuple[str, str],
@@ -216,6 +272,24 @@ class IcebergTableStore:
             raise ValueError("Meta upsert cannot replace source_objects")
         return self.upsert_keyed_rows(identifier, key_fields, rows)
 
+    def upsert_quarantine_rows(
+        self,
+        identifier: tuple[str, str],
+        key_fields: tuple[str, ...],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> int:
+        """Idempotently upsert evidence into a physical quarantine table."""
+        if (
+            identifier[0] != "quarantine"
+            and not identifier[0].startswith("smoke_")
+        ) or identifier[1] not in {"rejected_objects", "rejected_rows"}:
+            raise ValueError("quarantine upsert requires a quarantine contract table")
+        if not key_fields:
+            raise ValueError("quarantine upsert key cannot be empty")
+        if any(any(row.get(field) is None for field in key_fields) for row in rows):
+            raise ValueError("quarantine upsert key cannot contain null")
+        return self._upsert_keyed_rows(identifier, key_fields, rows)
+
     def upsert_keyed_rows(
         self,
         identifier: tuple[str, str],
@@ -228,6 +302,14 @@ class IcebergTableStore:
             and not identifier[0].startswith("smoke_")
         ) or identifier == ("meta", "source_objects"):
             raise ValueError("keyed upsert requires a mutable Meta or Silver table")
+        return self._upsert_keyed_rows(identifier, key_fields, rows)
+
+    def _upsert_keyed_rows(
+        self,
+        identifier: tuple[str, str],
+        key_fields: tuple[str, ...],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> int:
         requested = [dict(row) for row in rows]
         if not requested:
             raise ValueError("keyed upsert batch cannot be empty")

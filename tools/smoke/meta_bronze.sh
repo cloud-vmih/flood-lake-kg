@@ -21,9 +21,9 @@ import geopandas as gpd
 from shapely.geometry import box
 
 from flashflood_data.core.lakehouse import LakehouseSettings
-from flashflood_data.orchestration.bronze.service import BronzeService
-from flashflood_data.orchestration.landing.models import SourceObjectRow
-from flashflood_data.orchestration.meta.service import MetaRecorder
+from flashflood_data.pipelines.static_bronze.pipeline import BronzeService
+from flashflood_data.pipelines.static_landing.models import SourceObjectRow
+from flashflood_data.shared.metadata.service import MetaRecorder
 from flashflood_data.storage.iceberg import SourceObjectInventory, load_polaris_catalog
 from flashflood_data.storage.iceberg_tables import IcebergTableStore
 from flashflood_data.storage.object_store import ObjectPublisher, PyArrowS3ObjectStore

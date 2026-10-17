@@ -15,8 +15,8 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.static.sources.base import SourceContext
-from flashflood_data.static.sources.osm import (
+from flashflood_data.pipelines.static_landing.adapters.base import SourceContext
+from flashflood_data.pipelines.static_landing.adapters.osm import (
     GeofabrikOsmAdapter,
     _read_layers,
     parse_geofabrik_metadata,
@@ -41,7 +41,11 @@ def _context(tmp_path: Path) -> SourceContext:
     paths.ensure_output_dirs()
     aoi_path = paths.harmonized / "aoi" / "exposure_aoi.geoparquet"
     aoi_path.parent.mkdir(parents=True)
-    gpd.GeoDataFrame({"name": ["exposure"]}, geometry=gpd.GeoSeries.from_wkt(["POLYGON ((103 20, 104 20, 104 21, 103 21, 103 20))"]), crs="EPSG:4326").to_parquet(aoi_path, index=False)
+    gpd.GeoDataFrame(
+        {"name": ["exposure"]},
+        geometry=gpd.GeoSeries.from_wkt(["POLYGON ((103 20, 104 20, 104 21, 103 21, 103 20))"]),
+        crs="EPSG:4326",
+    ).to_parquet(aoi_path, index=False)
     return SourceContext(
         paths=paths,
         catalog=AssetCatalog(paths),
@@ -91,7 +95,10 @@ def test_resolve_downloads_sidecar_before_exposing_timestamped_pbf(tmp_path: Pat
         if request.url.path.endswith(".pbf"):
             return httpx.Response(
                 200,
-                headers={"Last-Modified": "Thu, 20 Aug 2026 03:04:05 GMT", "Content-Length": "4096"},
+                headers={
+                    "Last-Modified": "Thu, 20 Aug 2026 03:04:05 GMT",
+                    "Content-Length": "4096",
+                },
             )
         return httpx.Response(200, headers={"Content-Length": "57"})
 
@@ -99,7 +106,9 @@ def test_resolve_downloads_sidecar_before_exposing_timestamped_pbf(tmp_path: Pat
     sidecar = adapter.resolve(context, [])
 
     assert [remote.asset_id for remote in sidecar] == ["geofabrik-osm-20260820-md5"]
-    assert sidecar[0].target_relative_path == Path("raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf.md5")
+    assert sidecar[0].target_relative_path == Path(
+        "raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf.md5"
+    )
     assert [request.method for request in requests] == ["HEAD", "HEAD"]
 
     path = context.paths.dataset / sidecar[0].target_relative_path
@@ -108,7 +117,9 @@ def test_resolve_downloads_sidecar_before_exposing_timestamped_pbf(tmp_path: Pat
     pbf = adapter.resolve(context, [_sidecar_asset(path, spec)])
 
     assert [remote.asset_id for remote in pbf] == ["geofabrik-osm-20260820-pbf"]
-    assert pbf[0].target_relative_path == Path("raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf")
+    assert pbf[0].target_relative_path == Path(
+        "raw/osm/geofabrik/20260820/vietnam-20260820.osm.pbf"
+    )
     assert pbf[0].expected_size == 4096
     assert pbf[0].source_valid_time == "2026-08-20T03:04:05+00:00"
 
@@ -141,9 +152,7 @@ def test_resolve_retries_geofabrik_metadata_after_read_timeout(tmp_path: Path) -
 
     remotes = adapter.resolve(context, [])
 
-    assert [remote.asset_id for remote in remotes] == [
-        "geofabrik-osm-20260820-md5"
-    ]
+    assert [remote.asset_id for remote in remotes] == ["geofabrik-osm-20260820-md5"]
     assert attempts == 3
     assert delays == [1.0]
 
@@ -197,9 +206,7 @@ def test_osm_driver_config_preserves_source_ids_for_every_read_layer() -> None:
     )
 
     for layer in ("points", "lines", "multilinestrings", "multipolygons"):
-        attributes = {
-            value.strip() for value in config[layer]["attributes"].split(",")
-        }
+        attributes = {value.strip() for value in config[layer]["attributes"].split(",")}
         assert config[layer].getboolean("osm_id")
         assert "osm_id" not in attributes
         assert "other_tags" not in attributes

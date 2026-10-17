@@ -6,13 +6,25 @@ from flashflood_data.storage.iceberg import source_objects_arrow_schema
 from flashflood_data.storage.iceberg_schemas import BRONZE_KEYS, table_schema
 
 META_TABLES = (
-    "source_registry", "source_objects", "ingest_attempts", "pipeline_runs",
-    "table_snapshot_ref", "parameter_sets", "dataset_registry", "quality_results",
-    "lineage_edges", "ingest_watermarks", "object_lifecycle",
+    "source_registry",
+    "source_objects",
+    "ingest_attempts",
+    "pipeline_runs",
+    "table_snapshot_ref",
+    "parameter_sets",
+    "dataset_registry",
+    "quality_results",
+    "lineage_edges",
+    "ingest_watermarks",
+    "object_lifecycle",
 )
 STATIC_BRONZE_TABLES = (
-    "basin_polygon_raw", "river_reach_raw", "osm_feature_raw",
-    "raster_coverage", "historical_event_raw", "admin_boundary_raw",
+    "basin_polygon_raw",
+    "river_reach_raw",
+    "osm_feature_raw",
+    "raster_coverage",
+    "historical_event_raw",
+    "admin_boundary_raw",
 )
 
 
@@ -68,6 +80,18 @@ def test_source_grid_preserves_stable_cell_identity_and_scope_membership() -> No
     assert schema.field("cell_index").type == pa.int64()
     assert schema.field("scope_ids").type == pa.list_(pa.string())
     assert schema.field("geometry_wkb").nullable is False
+
+
+def test_quarantine_tables_are_in_physical_contract() -> None:
+    objects = table_schema(("quarantine", "rejected_objects"))
+    rows = table_schema(("quarantine", "rejected_rows"))
+
+    assert objects.field("rejection_id").nullable is False
+    assert objects.field("input_snapshot_id").type == pa.int64()
+    assert rows.field("rejection_id").nullable is False
+    assert rows.field("rule_ids").type == pa.list_(pa.string())
+    assert rows.field("record_json").nullable is True
+    assert rows.field("record_uri").nullable is True
 
 
 def test_unknown_table_is_rejected() -> None:

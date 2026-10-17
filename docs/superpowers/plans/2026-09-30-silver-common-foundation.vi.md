@@ -1,5 +1,18 @@
 # Kế hoạch triển khai nền tảng dùng chung cho Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
+
+> **Plan thay thế:** Không thực hiện các task publisher/runtime Python trong file này. Dùng
+> [`2026-10-10-spark-silver-foundation.vi.md`](2026-10-10-spark-silver-foundation.vi.md).
+> File này chỉ còn giá trị tham chiếu cho build signature, snapshot, staging và Meta audit.
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-common-foundation.md`
 
@@ -11,7 +24,7 @@
 
 **Kiến trúc:** Service của từng domain gọi một thư viện dùng chung nhỏ nhưng vẫn tự sở hữu toàn bộ quy tắc nghiệp vụ. Các task tính toán ghi batch Parquet theo từng run; mỗi bảng chỉ có một publisher commit batch, còn thành phần audit riêng ghi trạng thái run, DQ, snapshot và lineage.
 
-**Công nghệ:** Python 3.11, Pydantic 2, PyArrow, PyIceberg/Polaris, pytest.
+**Công nghệ:** Python 3.11, Pydantic 2, PyArrow, PySpark, Apache Spark/Sedona, Apache Iceberg/Polaris, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
@@ -29,7 +42,7 @@
 ## Cấu trúc file
 
 ```text
-src/flashflood_data/orchestration/silver/
+src/flashflood_data/shared/silver/
   __init__.py                     # public Silver package
   common/
     __init__.py                   # exports stable common interfaces
@@ -39,8 +52,8 @@ src/flashflood_data/orchestration/silver/
     staging.py                    # run-scoped Parquet batches
     publisher.py                  # one-writer Iceberg publication
     audit.py                      # Meta run/DQ/snapshot/lineage recording
-    factory.py                    # production dependencies
-tests/unit/silver/common/
+    runtime.py                    # production dependencies
+tests/unit/shared/silver/
   test_versioning.py
   test_discovery.py
   test_staging.py
@@ -49,16 +62,16 @@ tests/unit/silver/common/
 tests/contract/test_architecture.py
 ```
 
-`models.py` và `versioning.py` là các module lá. `discovery.py`, `staging.py`, `publisher.py` và `audit.py` dùng các kiểu dữ liệu này. `factory.py` khởi tạo dependency nhưng không chạy nghiệp vụ pipeline. Các package domain chỉ import những tên public do `common/__init__.py` export.
+`models.py` và `versioning.py` là các module lá. `discovery.py`, `staging.py`, `publisher.py` và `audit.py` dùng các kiểu dữ liệu này. `runtime.py` khởi tạo dependency nhưng không chạy nghiệp vụ pipeline. Các package domain chỉ import những tên public do `common/__init__.py` export.
 
 ### Công việc 1: Định nghĩa model dùng chung và identity build xác định
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/common/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/common/models.py`
-- Tạo: `src/flashflood_data/orchestration/silver/common/versioning.py`
-- Tạo: `tests/unit/silver/common/test_versioning.py`
+- Tạo: `src/flashflood_data/shared/silver/__init__.py`
+- Tạo: `src/flashflood_data/shared/silver/__init__.py`
+- Tạo: `src/flashflood_data/shared/silver/models.py`
+- Tạo: `src/flashflood_data/shared/silver/versioning.py`
+- Tạo: `tests/unit/shared/silver/test_versioning.py`
 
 **Giao diện:**
 - Đầu ra: `InputSnapshotRef(table_name: str, snapshot_id: int)`.
@@ -89,7 +102,7 @@ def test_build_signature_changes_with_snapshot():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận lỗi thiếu module**
 
-Chạy: `pytest tests/unit/silver/common/test_versioning.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_versioning.py -q`
 Mong đợi: FAIL vì Silver common package does not exist.
 
 - [ ] **Bước 3: Triển khai DTOs và canonical hash**
@@ -115,13 +128,13 @@ Trong model Pydantic, kiểm tra name/version không rỗng và snapshot ID ph�
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/common/test_versioning.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_versioning.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit identity contract**
 
 ```bash
-git add src/flashflood_data/orchestration/silver tests/unit/silver/common/test_versioning.py
+git add src/flashflood_data/shared/silver tests/unit/shared/silver/test_versioning.py
 git commit -m "feat: add Silver build identity contract"
 ```
 
@@ -129,8 +142,8 @@ git commit -m "feat: add Silver build identity contract"
 
 **Các file:**
 - Sửa: `src/flashflood_data/storage/iceberg_tables.py`
-- Tạo: `src/flashflood_data/orchestration/silver/common/discovery.py`
-- Tạo: `tests/unit/silver/common/test_discovery.py`
+- Tạo: `src/flashflood_data/shared/silver/discovery.py`
+- Tạo: `tests/unit/shared/silver/test_discovery.py`
 - Sửa: `tests/unit/storage/test_iceberg_tables.py`
 
 **Giao diện:**
@@ -167,7 +180,7 @@ Dùng snapshot và dòng Meta giả lập rõ ràng; không kết nối Polaris.
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/common/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`
 Mong đợi: FAIL vì snapshot scanning và discovery chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai đọc storage và tìm build**
@@ -191,21 +204,21 @@ Sau đó tìm các run Meta thành công hoặc chưa hoàn tất có cùng `job
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/common/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit discovery**
 
 ```bash
-git add src/flashflood_data/storage/iceberg_tables.py src/flashflood_data/orchestration/silver/common/discovery.py tests/unit/silver/common/test_discovery.py tests/unit/storage/test_iceberg_tables.py
+git add src/flashflood_data/storage/iceberg_tables.py src/flashflood_data/shared/silver/discovery.py tests/unit/shared/silver/test_discovery.py tests/unit/storage/test_iceberg_tables.py
 git commit -m "feat: discover Silver builds from Iceberg snapshots"
 ```
 
 ### Công việc 3: Triển khai run-scoped staging
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/common/staging.py`
-- Tạo: `tests/unit/silver/common/test_staging.py`
+- Tạo: `src/flashflood_data/shared/silver/staging.py`
+- Tạo: `tests/unit/shared/silver/test_staging.py`
 
 **Giao diện:**
 - Đầu vào: `SilverBuildRequest`.
@@ -231,7 +244,7 @@ def test_cleanup_rejects_incomplete_run(tmp_path):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/common/test_staging.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_staging.py -q`
 Mong đợi: FAIL vì `SilverStaging` chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai batch Parquet và marker theo cách nguyên tử**
@@ -248,23 +261,23 @@ Ghi mỗi file Parquet qua một file tạm cùng thư mục rồi dùng `Path.r
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/common/test_staging.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_staging.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit staging**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/common/staging.py tests/unit/silver/common/test_staging.py
+git add src/flashflood_data/shared/silver/staging.py tests/unit/shared/silver/test_staging.py
 git commit -m "feat: add Silver batch staging"
 ```
 
 ### Công việc 4: Thêm cơ chế một writer và audit Meta
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/common/publisher.py`
-- Tạo: `src/flashflood_data/orchestration/silver/common/audit.py`
-- Tạo: `tests/unit/silver/common/test_publisher.py`
-- Tạo: `tests/unit/silver/common/test_audit.py`
+- Tạo: `src/flashflood_data/shared/silver/publisher.py`
+- Tạo: `src/flashflood_data/shared/silver/audit.py`
+- Tạo: `tests/unit/shared/silver/test_publisher.py`
+- Tạo: `tests/unit/shared/silver/test_audit.py`
 
 **Giao diện:**
 - Đầu vào: `StagedBatch`, `PublishedOutput`, shared `QualityResult`, `IcebergTableStore`, `MetaRecorder`.
@@ -296,7 +309,7 @@ Kiểm tra thêm rằng DQ nghiêm trọng trước commit chặn `publish`, và
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/common/test_publisher.py tests/unit/silver/common/test_audit.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_publisher.py tests/unit/shared/silver/test_audit.py -q`
 Mong đợi: FAIL vì classes chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai publisher và chuyển trạng thái audit**
@@ -313,21 +326,21 @@ Lineage có một cạnh cho mỗi cặp input snapshot/output snapshot. Warning
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/common/test_publisher.py tests/unit/silver/common/test_audit.py -q`  
+Chạy: `pytest tests/unit/shared/silver/test_publisher.py tests/unit/shared/silver/test_audit.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit publish và audit**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/common/publisher.py src/flashflood_data/orchestration/silver/common/audit.py tests/unit/silver/common/test_publisher.py tests/unit/silver/common/test_audit.py
+git add src/flashflood_data/shared/silver/publisher.py src/flashflood_data/shared/silver/audit.py tests/unit/shared/silver/test_publisher.py tests/unit/shared/silver/test_audit.py
 git commit -m "feat: publish and audit Silver builds"
 ```
 
 ### Công việc 5: Khởi tạo dependency production và kiểm soát kiến trúc
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/common/factory.py`
-- Sửa: `src/flashflood_data/orchestration/silver/common/__init__.py`
+- Tạo: `src/flashflood_data/shared/silver/runtime.py`
+- Sửa: `src/flashflood_data/shared/silver/__init__.py`
 - Sửa: `tests/contract/test_architecture.py`
 - Sửa: `docs/pipeline_architecture_and_roadmap.md`
 
@@ -340,8 +353,8 @@ git commit -m "feat: publish and audit Silver builds"
 
 ```python
 def test_common_package_does_not_import_domains():
-    imports = imported_modules_under("src/flashflood_data/orchestration/silver/common")
-    assert not any(name.startswith("flashflood_data.orchestration.silver.basin") for name in imports)
+    imports = imported_modules_under("src/flashflood_data/shared/silver")
+    assert not any(name.startswith("flashflood_data.pipelines.silver_basin") for name in imports)
 
 def test_factory_composes_shared_dependencies(monkeypatch, tmp_path):
     dependencies = build_silver_dependencies(tmp_path)
@@ -351,7 +364,7 @@ def test_factory_composes_shared_dependencies(monkeypatch, tmp_path):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/contract/test_architecture.py tests/unit/silver/common -q`  
+Chạy: `pytest tests/contract/test_architecture.py tests/unit/shared/silver -q`
 Mong đợi: FAIL vì factory/export boundary is incomplete.
 
 - [ ] **Bước 3: Triển khai dependency container và ghi tài liệu call flow**
@@ -367,21 +380,29 @@ Ghi rõ rằng các package domain trao đổi dữ liệu qua table contract, k
 
 - [ ] **Bước 4: Chạy bộ kiểm thử dùng chung**
 
-Chạy: `pytest tests/unit/silver/common tests/unit/storage/test_iceberg_tables.py tests/contract/test_architecture.py -q`  
+Chạy: `pytest tests/unit/shared/silver tests/unit/storage/test_iceberg_tables.py tests/contract/test_architecture.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Chạy kiểm tra chất lượng repository**
 
-Chạy: `ruff check src tests`  
+Chạy: `ruff check src tests`
 Mong đợi: PASS.
 
 - [ ] **Bước 6: Commit common foundation**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/common tests/contract/test_architecture.py docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/shared/silver tests/contract/test_architecture.py docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: complete Silver common foundation"
 ```
 
 ## Điểm kiểm tra
 
 Dừng sau plan này. Review các interface dùng chung và xác nhận một domain giả lập có thể tạo build xác định, stage row, publish một snapshot và ghi Meta lineage trước khi triển khai domain thật.
+
+## Bổ sung DQ chung (11/10/2026)
+
+`shared/silver` phải import `QualityEvaluation`, `QualityPolicy` và coordinator từ
+`shared/quality`; không định nghĩa lại `QualityResult`, severity hoặc quarantine writer. Publisher
+snapshot cần giữ cùng thứ tự repairable với coordinator object hiện có và dùng input snapshot làm
+identity. Rule chung: schema/khóa/null contract là fatal; row nghiệp vụ cô lập được là reject;
+coverage/freshness dưới ngưỡng mềm là warning. Chỉ row `passed|warning` được ghi vào Silver.

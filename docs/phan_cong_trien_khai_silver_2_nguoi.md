@@ -1,5 +1,10 @@
 # Phân công triển khai Bronze → Silver cho hai người
 
+> **Cập nhật 10/10/2026:** Spark/Sedona là runtime mặc định của Bronze → Silver theo
+> [spark_bronze_to_silver_architecture.md](spark_bronze_to_silver_architecture.md). Người 1 sở hữu
+> shared Spark runtime và integration; Người 2 sở hữu các Python specialized jobs cho
+> raster/hydrology/graph cùng Spark transform của domain được giao.
+
 ## 1. Mục tiêu
 
 Tài liệu này chia toàn bộ phần triển khai Bronze → Silver cho hai người. Mỗi pipeline chỉ có một người sở hữu chính để tránh logic nghiệp vụ bị tách giữa nhiều branch.
@@ -17,14 +22,14 @@ Các implementation plan chi tiết vẫn là nguồn hướng dẫn chính. Tà
 
 | Người | Pipeline phụ trách | Số công việc trong plan | Trọng tâm |
 | --- | --- | ---: | --- |
-| **Người 1** | Common foundation, Basin topology, Weather aggregation, Flood events | 18 | Critical path, orchestration, dữ liệu động, tích hợp chung |
-| **Người 2** | Basin static features, River network, Exposure network | 14 | Raster/GIS, hydrology, graph sông/đường và exposure |
+| **Người 1** | Spark common foundation, Basin topology, Weather aggregation, Flood events | 18 | Spark runtime, orchestration, dữ liệu động, tích hợp chung |
+| **Người 2** | Basin static features, River network, Exposure network | 14 | Spark/Sedona domain job, raster hydrology, graph sông/đường và exposure |
 
 Số công việc không phản ánh hoàn toàn độ khó. Ba pipeline của Người 2 ít công việc hơn nhưng có nhiều phép xử lý raster, geometry và network nặng.
 
 ```mermaid
 flowchart TB
-  C["Người 1: Common foundation"] --> B["Người 1: Basin topology"]
+  C["Người 1: Spark common foundation"] --> B["Người 1: Basin topology"]
   B --> W["Người 1: Weather aggregation"]
   B --> E["Người 1: Flood events"]
   B --> S["Người 2: Static features"]
@@ -45,12 +50,15 @@ Người 1 là **integration owner** và chịu trách nhiệm giữ cho các co
 - Plan: [Nền tảng dùng chung Silver](superpowers/plans/2026-09-30-silver-common-foundation.vi.md)
 - Branch: `feat/silver-common-foundation`
 - Có thể bắt đầu ngay.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/common/`.
+- Package sở hữu: `src/flashflood_data/shared/silver/`.
 - Đầu ra bàn giao:
+  - Spark/Sedona image và compatibility matrix;
+  - Spark session kết nối Polaris/MinIO;
+  - Airflow submit/monitor contract;
   - build signature xác định;
   - snapshot discovery;
-  - staging theo run;
-  - một writer cho mỗi bảng;
+  - Parquet/manifest staging theo run;
+  - Spark DQ/publish cho mỗi bảng;
   - Meta audit, snapshot ref và lineage;
   - factory dependency dùng chung.
 - Gate hoàn tất: một domain giả lập chạy được chuỗi discover → stage → publish → audit và chạy lại trả về `skip`.
@@ -60,7 +68,7 @@ Người 1 là **integration owner** và chịu trách nhiệm giữ cho các co
 - Plan: [Topology lưu vực](superpowers/plans/2026-09-30-silver-basin-topology.vi.md)
 - Branch: `feat/silver-basin-topology`
 - Chỉ bắt đầu sau khi common foundation đã merge.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/basin/`.
+- Package sở hữu: `src/flashflood_data/pipelines/silver_basin/`.
 - DAG sở hữu: `airflow/dags/silver_basin_topology.py`.
 - Đầu ra bàn giao:
   - `silver.dim_basin`;
@@ -74,7 +82,7 @@ Người 1 là **integration owner** và chịu trách nhiệm giữ cho các co
 - Plan: [Tổng hợp thời tiết theo lưu vực](superpowers/plans/2026-09-30-silver-weather-aggregation.vi.md)
 - Branch: `feat/silver-weather-aggregation`
 - Bắt đầu sau khi basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/weather/`.
+- Package sở hữu: `src/flashflood_data/pipelines/silver_weather/`.
 - DAG sở hữu: `airflow/dags/silver_weather_aggregation.py`.
 - Đầu ra bàn giao:
   - `silver.grid_basin_weight`;
@@ -89,7 +97,7 @@ Người 1 là **integration owner** và chịu trách nhiệm giữ cho các co
 - Plan: [Sự kiện lũ](superpowers/plans/2026-09-30-silver-flood-events.vi.md)
 - Branch: `feat/silver-flood-events`
 - Bắt đầu sau khi basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/events/`.
+- Package sở hữu: `src/flashflood_data/pipelines/flood_events/`.
 - DAG sở hữu: `airflow/dags/silver_flood_events.py`.
 - Đầu ra bàn giao:
   - `silver.observed_flood_event`;
@@ -101,14 +109,15 @@ Người 1 là **integration owner** và chịu trách nhiệm giữ cho các co
 
 ## 4. Phần việc của Người 2
 
-Người 2 sở hữu toàn bộ logic raster/GIS/network của các domain được giao, nhưng dùng publisher và audit của Người 1.
+Người 2 sở hữu Spark/Sedona transform và logic raster/GIS/network của các domain được giao, nhưng
+dùng session, submit, DQ, publisher và audit Spark của Người 1.
 
 ### 4.1 Basin static features
 
 - Plan: [Đặc trưng tĩnh theo lưu vực](superpowers/plans/2026-09-30-silver-basin-static-features.vi.md)
 - Branch: `feat/silver-static-features`
 - Bắt đầu sau khi common foundation và basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/static_features/`.
+- Package sở hữu: `src/flashflood_data/pipelines/silver_static_features/`.
 - DAG sở hữu: `airflow/dags/silver_basin_static_features.py`.
 - Đầu ra bàn giao:
   - `silver.basin_static_feature`;
@@ -123,7 +132,7 @@ Người 2 sở hữu toàn bộ logic raster/GIS/network của các domain đư
 - Plan: [Mạng sông](superpowers/plans/2026-09-30-silver-river-network.vi.md)
 - Branch: `feat/silver-river-network`
 - Có thể triển khai song song với static features sau khi basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/river/`.
+- Package sở hữu: `src/flashflood_data/pipelines/silver_river/`.
 - DAG sở hữu: `airflow/dags/silver_river_network.py`.
 - Đầu ra bàn giao:
   - `silver.dim_river_reach`;
@@ -137,8 +146,8 @@ Người 2 sở hữu toàn bộ logic raster/GIS/network của các domain đư
 - Plan: [Mạng lưới phơi nhiễm](superpowers/plans/2026-09-30-silver-exposure-network.vi.md)
 - Branch: `feat/silver-exposure-network`
 - Chỉ bắt đầu sau khi river network đã merge; basin topology cũng phải có sẵn.
-- Package sở hữu: `src/flashflood_data/orchestration/silver/exposure/`.
-- Module dùng chung sở hữu: `src/flashflood_data/orchestration/spatial_grid.py`.
+- Package sở hữu: `src/flashflood_data/pipelines/silver_exposure/`.
+- Module dùng chung sở hữu: `src/flashflood_data/shared/spatial_grid.py`.
 - DAG sở hữu: `airflow/dags/silver_exposure_network.py`.
 - Đầu ra bàn giao:
   - facility và quan hệ facility-basin;
@@ -154,7 +163,7 @@ Người 2 sở hữu toàn bộ logic raster/GIS/network của các domain đư
 
 | Người 1 | Người 2 |
 | --- | --- |
-| Triển khai common foundation. | Đọc ba plan được giao; rà fixture DEM, SoilGrids, HydroRIVERS, OSM và WorldPop hiện có. Không viết production code phụ thuộc common khi interface chưa merge. |
+| Triển khai Spark common foundation và smoke Polaris/MinIO. | Đọc ba plan được giao; rà fixture DEM, SoilGrids, HydroRIVERS, OSM và WorldPop hiện có. Không viết production code phụ thuộc common khi interface chưa merge. |
 
 Kết thúc giai đoạn khi branch `feat/silver-common-foundation` đã pass test và merge.
 
@@ -221,7 +230,7 @@ Các file sau có thể được nhiều pipeline sửa:
 
 ```text
 src/flashflood_data/storage/iceberg_schemas.py
-config/meta/static.yaml
+config/shared/metadata.yaml
 tests/contract/storage/test_meta_bronze_schemas.py
 tests/contract/infra/test_silver_dags.py
 README.md
@@ -248,7 +257,7 @@ pytest tests/contract/storage/test_meta_bronze_schemas.py tests/contract/infra/t
 | Code do | Người review | Nội dung review bắt buộc |
 | --- | --- | --- |
 | Người 1 | Người 2 | Interface common có dùng được từ domain khác; basin geometry/topology; weather coverage/window; event area semantics |
-| Người 2 | Người 1 | Không bypass common publisher/audit; đúng table key/version; một writer mỗi bảng; Meta lineage đầy đủ |
+| Người 2 | Người 1 | Không bypass Spark common publish/audit; đúng table key/version; không concurrent commit; Meta lineage đầy đủ |
 
 Reviewer không cần đọc toàn bộ repository. Thứ tự đọc cho mỗi branch:
 
@@ -257,8 +266,8 @@ Reviewer không cần đọc toàn bộ repository. Thứ tự đọc cho mỗi 
 3. `models.py`;
 4. transform thuần;
 5. `quality.py`;
-6. `service.py`;
-7. `factory.py`;
+6. `pipeline.py`;
+7. `runtime.py`;
 8. DAG;
 9. test và thay đổi schema/registry.
 

@@ -32,6 +32,16 @@ def test_spark_image_pins_compatible_runtime_and_checksums() -> None:
             "bb50f7dc5f36a001efecf15e4d03eff955466f06557261fbacdd7fe0d88113c82"
             "e0b9b2af96cd554cef4a1d4c2348fc950270bc3f51cf6bf1e4526f46ce336a0"
         ),
+        "SEDONA_VERSION": "1.9.1",
+        "SEDONA_SHA512": (
+            "893eb5802244a6eb734849bad1279feda276261e1ee6d9ce04a935415886c5555"
+            "2a416250eb2f598f8e4fb15309239ec74d39247892fd993641cd5f921586478"
+        ),
+        "GEOTOOLS_VERSION": "1.9.1-33.5",
+        "GEOTOOLS_SHA512": (
+            "64d3c4b73e2ddf700efec6d11f08a94fa546c5f88556d7bb76f92f1c5ea15b35"
+            "9035aa7d97c81de8e1c3c853f38ab825e79228210ddbe44e9b3761e39776f7dc"
+        ),
     }
 
 
@@ -56,7 +66,7 @@ def test_spark_master_and_worker_are_optional_private_and_bounded() -> None:
     services = spark_services()
     master = services["spark-master"]
     worker = services["spark-worker"]
-    expected_image = "flood-lakehouse-spark:4.1.3-iceberg1.11.0"
+    expected_image = "flood-lakehouse-spark:4.1.3-iceberg1.11.0-sedona1.9.1"
 
     assert master["image"] == worker["image"] == expected_image
     assert master["profiles"] == worker["profiles"] == ["spark"]
@@ -84,6 +94,8 @@ def test_spark_submit_is_one_shot_and_receives_runtime_secrets() -> None:
     assert "${MINIO_ROOT_PASSWORD:?run make lakehouse-init}" == submit["environment"][
         "AWS_SECRET_ACCESS_KEY"
     ]
+    assert submit["environment"]["PYTHONPATH"] == "/opt/flashflood/src:/opt/spark/jobs"
+    assert "./src:/opt/flashflood/src:ro,Z" in submit["volumes"]
 
 
 def test_base_lakehouse_up_does_not_start_spark() -> None:

@@ -1,4 +1,4 @@
-"""Project-relative locations for file-first pipeline assets."""
+"""Project-relative locations for local inputs, staging, and generated assets."""
 
 import os
 from dataclasses import dataclass

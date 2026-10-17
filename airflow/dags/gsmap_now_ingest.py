@@ -1,8 +1,5 @@
-"""GSMaP Gauge NOW restart-safe Raw-to-Bronze pipeline."""
+"""Airflow entrypoint for GSMaP Gauge NOW ingestion."""
 
-from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.orchestration.weather.airflow_factory import build_weather_dag
+from flashflood_data.pipelines.weather_ingest.airflow import build_project_weather_dag
 
-CONFIG_PATH = ProjectPaths.discover().root / "config" / "dynamic" / "gsmap_now.yaml"
-
-gsmap_now_ingest = build_weather_dag("gsmap_now_ingest", CONFIG_PATH)
+gsmap_now_ingest = build_project_weather_dag("gsmap_now_ingest", "gsmap_now.yaml")

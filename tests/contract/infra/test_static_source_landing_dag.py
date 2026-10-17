@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
-DAG_PATH = ROOT / "airflow/dags/static_source_landing.py"
+DAG_PATH = ROOT / "src/flashflood_data/pipelines/static_landing/airflow.py"
 
 
 def _imported_roots(tree: ast.AST) -> set[str]:
@@ -59,6 +59,8 @@ def test_dag_uses_manual_paused_runs_envelopes_and_all_done_summary() -> None:
     assert "publish_source" in text
     assert "register_batch" in text
     assert "cleanup_batch" in text
+    assert "DataQualityBlock" in text
+    assert 'LandingTaskEnvelope.failed(source_id, "data_quality_block")' in text
 
 
 def test_taskflow_callables_do_not_use_reserved_context_argument_names() -> None:
@@ -128,9 +130,7 @@ def test_source_failures_log_the_pipeline_phase_and_traceback() -> None:
     assert "def _log_source_failure(" in text
     assert "traceback.format_tb" in text
     assert text.count("_log_source_failure(") == 2
-    assert {"publish", "register", "cleanup", "audit"} <= _string_literals(
-        ast.parse(text)
-    )
+    assert {"publish", "register", "cleanup", "audit"} <= _string_literals(ast.parse(text))
 
 
 def test_source_phase_failures_use_airflow_retries_before_failure_envelopes() -> None:

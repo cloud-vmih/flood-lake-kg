@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
-DAG = ROOT / "airflow" / "dags" / "static_source_to_bronze.py"
+DAG = ROOT / "src/flashflood_data/pipelines/static_bronze/airflow.py"
 
 
 def test_bronze_dag_maps_registered_raw_ids_to_parse_tasks() -> None:
@@ -23,6 +23,8 @@ def test_bronze_dag_maps_registered_raw_ids_to_parse_tasks() -> None:
     assert ".expand(" in source
     assert "source_landing_writer" not in source
     assert "bronze_writer" in source
+    assert "DataQualityBlock" in source
+    assert "AirflowFailException" in source
     imports = {
         node.module.split(".", 1)[0]
         for node in ast.walk(tree)

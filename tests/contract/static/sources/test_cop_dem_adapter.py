@@ -22,9 +22,8 @@ from flashflood_data.catalog.models import (
 )
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.static.sources.base import SourceContext
-from flashflood_data.static.sources.budget import StorageBudget
-from flashflood_data.static.sources.cop_dem import (
+from flashflood_data.pipelines.static_landing.adapters.base import SourceContext
+from flashflood_data.pipelines.static_landing.adapters.cop_dem import (
     CdseTokenClient,
     CopDemAdapter,
     MissingCredentials,
@@ -33,6 +32,7 @@ from flashflood_data.static.sources.cop_dem import (
     grid_ids_for_geometry,
     select_dem_product,
 )
+from flashflood_data.shared.storage_budget import StorageBudget
 from flashflood_data.storage.http import HttpFetcher
 
 
@@ -127,9 +127,7 @@ def test_product_selection_ignores_offline_product() -> None:
         ]
     }
 
-    product = select_dem_product(
-        response, "COP-DEM_GLO-30-DGED/2024_1", "N21_E103"
-    )
+    product = select_dem_product(response, "COP-DEM_GLO-30-DGED/2024_1", "N21_E103")
 
     assert product.product_id == "online-older"
 
@@ -196,7 +194,9 @@ def test_missing_cdse_credentials_stops_before_download(
 ) -> None:
     """Catches a live resolution attempt that reaches CDSE without local credentials."""
     client = httpx.Client(
-        transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(AssertionError(request.url)))
+        transport=httpx.MockTransport(
+            lambda request: (_ for _ in ()).throw(AssertionError(request.url))
+        )
     )
     with pytest.raises(MissingCredentials, match="FLASHFLOOD_CDSE_USERNAME"):
         CopDemAdapter(spec, client=client).resolve(context, [])
@@ -230,7 +230,9 @@ def test_validated_local_tiles_are_reused_without_cdse_credentials(
     assert adapter.resolve(context, [record]) == []
 
 
-def test_token_exchange_keeps_credentials_and_access_token_out_of_logs(caplog: pytest.LogCaptureFixture) -> None:
+def test_token_exchange_keeps_credentials_and_access_token_out_of_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Catches accidental logging of CDSE password-grant values."""
     seen: list[httpx.Request] = []
 
@@ -243,7 +245,11 @@ def test_token_exchange_keeps_credentials_and_access_token_out_of_logs(caplog: p
         cdse_username=SecretStr("fixture-user"),
         cdse_password=SecretStr("fixture-password"),
     )
-    token = CdseTokenClient("https://identity.example.test/token", environment, httpx.Client(transport=httpx.MockTransport(handler)))
+    token = CdseTokenClient(
+        "https://identity.example.test/token",
+        environment,
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
 
     assert token.get_access_token().get_secret_value() == "fixture-access-token"
     assert len(seen) == 1
@@ -350,7 +356,10 @@ def test_authenticated_fetch_refreshes_token_once_after_unauthorized_response(
         client=client,
     )
 
-    assert CopDemAdapter(spec, client=client).fetch_raw(fetcher, authorized_context, remote).status is AssetStatus.FETCHED
+    assert (
+        CopDemAdapter(spec, client=client).fetch_raw(fetcher, authorized_context, remote).status
+        is AssetStatus.FETCHED
+    )
     assert download_headers == ["Bearer fixture-token-1", "Bearer fixture-token-2"]
     assert token_requests == 2
 

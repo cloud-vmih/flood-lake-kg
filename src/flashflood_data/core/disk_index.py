@@ -38,6 +38,14 @@ class DiskUniqueIndex:
         )
         return self._connection.total_changes - before == len(values)
 
+    def add(self, value: str) -> bool:
+        """Return whether one key was inserted; duplicates leave the index unchanged."""
+        if self._connection is None:
+            raise RuntimeError("DiskUniqueIndex must be used as a context manager")
+        before = self._connection.total_changes
+        self._connection.execute("INSERT OR IGNORE INTO unique_keys(value) VALUES (?)", (value,))
+        return self._connection.total_changes > before
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,

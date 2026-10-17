@@ -22,7 +22,7 @@ def _matches(row: dict[str, object], expression: object) -> bool:
     if isinstance(expression, Or):
         return _matches(row, expression.left) or _matches(row, expression.right)
     if isinstance(expression, In):
-        return row[expression.term.name] in expression.literals
+        return row[expression.term.name] in {literal.value for literal in expression.literals}
     raise AssertionError(f"unexpected filter: {expression!r}")
 
 
@@ -67,6 +67,10 @@ class _Table:
             raise CommitFailedException("concurrent snapshot")
         self.rows.extend(data.to_pylist())
         self.appends += 1
+        self.snapshot_id = (self.snapshot_id or 0) + 1
+
+    def delete(self, expression: object) -> None:
+        self.rows = [row for row in self.rows if not _matches(row, expression)]
         self.snapshot_id = (self.snapshot_id or 0) + 1
 
     def current_snapshot(self) -> SimpleNamespace | None:
@@ -121,7 +125,7 @@ class _Catalog:
         self.tables: dict[tuple[str, str], _Table] = {}
 
     def create_namespace_if_not_exists(self, namespace: tuple[str]) -> None:
-        assert namespace[0] in {"meta", "bronze", "silver"}
+        assert namespace[0] in {"meta", "bronze", "silver", "quarantine"}
 
     def create_table_if_not_exists(
         self, identifier: tuple[str, str], *, schema: pa.Schema, properties: dict[str, str]
@@ -172,21 +176,40 @@ def test_meta_upsert_replaces_one_run_without_touching_another() -> None:
     catalog = _Catalog()
     store = IcebergTableStore(catalog)
     base = {
-        "pipeline_run_id": "run-a", "orchestrator_run_id": None, "job_name": "bronze_parse",
-        "code_git_sha": None, "image_digest": None, "config_hash": "config-1",
-        "parameter_set_id": None, "started_at": datetime(2026, 9, 20, tzinfo=UTC), "finished_at": None,
-        "published_at": None, "status": "running", "retry_count": 0,
-        "input_row_count": None, "output_row_count": None, "quality_result_json": None,
-        "metrics_json": None, "error_code": None,
+        "pipeline_run_id": "run-a",
+        "orchestrator_run_id": None,
+        "job_name": "bronze_parse",
+        "code_git_sha": None,
+        "image_digest": None,
+        "config_hash": "config-1",
+        "parameter_set_id": None,
+        "started_at": datetime(2026, 9, 20, tzinfo=UTC),
+        "finished_at": None,
+        "published_at": None,
+        "status": "running",
+        "retry_count": 0,
+        "input_row_count": None,
+        "output_row_count": None,
+        "quality_result_json": None,
+        "metrics_json": None,
+        "error_code": None,
     }
     store.upsert_meta_row(("meta", "pipeline_runs"), ("pipeline_run_id",), base)
-    store.upsert_meta_row(("meta", "pipeline_runs"), ("pipeline_run_id",), {**base, "pipeline_run_id": "run-b"})
-    store.upsert_meta_row(("meta", "pipeline_runs"), ("pipeline_run_id",), {**base, "status": "succeeded"})
+    store.upsert_meta_row(
+        ("meta", "pipeline_runs"), ("pipeline_run_id",), {**base, "pipeline_run_id": "run-b"}
+    )
+    store.upsert_meta_row(
+        ("meta", "pipeline_runs"), ("pipeline_run_id",), {**base, "status": "succeeded"}
+    )
     rows = catalog.tables[("meta", "pipeline_runs")].rows
     assert {row["pipeline_run_id"]: row["status"] for row in rows} == {
-        "run-a": "succeeded", "run-b": "running",
+        "run-a": "succeeded",
+        "run-b": "running",
     }
-    assert store.get_meta_row(("meta", "pipeline_runs"), {"pipeline_run_id": "run-a"})["status"] == "succeeded"
+    assert (
+        store.get_meta_row(("meta", "pipeline_runs"), {"pipeline_run_id": "run-a"})["status"]
+        == "succeeded"
+    )
 
 
 def test_meta_batch_upsert_commits_many_keys_once_and_preserves_other_rows() -> None:
@@ -213,9 +236,7 @@ def test_meta_batch_upsert_commits_many_keys_once_and_preserves_other_rows() -> 
     table = catalog.tables[identifier]
     before = table.appends
 
-    snapshot = store.upsert_meta_rows(
-        identifier, keys, [attempt("tile-1"), attempt("tile-2")]
-    )
+    snapshot = store.upsert_meta_rows(identifier, keys, [attempt("tile-1"), attempt("tile-2")])
 
     assert snapshot == table.snapshot_id
     assert table.appends == before + 1
@@ -299,12 +320,23 @@ def test_meta_upsert_refreshes_and_retries_optimistic_commit_conflict() -> None:
     table = store.ensure_table(identifier)
     table.fail_next_appends = 1
     row = {
-        "pipeline_run_id": "run-a", "orchestrator_run_id": None, "job_name": "bronze_parse",
-        "code_git_sha": None, "image_digest": None, "config_hash": "config-1",
-        "parameter_set_id": None, "started_at": datetime(2026, 9, 20, tzinfo=UTC), "finished_at": None,
-        "published_at": None, "status": "running", "retry_count": 0,
-        "input_row_count": None, "output_row_count": None, "quality_result_json": None,
-        "metrics_json": None, "error_code": None,
+        "pipeline_run_id": "run-a",
+        "orchestrator_run_id": None,
+        "job_name": "bronze_parse",
+        "code_git_sha": None,
+        "image_digest": None,
+        "config_hash": "config-1",
+        "parameter_set_id": None,
+        "started_at": datetime(2026, 9, 20, tzinfo=UTC),
+        "finished_at": None,
+        "published_at": None,
+        "status": "running",
+        "retry_count": 0,
+        "input_row_count": None,
+        "output_row_count": None,
+        "quality_result_json": None,
+        "metrics_json": None,
+        "error_code": None,
     }
 
     snapshot = store.upsert_meta_row(identifier, ("pipeline_run_id",), row)
@@ -341,7 +373,9 @@ def test_batched_object_replacement_is_atomic_and_preserves_other_objects() -> N
     assert count == 2
     assert snapshot == table.snapshot_id
     assert {(row["object_id"], row["source_feature_id"]) for row in table.rows} == {
-        ("other", "42"), ("a", "1"), ("a", "2"),
+        ("other", "42"),
+        ("a", "1"),
+        ("a", "2"),
     }
 
     def broken_batches():
@@ -351,7 +385,9 @@ def test_batched_object_replacement_is_atomic_and_preserves_other_objects() -> N
     with pytest.raises(ValueError, match="later batch"):
         store.replace_object_batches(table_id, "a", broken_batches())
     assert {(row["object_id"], row["source_feature_id"]) for row in table.rows} == {
-        ("other", "42"), ("a", "1"), ("a", "2"),
+        ("other", "42"),
+        ("a", "1"),
+        ("a", "2"),
     }
 
 
@@ -359,7 +395,8 @@ def test_batched_object_replacement_rejects_duplicate_keys_across_batches() -> N
     store = IcebergTableStore(_Catalog())
     with pytest.raises(ValueError, match="duplicate"):
         store.replace_object_batches(
-            ("bronze", "basin_polygon_raw"), "a",
+            ("bronze", "basin_polygon_raw"),
+            "a",
             iter([[_basin("a", feature_id="1")], [_basin("a", feature_id="1")]]),
         )
 
@@ -380,7 +417,9 @@ def test_multi_object_replacement_commits_one_snapshot_and_preserves_other_objec
     table = catalog.tables[table_id]
     assert snapshot == before + 1
     assert {(row["object_id"], row["source_feature_id"]) for row in table.rows} == {
-        ("other", "42"), ("a", "1"), ("b", "2"),
+        ("other", "42"),
+        ("a", "1"),
+        ("b", "2"),
     }
 
 
@@ -392,3 +431,69 @@ def test_multi_object_replacement_requires_rows_for_every_requested_object() -> 
             ("a", "b"),
             [_basin("a", feature_id="1")],
         )
+
+
+def test_partition_replacement_keeps_valid_objects_and_removes_blocked_slice() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    table_id = ("bronze", "basin_polygon_raw")
+    store.replace_object_rows(table_id, "blocked", [_basin("blocked")])
+    store.replace_object_rows(table_id, "other", [_basin("other")])
+
+    snapshot = store.replace_object_partitions(
+        table_id,
+        {"valid": [_basin("valid", feature_id="7")]},
+        ("blocked",),
+    )
+
+    table = catalog.tables[table_id]
+    assert snapshot == table.snapshot_id
+    assert {(row["object_id"], row["source_feature_id"]) for row in table.rows} == {
+        ("other", "42"),
+        ("valid", "7"),
+    }
+
+
+def test_blocked_only_partition_removes_old_slice_and_empty_table_is_noop() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    table_id = ("bronze", "basin_polygon_raw")
+
+    assert store.replace_object_partitions(table_id, {}, ("missing",)) is None
+    store.replace_object_rows(table_id, "blocked", [_basin("blocked")])
+
+    snapshot = store.replace_object_partitions(table_id, {}, ("blocked",))
+
+    assert snapshot == catalog.tables[table_id].snapshot_id
+    assert catalog.tables[table_id].rows == []
+
+
+def test_quarantine_upsert_is_keyed_and_rejects_duplicate_payload_keys() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("quarantine", "rejected_rows")
+    row = {
+        "rejection_id": "reject-1",
+        "pipeline_run_id": "run-1",
+        "layer": "bronze",
+        "target_dataset_id": "bronze.river_reach_raw",
+        "object_id": "object-1",
+        "input_table": None,
+        "input_snapshot_id": None,
+        "source_record_key": "feature-1",
+        "quality_policy_id": "policy-1",
+        "rule_ids": ["geometry_valid"],
+        "reason_codes_json": '["invalid_geometry"]',
+        "record_json": '{"id":"feature-1"}',
+        "record_uri": None,
+        "parser_version": "v2",
+        "rejected_at": datetime(2026, 10, 11, tzinfo=UTC),
+    }
+
+    first = store.upsert_quarantine_rows(identifier, ("rejection_id",), [row])
+    second = store.upsert_quarantine_rows(identifier, ("rejection_id",), [row])
+
+    assert first == second
+    assert catalog.tables[identifier].rows == [row]
+    with pytest.raises(ValueError, match="duplicate requested key"):
+        store.upsert_quarantine_rows(identifier, ("rejection_id",), [row, row])

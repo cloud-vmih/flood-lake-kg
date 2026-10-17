@@ -1,5 +1,14 @@
 # Kế hoạch triển khai mạng sông ở Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-river-network.md`
 
@@ -11,7 +20,7 @@
 
 **Kiến trúc:** Dùng geometry và field nguồn ở Bronze để tạo các dòng reach ổn định, suy ra cạnh hạ lưu từ ID nguồn hoặc phép snap node đã cấu hình, rồi tính phần giao với basin trong CRS mét. Publish các bảng reach, edge và river-basin thành các output Silver có version độc lập.
 
-**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, GeoPandas, Shapely, PyProj, PyArrow, PyIceberg, pytest.
+**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, GeoPandas, Shapely, PyProj, PyArrow, PySpark, Apache Spark, Apache Sedona, Apache Iceberg, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
@@ -30,9 +39,9 @@
 ## Cấu trúc file
 
 ```text
-config/silver/river_network.yaml
+config/pipelines/silver/river_network.yaml
 airflow/dags/silver_river_network.py
-src/flashflood_data/orchestration/silver/river/
+src/flashflood_data/pipelines/silver_river/
   __init__.py
   config.py
   models.py
@@ -41,31 +50,31 @@ src/flashflood_data/orchestration/silver/river/
   topology.py
   basin_overlay.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/river/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_river/
   test_config.py
   test_normalize.py
   test_topology.py
   test_basin_overlay.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_river_pipeline.py
 ```
 
-`normalize.py`, `topology.py` và `basin_overlay.py` là transform domain thuần. `service.py` sở hữu thứ tự gọi và phần publish/audit chung. Code exposure phía sau đọc bảng river Silver và không import nội bộ các module này.
+`normalize.py`, `topology.py` và `basin_overlay.py` là transform domain thuần. `pipeline.py` sở hữu thứ tự gọi và phần publish/audit chung. Code exposure phía sau đọc bảng river Silver và không import nội bộ các module này.
 
 ### Công việc 1: Định nghĩa schema, cấu hình và model mạng sông
 
 **Các file:**
-- Tạo: `config/silver/river_network.yaml`
-- Tạo: `src/flashflood_data/orchestration/silver/river/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/river/config.py`
-- Tạo: `src/flashflood_data/orchestration/silver/river/models.py`
+- Tạo: `config/pipelines/silver/river_network.yaml`
+- Tạo: `src/flashflood_data/pipelines/silver_river/__init__.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/config.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/models.py`
 - Sửa: `src/flashflood_data/storage/iceberg_schemas.py`
-- Sửa: `config/meta/static.yaml`
+- Sửa: `config/shared/metadata.yaml`
 - Sửa: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Tạo: `tests/unit/silver/river/test_config.py`
+- Tạo: `tests/unit/pipelines/silver_river/test_config.py`
 
 **Giao diện:**
 - Đầu ra: `RiverNetworkConfig`, `RiverReachRow`, `RiverReachEdgeRow`, `RiverBasinRow`, `RiverTopologyReport`.
@@ -88,7 +97,7 @@ def test_river_basin_schema_is_versioned():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: FAIL vì contracts chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai config đã validate, model và schema chính xác**
@@ -97,24 +106,24 @@ Các field YAML gồm source ID, mapping field provider, quy ước hướng ngu
 
 - [ ] **Bước 4: Chạy kiểm thử contract**
 
-Chạy: `pytest tests/unit/silver/river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit contracts**
 
 ```bash
-git add config/silver/river_network.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/river src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/river_network.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_river src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver river contracts"
 ```
 
 ### Công việc 2: Chuẩn hóa reach và xây dựng topology
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/river/reader.py`
-- Tạo: `src/flashflood_data/orchestration/silver/river/normalize.py`
-- Tạo: `src/flashflood_data/orchestration/silver/river/topology.py`
-- Tạo: `tests/unit/silver/river/test_normalize.py`
-- Tạo: `tests/unit/silver/river/test_topology.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/reader.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/normalize.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/topology.py`
+- Tạo: `tests/unit/pipelines/silver_river/test_normalize.py`
+- Tạo: `tests/unit/pipelines/silver_river/test_topology.py`
 
 **Giao diện:**
 - Đầu vào: exact `bronze.river_reach_raw` snapshot và config.
@@ -139,7 +148,7 @@ def test_topology_links_provider_downstream_id():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/river/test_normalize.py tests/unit/silver/river/test_topology.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_normalize.py tests/unit/pipelines/silver_river/test_topology.py -q`
 Mong đợi: FAIL vì reader/transforms are absent.
 
 - [ ] **Bước 3: Triển khai reach chuẩn và logic graph**
@@ -150,23 +159,23 @@ Tạo version từ input snapshot/config và dùng thuật toán Kahn để phá
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/river/test_normalize.py tests/unit/silver/river/test_topology.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_normalize.py tests/unit/pipelines/silver_river/test_topology.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit reach chuẩn hóa**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/river/reader.py src/flashflood_data/orchestration/silver/river/normalize.py src/flashflood_data/orchestration/silver/river/topology.py tests/unit/silver/river/test_normalize.py tests/unit/silver/river/test_topology.py
+git add src/flashflood_data/pipelines/silver_river/reader.py src/flashflood_data/pipelines/silver_river/normalize.py src/flashflood_data/pipelines/silver_river/topology.py tests/unit/pipelines/silver_river/test_normalize.py tests/unit/pipelines/silver_river/test_topology.py
 git commit -m "feat: normalize and connect river reaches"
 ```
 
 ### Công việc 3: Chồng lớp reach với basin và thêm cổng chất lượng
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/river/basin_overlay.py`
-- Tạo: `src/flashflood_data/orchestration/silver/river/quality.py`
-- Tạo: `tests/unit/silver/river/test_basin_overlay.py`
-- Tạo: `tests/unit/silver/river/test_quality.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/basin_overlay.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/quality.py`
+- Tạo: `tests/unit/pipelines/silver_river/test_basin_overlay.py`
+- Tạo: `tests/unit/pipelines/silver_river/test_quality.py`
 
 **Giao diện:**
 - Đầu ra: `overlay_reaches_with_basins(reaches, basins, config) -> list[RiverBasinRow]`.
@@ -187,7 +196,7 @@ def test_cycle_and_ratio_over_one_are_fatal():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/river/test_basin_overlay.py tests/unit/silver/river/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_basin_overlay.py tests/unit/pipelines/silver_river/test_quality.py -q`
 Mong đợi: FAIL vì overlay/DQ are absent.
 
 - [ ] **Bước 3: Triển khai spatial index, ngữ nghĩa quan hệ và các rule có tên**
@@ -196,23 +205,23 @@ Tính `length_inside_km` sau phép giao trong CRS mét. `spatial_relation` là `
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/river/test_basin_overlay.py tests/unit/silver/river/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_basin_overlay.py tests/unit/pipelines/silver_river/test_quality.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit chồng lớp và DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/river/basin_overlay.py src/flashflood_data/orchestration/silver/river/quality.py tests/unit/silver/river/test_basin_overlay.py tests/unit/silver/river/test_quality.py
+git add src/flashflood_data/pipelines/silver_river/basin_overlay.py src/flashflood_data/pipelines/silver_river/quality.py tests/unit/pipelines/silver_river/test_basin_overlay.py tests/unit/pipelines/silver_river/test_quality.py
 git commit -m "feat: relate river reaches to basins"
 ```
 
 ### Công việc 4: Thêm service, DAG chạy thủ công, kiểm thử tích hợp và tài liệu
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/river/service.py`
-- Tạo: `src/flashflood_data/orchestration/silver/river/factory.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/pipeline.py`
+- Tạo: `src/flashflood_data/pipelines/silver_river/runtime.py`
 - Tạo: `airflow/dags/silver_river_network.py`
-- Tạo: `tests/unit/silver/river/test_service.py`
+- Tạo: `tests/unit/pipelines/silver_river/test_pipeline.py`
 - Tạo: `tests/integration/silver/test_river_pipeline.py`
 - Sửa: `tests/contract/infra/test_silver_dags.py`
 - Sửa: `README.md`
@@ -240,7 +249,7 @@ def test_river_dag_waits_for_all_compute_batches(dag_bag):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/river/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: FAIL vì service/DAG are absent.
 
 - [ ] **Bước 3: Triển khai service và TaskFlow graph**
@@ -249,16 +258,25 @@ Dùng discovery chung với snapshot river Bronze và basin Silver. Tính theo b
 
 - [ ] **Bước 4: Chạy kiểm thử domain**
 
-Chạy: `pytest tests/unit/silver/river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/river airflow/dags/silver_river_network.py tests/unit/silver/river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_river airflow/dags/silver_river_network.py tests/unit/pipelines/silver_river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver river network DAG"
 ```
 
 ## Điểm kiểm tra
 
 Kiểm tra số reach, tổng chiều dài, cycle, endpoint dangling và ratio giao basin bằng Trino. Duyệt network version trước khi pipeline exposure dùng nó để tìm crossing.
+
+## Bổ sung DQ domain (11/10/2026)
+
+- Fatal: reach key trùng, geometry không hợp lệ, chiều dài không dương, graph cycle, internal target
+  thiếu, ratio giao basin ngoài `[0,1]`.
+- Reject row: reach không có identity/geometry dùng được sau repair.
+- Warning: endpoint dangling hoặc snap mơ hồ, reach chỉ chạm biên basin với chiều dài giao bằng 0.
+
+Row reject đi `quarantine.rejected_rows`; topology fatal chặn toàn snapshot network.

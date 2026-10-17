@@ -1,0 +1,38 @@
+policy_name: bronze_weather
+policy_version: v1
+layer: bronze
+defaults:
+  published_quality_status: [passed, warning]
+  negative_flux_tolerance: 1.0e-6
+  maximum_null_cell_ratio: 0.05
+rules:
+  - rule_id: object_checksum
+    rule_version: v1
+    severity: fatal
+  - rule_id: object_readable
+    rule_version: v1
+    severity: fatal
+  - rule_id: nonempty_weather_parse
+    rule_version: v1
+    severity: fatal
+  - rule_id: parallel_array_lengths
+    rule_version: v1
+    severity: fatal
+  - rule_id: source_grid_complete
+    rule_version: v1
+    severity: fatal
+  - rule_id: unit_present
+    rule_version: v1
+    severity: fatal
+  - rule_id: temporal_window_valid
+    rule_version: v1
+    severity: fatal
+  - rule_id: nonnegative_flux
+    rule_version: v1
+    severity: reject
+  - rule_id: negative_flux_clamped
+    rule_version: v1
+    severity: warning
+  - rule_id: null_cell_ratio
+    rule_version: v1
+    severity: warning

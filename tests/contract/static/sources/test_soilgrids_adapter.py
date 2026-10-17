@@ -18,8 +18,14 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.static.sources.base import SourceConfigurationError, SourceContext
-from flashflood_data.static.sources.soilgrids import SoilGridsAdapter, parse_coverages
+from flashflood_data.pipelines.static_landing.adapters.base import (
+    SourceConfigurationError,
+    SourceContext,
+)
+from flashflood_data.pipelines.static_landing.adapters.soilgrids import (
+    SoilGridsAdapter,
+    parse_coverages,
+)
 
 PROPERTIES = ("clay", "sand", "silt", "bdod", "cfvo", "wv0010", "wv0033", "wv1500")
 DEPTHS = ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm")
@@ -37,9 +43,9 @@ def context(tmp_path: Path) -> SourceContext:
     paths.ensure_output_dirs()
     aoi_dir = paths.harmonized / "aoi"
     aoi_dir.mkdir(parents=True, exist_ok=True)
-    gpd.GeoDataFrame({"aoi": ["environmental"]}, geometry=[box(104, 20, 105, 21)], crs="EPSG:4326").to_parquet(
-        aoi_dir / "environmental_aoi.geoparquet", index=False
-    )
+    gpd.GeoDataFrame(
+        {"aoi": ["environmental"]}, geometry=[box(104, 20, 105, 21)], crs="EPSG:4326"
+    ).to_parquet(aoi_dir / "environmental_aoi.geoparquet", index=False)
     return SourceContext(
         paths=paths,
         catalog=AssetCatalog(paths),
@@ -115,9 +121,7 @@ def test_resolve_and_validation_accept_gzip_encoded_capabilities_without_renamin
 ) -> None:
     capabilities = tmp_path / "wv0033" / "capabilities.xml"
     capabilities.parent.mkdir()
-    capabilities.write_bytes(
-        gzip.compress((fixture_dir / "wv0033_capabilities.xml").read_bytes())
-    )
+    capabilities.write_bytes(gzip.compress((fixture_dir / "wv0033_capabilities.xml").read_bytes()))
 
     result = adapter.validate_raw(capabilities)
     remotes = adapter.resolve(
@@ -156,7 +160,10 @@ def test_resolve_emits_eight_by_six_by_two_coverages(
 
     assert len(coverage_assets) == 8 * 6 * 2
     assert all(asset.target_relative_path.suffix == ".tif" for asset in coverage_assets)
-    assert all(asset.target_relative_path.parts[:3] == ("raw", "soilgrids", "2.0") for asset in coverage_assets)
+    assert all(
+        asset.target_relative_path.parts[:3] == ("raw", "soilgrids", "2.0")
+        for asset in coverage_assets
+    )
     request = parse_qs(urlsplit(coverage_assets[0].uri).query)
     assert request["SERVICE"] == ["WCS"]
     assert request["VERSION"] == ["2.0.1"]
@@ -211,8 +218,15 @@ def test_resolve_reuses_covering_raw_and_versions_expanded_bbox(
 
     def write_raster(path: Path, west: float, east: float) -> None:
         with rasterio.open(
-            path, "w", driver="GTiff", width=10, height=10, count=1,
-            dtype="int16", crs="EPSG:4326", nodata=-32768,
+            path,
+            "w",
+            driver="GTiff",
+            width=10,
+            height=10,
+            count=1,
+            dtype="int16",
+            crs="EPSG:4326",
+            nodata=-32768,
             transform=from_origin(west, 21, (east - west) / 10, 0.1),
         ) as dataset:
             dataset.write(np.ones((10, 10), dtype="int16"), 1)

@@ -1,0 +1,50 @@
+policy_name: silver_basin_topology
+policy_version: v1
+layer: silver
+
+defaults:
+  published_quality_status: [passed, warning]
+
+rules:
+  # Fatal findings block publication of both dim_basin and basin_edge because
+  # they make the selected basin snapshot or its directed graph unreliable.
+  - rule_id: basin_business_key_unique #Kiểm tra trùng business key
+    rule_version: v1
+    severity: fatal
+  - rule_id: basin_geometry_valid #Kiểm tra geometry hợp lệ
+    rule_version: v1
+    severity: fatal
+  - rule_id: basin_area_positive #Kiểm tra diện tích dương
+    rule_version: v1
+    severity: fatal
+  - rule_id: basin_topology_acyclic #Kiểm tra topology không có chu trình
+    rule_version: v1
+    severity: fatal
+  - rule_id: basin_internal_target_exists #Kiểm tra tồn tại của downstream mà basin nội bổ trỏ tới
+    rule_version: v1
+    severity: fatal
+
+  # Reject findings quarantine only the affected input basin. The remaining
+  # valid rows may continue through normalization and topology construction.
+  - rule_id: basin_source_id_present #Kiểm tra source_id tồn tại
+    rule_version: v1
+    severity: reject
+  - rule_id: basin_atlas_joinable #Kiểm tra join với Basin Atlas
+    rule_version: v1
+    severity: reject
+
+  # Warning findings preserve the Silver row and its explicit quality result.
+  - rule_id: basin_geometry_repaired #Kiểm tra geometry có sửa không
+    rule_version: v1
+    severity: warning
+  - rule_id: basin_area_consistent #Kiểm tra diện tích có nhất quán không
+    rule_version: v1
+    severity: warning
+    parameters:
+      relative_tolerance: 0.05
+  - rule_id: basin_sort_hint_consistent #Kiểm tra SORT không khớp
+    rule_version: v1
+    severity: warning
+  - rule_id: basin_sink_metadata_complete #Kiểm tra metadata của sink có đầy đủ không
+    rule_version: v1
+    severity: warning

@@ -1,0 +1,43 @@
+# Contract for the first Bronze-to-Silver domain pipeline.
+pipeline_id: silver_basin_topology
+contract_version: "1"
+
+# Both sources are read from one pinned Bronze snapshot. HydroBASINS owns
+# geometry/topology; BasinATLAS may only contribute explicitly mapped fields.
+input_table: bronze.basin_polygon_raw
+hydro_source_id: hydrobasins_v1c
+atlas_source_id: basinatlas_v10
+hydrobasins_level: 12
+authoritative_geometry_source: hydrobasins_v1c
+authoritative_topology_source: hydrobasins_v1c
+
+output_tables:
+  basin: silver.dim_basin
+  edge: silver.basin_edge
+
+# Silver geometry is canonical WGS84. Version strings are part of the build
+# identity, so changing normalization or graph logic creates a new version.
+target_crs: EPSG:4326
+transform_version: basin-normalize-v1 #Phiên bản logic chuẩn hóa geometry và field
+topology_version: basin-topology-v1  #Phiên bản thuật toán tạo graph
+revision_policy_version: basin-revision-v1 #Phiên bản quy tắc chọn source revision hiện hành
+quality_policy_path: config/quality/silver_basin_topology.yaml
+
+# Only these source fields may enter the canonical basin dimension. IDs remain
+# strings to avoid losing digits or changing provider identity.
+field_map:
+  basin_id: HYBAS_ID
+  next_down_id: NEXT_DOWN
+  main_basin_id: MAIN_BAS
+  pfaf_id: PFAF_ID
+  topology_sort_hint: SORT
+  basin_area_km2: SUB_AREA
+  upstream_area_km2: UP_AREA
+  distance_to_main_sink_km: DIST_MAIN
+  next_sink_id: NEXT_SINK
+  distance_to_sink_km: DIST_SINK
+
+edge_statuses:
+  - internal   #basin hạ nguồn cũng nằm trong AOI.
+  - exits_AOI  #NEXT_DOWN tồn tại nhưng basin đó nằm ngoài AOI.
+  - terminal   #basin kết thúc tại sink/outlet, không có downstream.

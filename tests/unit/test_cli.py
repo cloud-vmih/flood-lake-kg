@@ -1,5 +1,10 @@
+"""CLI contracts for the supported AOI, landing, and Bronze entry points."""
+
+from __future__ import annotations
+
 import importlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
@@ -7,144 +12,61 @@ import pytest
 from typer.testing import CliRunner
 
 from flashflood_data.cli import app
-from flashflood_data.static.sources.base import SourceConfigurationError
-from flashflood_data.static.sources.cop_dem import MissingCredentials
-from flashflood_data.static.workflow import RunSummary, Stage
-from flashflood_data.storage.http import BudgetRejected
 
 CLI_MODULE = importlib.import_module("flashflood_data.cli.app")
+LANDING_RUNTIME = importlib.import_module("flashflood_data.pipelines.static_landing.runtime")
 
 
-def test_cli_lists_static_stages() -> None:
+def test_cli_lists_only_supported_top_level_commands() -> None:
     result = CliRunner().invoke(app, ["--help"])
+
     assert result.exit_code == 0
-    for command in (
-        "inventory",
-        "fetch",
-        "validate",
-        "harmonize",
-        "derive",
-        "map",
-        "run-static",
-        "land-static",
-        "cleanup",
-    ):
+    for command in ("build-aoi", "land-static", "bronze"):
         assert command in result.stdout
+    assert "run-static" not in result.stdout
 
 
-class RecordingPipeline:
-    calls: ClassVar[list[tuple[list[Stage], list[str] | None, bool, str]]] = []
+@dataclass(frozen=True)
+class _AoiResult:
+    run_id: str
 
-    def __init__(self, paths, *, profile: str) -> None:
-        self.paths = paths
-        self.profile = profile
-
-    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
-        self.calls.append((list(stages), source_ids, resolve_only, command))
-        return RunSummary(run_id="fixture", status="completed")
+    def to_document(self) -> dict[str, str]:
+        return {"run_id": self.run_id, "status": "completed"}
 
 
-def test_fetch_routes_sources_and_resolve_only_to_pipeline(monkeypatch, tmp_path: Path) -> None:
-    RecordingPipeline.calls = []
-    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", RecordingPipeline)
+class RecordingAoiPipeline:
+    calls: ClassVar[list[str | None]] = []
 
+    def run(self, run_id=None):
+        self.calls.append(run_id)
+        return _AoiResult(run_id or "generated")
+
+
+def test_build_aoi_routes_root_and_run_id(monkeypatch, tmp_path: Path) -> None:
+    RecordingAoiPipeline.calls = []
+    roots: list[Path | None] = []
+
+    def build(root=None):
+        roots.append(root)
+        return RecordingAoiPipeline()
+
+    monkeypatch.setattr(CLI_MODULE, "build_study_area_pipeline", build)
     result = CliRunner().invoke(
         app,
-        [
-            "fetch",
-            "--root",
-            str(tmp_path),
-            "--source",
-            "first",
-            "--source",
-            "second",
-            "--resolve-only",
-            "--json-summary",
-        ],
+        ["build-aoi", "--root", str(tmp_path), "--run-id", "aoi-1", "--json-summary"],
     )
 
-    assert result.exit_code == 0
-    assert RecordingPipeline.calls == [([Stage.FETCH], ["first", "second"], True, "fetch")]
-    assert json.loads(result.stdout)["status"] == "completed"
-
-
-def test_run_static_uses_verified_prefix_and_live_profile(monkeypatch, tmp_path: Path) -> None:
-    RecordingPipeline.calls = []
-    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", RecordingPipeline)
-
-    result = CliRunner().invoke(
-        app,
-        ["run-static", "--root", str(tmp_path), "--profile", "live", "--stop-after", "aoi"],
-    )
-
-    assert result.exit_code == 0
-    assert RecordingPipeline.calls == [
-        ([Stage.INVENTORY, Stage.BOOTSTRAP_ADMIN, Stage.AOI], None, False, "run-static")
-    ]
-
-
-def test_map_routes_to_its_own_stage(monkeypatch, tmp_path: Path) -> None:
-    RecordingPipeline.calls = []
-    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", RecordingPipeline)
-
-    result = CliRunner().invoke(app, ["map", "--root", str(tmp_path)])
-
-    assert result.exit_code == 0
-    assert RecordingPipeline.calls[0][0][0].value == "map"
-
-
-class CredentialsPipeline(RecordingPipeline):
-    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
-        raise MissingCredentials("CDSE credentials missing")
-
-
-def test_cli_treats_missing_credentials_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", CredentialsPipeline)
-
-    result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
-
-    assert result.exit_code == 2
-
-
-class BudgetPipeline(RecordingPipeline):
-    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
-        raise BudgetRejected("minimum_free_space")
-
-
-def test_cli_treats_budget_rejection_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", BudgetPipeline)
-
-    result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
-
-    assert result.exit_code == 2
-
-
-class ConfigurationPipeline(RecordingPipeline):
-    def run(self, stages, source_ids, *, resolve_only: bool, command: str) -> RunSummary:
-        raise SourceConfigurationError("fixture setting is invalid")
-
-
-def test_cli_treats_typed_adapter_configuration_as_configuration_error(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("flashflood_data.cli.StaticPipeline", ConfigurationPipeline)
-
-    result = CliRunner().invoke(app, ["fetch", "--root", str(tmp_path)])
-
-    assert result.exit_code == 2
-
-
-def test_run_static_rejects_unknown_profile(tmp_path: Path) -> None:
-    result = CliRunner().invoke(
-        app, ["run-static", "--root", str(tmp_path), "--profile", "offline"]
-    )
-
-    assert result.exit_code == 2
+    assert result.exit_code == 0, result.output
+    assert roots == [tmp_path]
+    assert RecordingAoiPipeline.calls == ["aoi-1"]
+    assert json.loads(result.stdout) == {"run_id": "aoi-1", "status": "completed"}
 
 
 class RecordingLandingService:
     calls: ClassVar[list[tuple[list[str], str | None]]] = []
 
     def run(self, source_ids, run_id=None):
-        from flashflood_data.orchestration.landing.models import LandingRunSummary
+        from flashflood_data.pipelines.static_landing.models import LandingRunSummary
 
         self.calls.append((list(source_ids), run_id))
         return LandingRunSummary(
@@ -154,9 +76,7 @@ class RecordingLandingService:
         )
 
 
-def test_landing_service_uses_project_root_environment(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_landing_service_uses_project_root_environment(monkeypatch, tmp_path: Path) -> None:
     class StopAfterPathCheck(RuntimeError):
         pass
 
@@ -165,10 +85,10 @@ def test_landing_service_uses_project_root_environment(
         raise StopAfterPathCheck
 
     monkeypatch.setenv("FLASHFLOOD_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setattr(CLI_MODULE, "load_study_area", check_study_area_path)
+    monkeypatch.setattr(LANDING_RUNTIME, "load_study_area", check_study_area_path)
 
     with pytest.raises(StopAfterPathCheck):
-        CLI_MODULE.build_static_landing_service()
+        LANDING_RUNTIME.build_static_landing_service()
 
 
 def test_land_static_routes_sources_and_run_id(monkeypatch, tmp_path: Path) -> None:
@@ -228,7 +148,7 @@ def test_land_static_uses_all_configured_sources_by_default(monkeypatch, tmp_pat
 
 
 def test_land_static_returns_nonzero_for_incomplete_run(monkeypatch, tmp_path: Path) -> None:
-    from flashflood_data.orchestration.landing.models import LandingRunSummary
+    from flashflood_data.pipelines.static_landing.models import LandingRunSummary
 
     class IncompleteService:
         def run(self, source_ids, run_id=None):

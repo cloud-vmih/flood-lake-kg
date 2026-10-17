@@ -1,0 +1,876 @@
+import json
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
+
+import pytest
+
+from flashflood_data.catalog import AssetCatalog
+from flashflood_data.catalog.models import (
+    AssetKind,
+    AssetRecord,
+    AssetStatus,
+    RemoteAsset,
+    SourceSpec,
+    ValidationResult,
+)
+from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
+from flashflood_data.core.paths import ProjectPaths
+from flashflood_data.pipelines.static_landing.acquisition import SourceLandingError
+from flashflood_data.pipelines.static_landing.config import (
+    LandingSourcePolicy,
+    StaticLandingConfig,
+)
+from flashflood_data.pipelines.static_landing.models import PreparedObject, RegisteredBatch
+from flashflood_data.pipelines.static_landing.pipeline import StaticSourceLandingService
+from flashflood_data.shared.quality import (
+    DataQualityBlock,
+    QualityEvaluation,
+    QualityFinding,
+    QuarantineRepository,
+)
+from flashflood_data.storage.http import BudgetRejected, DownloadFailed, ExistingAssetConflict
+from flashflood_data.storage.object_store import (
+    ObjectConflict,
+    ObjectPublisher,
+    ObjectVerificationError,
+)
+
+
+class MemoryObjectStore:
+    def __init__(self) -> None:
+        self.data: dict[str, bytes] = {}
+        self.quarantine: dict[str, dict[str, dict[str, object]]] = {}
+
+    def exists(self, key: str) -> bool:
+        return key in self.data
+
+    def size(self, key: str) -> int:
+        return len(self.data[key])
+
+    def sha256(self, key: str) -> str:
+        return sha256(self.data[key]).hexdigest()
+
+    def upload(self, local_path: Path, key: str, metadata: Mapping[str, str]) -> None:
+        self.data[key] = local_path.read_bytes()
+
+    def copy(self, source_key: str, destination_key: str) -> None:
+        self.data[destination_key] = self.data[source_key]
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+    def read(self, key: str) -> bytes:
+        return self.data[key]
+
+    def download(self, key: str, local_path: Path) -> None:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(self.data[key])
+
+    def upsert_quarantine_rows(self, identifier, key_fields, rows):
+        target = self.quarantine.setdefault(identifier[1], {})
+        for row in rows:
+            target[str(row[key_fields[0]])] = dict(row)
+        return len(target)
+
+
+class LandingMeta:
+    def __init__(self) -> None:
+        self.runs: list[dict[str, object]] = []
+        self.qualities: list[dict[str, object]] = []
+
+    def record_run(self, row):
+        self.runs.append(dict(row))
+        return len(self.runs)
+
+    def record_qualities(self, rows):
+        requested = [dict(row) for row in rows]
+        self.qualities.extend(requested)
+        return len(requested)
+
+
+class FakeInventory:
+    def __init__(self) -> None:
+        self.object_ids: set[str] = set()
+        self.rows = {}
+
+    def register_many(self, rows):
+        reused = sum(row.object_id in self.object_ids for row in rows)
+        self.object_ids.update(row.object_id for row in rows)
+        self.rows.update({row.object_id: row for row in rows})
+        return RegisteredBatch(
+            source_id=rows[0].source_id,
+            run_id=rows[0].ingest_run_id,
+            object_ids=tuple(row.object_id for row in rows),
+            snapshot_id=42,
+            reused=reused,
+        )
+
+    def source_locations(self, source_id: str):
+        return {
+            (row.asset_id, row.source_version, row.checksum): (row.object_uri, row.size_bytes)
+            for row in self.rows.values()
+            if row.source_id == source_id
+        }
+
+
+def _prepared(staging: Path, source_id: str, run_id: str) -> PreparedObject:
+    path = staging / run_id / source_id / "source.bin"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(f"verified-{source_id}".encode())
+    return PreparedObject(
+        source_id=source_id,
+        source_version="1",
+        asset_id=f"asset-{source_id}",
+        path=path,
+        filename="source.bin",
+        media_type="application/octet-stream",
+        source_uri="https://user:password@example.invalid/source?token=secret",
+        license_id="fixture-license",
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        selection={"basin_level": 12},
+    )
+
+
+def _service(tmp_path: Path, *, failing_source: str | None = None) -> StaticSourceLandingService:
+    sources = tuple(
+        LandingSourcePolicy(source_id=source_id, mode="individual")
+        for source_id in ("hydrobasins_v1c", "basinatlas_v10")
+    )
+    staging = tmp_path / "staging"
+
+    def prepare(source_id: str, run_id: str):
+        if source_id == failing_source:
+            error = SourceLandingError("password=secret")
+            error.code = "fixture_failure"
+            raise error
+        return (_prepared(staging, source_id, run_id),)
+
+    store = MemoryObjectStore()
+    return StaticSourceLandingService(
+        config=StaticLandingConfig(basin_level=12, sources=sources),
+        publisher=ObjectPublisher(store, "raw"),
+        inventory=FakeInventory(),
+        staging_root=staging,
+        source_preparer=prepare,
+    )
+
+
+def test_service_publishes_manifest_before_registering_and_cleans_after_commit(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+
+    batch = service.publish_source("hydrobasins_v1c", run_id="run-1")
+
+    assert service.store.exists(batch.objects[0].object_key)
+    assert service.store.exists(batch.objects[0].manifest_key)
+    assert (tmp_path / "staging" / "run-1" / "hydrobasins_v1c").exists()
+    registered = service.register_batch(batch)
+    service.cleanup_batch(registered)
+    assert registered.snapshot_id == 42
+    assert not (tmp_path / "staging" / "run-1" / "hydrobasins_v1c").exists()
+
+
+def test_service_cleans_failed_source_staging_before_the_next_source(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    source_root = tmp_path / "staging" / "run-1" / "hydrobasins_v1c"
+    source_root.mkdir(parents=True)
+    (source_root / "partial.bin").write_bytes(b"partial")
+
+    service.cleanup_failed_source("hydrobasins_v1c", "run-1")
+
+    assert not source_root.exists()
+
+
+def test_landing_data_failure_is_audited_without_registering_source_object(
+    tmp_path: Path,
+) -> None:
+    source_id = "hydrobasins_v1c"
+    evaluation = QualityEvaluation.from_parts(
+        accepted_rows=(),
+        rejected_rows=(),
+        findings=(
+            QualityFinding(
+                rule_id="object_checksum",
+                rule_version="v1",
+                status="failed",
+                severity="fatal",
+                scope_key="asset-bad",
+                observed_value={"checksum_valid": False},
+                expected_value={"checksum_valid": True},
+                failed_row_count=1,
+            ),
+        ),
+        input_row_count=0,
+    )
+
+    def prepare(_source_id: str, _run_id: str):
+        raise DataQualityBlock("checksum mismatch", evaluation)
+
+    store = MemoryObjectStore()
+    inventory = FakeInventory()
+    meta = LandingMeta()
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(store, "raw"),
+        inventory=inventory,
+        staging_root=tmp_path / "staging",
+        source_preparer=prepare,
+        meta=meta,
+        quarantine=QuarantineRepository(store),
+        catalog_name="flood_lakehouse",
+    )
+
+    with pytest.raises(DataQualityBlock):
+        service.publish_source(source_id, "run-1")
+
+    assert inventory.rows == {}
+    assert meta.runs[-1]["status"] == "failed_data_quality"
+    assert meta.qualities[-1]["rule_id"] == "object_checksum"
+    assert len(store.quarantine["rejected_objects"]) == 1
+
+
+def test_landing_operational_failure_does_not_create_quality_rejection(
+    tmp_path: Path,
+) -> None:
+    source_id = "hydrobasins_v1c"
+
+    def prepare(_source_id: str, _run_id: str):
+        raise DownloadFailed("provider timed out")
+
+    store = MemoryObjectStore()
+    meta = LandingMeta()
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(store, "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_preparer=prepare,
+        meta=meta,
+        quarantine=QuarantineRepository(store),
+    )
+
+    with pytest.raises(DownloadFailed, match="timed out"):
+        service.publish_source(source_id, "run-1")
+
+    assert meta.runs == []
+    assert meta.qualities == []
+    assert store.quarantine == {}
+
+
+def test_recovery_reuses_objects_manifests_and_inventory_rows(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    first_registered = service.register_batch(first)
+
+    second = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    second_registered = service.register_batch(second)
+
+    assert all(item.reused for item in second.objects)
+    assert first_registered.object_ids == second_registered.object_ids
+    assert second_registered.reused == 1
+
+
+def test_later_run_reuses_existing_object_manifest(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    service.register_batch(first)
+
+    second = service.publish_source("hydrobasins_v1c", run_id="run-2")
+
+    assert all(item.reused for item in second.objects)
+    assert second.objects[0].manifest_uri == first.objects[0].manifest_uri
+
+
+def test_later_run_rejects_corrupt_existing_manifest(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    service.register_batch(first)
+    service.store.data[first.objects[0].manifest_key] = b"{}"
+
+    with pytest.raises(ObjectConflict, match="immutable manifest conflict"):
+        service.publish_source("hydrobasins_v1c", run_id="run-2")
+
+
+def test_later_run_rejects_manifest_with_different_checksum_contract(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    first = service.publish_source("hydrobasins_v1c", run_id="run-1")
+    manifest_key = first.objects[0].manifest_key
+    manifest = json.loads(service.store.data[manifest_key])
+    manifest["checksum_algorithm"] = "md5"
+    service.store.data[manifest_key] = json.dumps(manifest).encode()
+
+    with pytest.raises(ObjectConflict, match="immutable manifest conflict"):
+        service.publish_source("hydrobasins_v1c", run_id="run-2")
+
+
+def test_run_continues_independent_source_and_reports_sanitized_partial_failure(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, failing_source="basinatlas_v10")
+
+    summary = service.run(["hydrobasins_v1c", "basinatlas_v10"], run_id="run-1")
+
+    assert summary.status == "partial_failure"
+    assert summary.completed_sources == ("hydrobasins_v1c",)
+    assert summary.failed_sources == ("basinatlas_v10",)
+    assert summary.errors == {"basinatlas_v10": "fixture_failure"}
+    assert "secret" not in summary.model_dump_json()
+
+
+def test_storage_budget_rejection_has_an_actionable_error_code() -> None:
+    error = BudgetRejected("minimum_free_space")
+
+    assert StaticSourceLandingService._error_code(error) == "storage_budget_rejected"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ExistingAssetConflict("fixture"), "existing_asset_conflict"),
+        (DownloadFailed("fixture"), "source_download_failed"),
+        (ObjectVerificationError("fixture"), "object_verification_failed"),
+    ],
+)
+def test_source_failures_have_actionable_error_codes(error: Exception, expected: str) -> None:
+    assert StaticSourceLandingService._error_code(error) == expected
+
+
+def test_missing_validated_remote_without_inventory_is_marked_stale(
+    tmp_path: Path,
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    missing = paths.raw / "worldcover" / "grid.geojson"
+    record = AssetRecord(
+        asset_id="worldcover-grid",
+        source_id="esa_worldcover_2021_v200",
+        source_version="2021-v200",
+        kind=AssetKind.RAW,
+        source_uri="https://example.invalid/grid.geojson",
+        storage_path=str(missing),
+        media_type="application/geo+json",
+        size_bytes=12,
+        checksum="0" * 64,
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        license_id="fixture",
+        pipeline_run_id="run-1",
+        status=AssetStatus.VALIDATED,
+    )
+    catalog.upsert(record)
+    source_id = record.source_id
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="worldcover",
+                version="2021-v200",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=catalog,
+    )
+
+    service._restore_missing_remote_assets(source_id)
+
+    assert catalog.get(record.asset_id).status is AssetStatus.STALE
+
+
+def test_missing_local_payload_restored_by_operator_is_revalidated(
+    tmp_path: Path,
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    grid = paths.raw / "worldcover" / "2021-v200" / "grid.geojson"
+    payload = b'{"type":"FeatureCollection","features":[]}'
+    record = AssetRecord(
+        asset_id="worldcover-grid",
+        source_id="esa_worldcover_2021_v200",
+        source_version="2021-v200",
+        kind=AssetKind.RAW,
+        source_uri="https://example.invalid/grid.geojson",
+        storage_path=str(grid),
+        media_type="application/geo+json",
+        size_bytes=len(payload),
+        checksum=sha256(payload).hexdigest(),
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        license_id="fixture",
+        pipeline_run_id="run-1",
+        status=AssetStatus.VALIDATED,
+    )
+    catalog.upsert(record)
+    catalog.transition(
+        record.asset_id,
+        AssetStatus.STALE,
+        error_code="local_payload_missing",
+        error_message="validated local payload is unavailable",
+    )
+    grid.parent.mkdir(parents=True)
+    grid.write_bytes(payload)
+    source_id = record.source_id
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="worldcover",
+                version="2021-v200",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=catalog,
+    )
+
+    service._restore_missing_remote_assets(source_id)
+
+    restored = catalog.get(record.asset_id)
+    assert restored.status is AssetStatus.VALIDATED
+    assert restored.error_code is None
+    assert restored.error_message is None
+
+
+def test_prepare_run_inventories_only_the_selected_existing_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source_id = "basinatlas_v10"
+    observed: dict[str, object] = {}
+
+    def record_inventory(context, **kwargs):
+        observed["run_id"] = context.run_id
+        observed.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.pipeline.inventory_existing",
+        record_inventory,
+    )
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(
+                LandingSourcePolicy(
+                    source_id=source_id,
+                    mode="shapefile_bundle",
+                    filename_contains="BasinATLAS_v10_lev12.shp",
+                    output_name="basinatlas_l12.zip",
+                ),
+            ),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="existing",
+                version="10",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        fetcher=object(),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+    )
+
+    service.prepare_run(source_id, "run-1")
+
+    rules = observed["rules"]
+    assert observed["run_id"] == "run-1"
+    assert [rule.source_id for rule in rules] == [source_id]
+    assert [rule.glob for rule in rules] == [
+        "BasinATLAS_Data_v10_shp/BasinATLAS_v10_shp/BasinATLAS_v10_lev12.shp"
+    ]
+    assert observed["preserve_cache"] is True
+    assert observed["write_report"] is False
+
+
+def test_prepare_run_skips_legacy_inventory_for_remote_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source_id = "esa_worldcover_2021_v200"
+
+    def fail_inventory(*args, **kwargs):
+        raise AssertionError("remote source must not scan legacy dataset rules")
+
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.pipeline.inventory_existing",
+        fail_inventory,
+    )
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="worldcover",
+                version="2021-v200",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        fetcher=object(),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+    )
+
+    service.prepare_run(source_id, "run-1")
+
+
+def test_existing_source_preparation_reuses_current_inventory_without_rehashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    source_id = "basinatlas_v10"
+    payload = paths.dataset / "BasinATLAS_v10_lev12.shp"
+    payload.write_bytes(b"fixture")
+    record = AssetRecord(
+        asset_id="basinatlas-l12",
+        source_id=source_id,
+        source_version="10",
+        kind=AssetKind.RAW,
+        source_uri=payload.as_uri(),
+        storage_path=str(payload),
+        media_type="application/x-esri-shapefile",
+        size_bytes=payload.stat().st_size,
+        checksum=sha256(payload.read_bytes()).hexdigest(),
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+        license_id="fixture",
+        pipeline_run_id="run-1",
+        status=AssetStatus.VALIDATED,
+    )
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.pipeline.inventory_existing",
+        lambda context, **kwargs: [record],
+    )
+
+    def fail_acquire(*args, **kwargs):
+        raise AssertionError("current legacy inventory must not be hashed again")
+
+    def record_preparation(policy, records, **kwargs):
+        observed["records"] = records
+        return ()
+
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.pipeline.acquire_validated_assets",
+        fail_acquire,
+    )
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.pipeline.prepare_source_objects",
+        record_preparation,
+    )
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(
+                LandingSourcePolicy(
+                    source_id=source_id,
+                    mode="shapefile_bundle",
+                    filename_contains=payload.name,
+                    output_name="basinatlas_l12.zip",
+                ),
+            ),
+        ),
+        publisher=ObjectPublisher(MemoryObjectStore(), "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_specs={
+            source_id: SourceSpec(
+                source_id=source_id,
+                adapter="existing",
+                version="10",
+                license_id="fixture",
+            )
+        },
+        paths=paths,
+        catalog=AssetCatalog(paths),
+        fetcher=object(),
+        study_area=StudyAreaConfig(),
+        environment=EnvironmentSettings(_env_file=None),
+    )
+
+    service.prepare_run(source_id, "run-1")
+    service._prepare_source(source_id, "run-1")
+
+    assert observed["records"] == (record,)
+
+
+def test_committed_remote_raw_is_removed_but_existing_source_is_preserved(tmp_path: Path) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    sources = {
+        "gadm_vnm_4_1": "gadm_admin",
+        "hydrobasins_v1c": "existing",
+    }
+    policies = tuple(LandingSourcePolicy(source_id=name, mode="individual") for name in sources)
+    files = {
+        "gadm_vnm_4_1": paths.raw / "gadm.zip",
+        "hydrobasins_v1c": paths.raw / "hydrobasins.zip",
+    }
+    for source_id, path in files.items():
+        path.write_bytes(source_id.encode())
+        catalog.upsert(
+            AssetRecord(
+                asset_id=f"asset-{source_id}",
+                source_id=source_id,
+                source_version="1",
+                kind=AssetKind.RAW,
+                source_uri="https://example.invalid/source",
+                storage_path=str(path),
+                media_type="application/zip",
+                size_bytes=path.stat().st_size,
+                checksum=sha256(path.read_bytes()).hexdigest(),
+                retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+                license_id="fixture",
+                pipeline_run_id="run-1",
+                status=AssetStatus.VALIDATED,
+            )
+        )
+
+    def prepare(source_id: str, run_id: str):
+        path = files[source_id]
+        return (
+            PreparedObject(
+                source_id=source_id,
+                source_version="1",
+                asset_id=f"asset-{source_id}",
+                path=path,
+                filename=path.name,
+                media_type="application/zip",
+                source_uri="https://example.invalid/source",
+                license_id="fixture",
+                retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+            ),
+        )
+
+    store = MemoryObjectStore()
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(basin_level=12, sources=policies),
+        publisher=ObjectPublisher(store, "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_preparer=prepare,
+        source_specs={
+            name: SourceSpec(source_id=name, adapter=adapter, version="1", license_id="fixture")
+            for name, adapter in sources.items()
+        },
+        paths=paths,
+        catalog=catalog,
+    )
+
+    remote_batch = service.publish_source("gadm_vnm_4_1", "run-1")
+    local_batch = service.publish_source("hydrobasins_v1c", "run-1")
+    assert all(path.exists() for path in files.values())
+
+    service.cleanup_batch(service.register_batch(remote_batch))
+    service.cleanup_batch(service.register_batch(local_batch))
+
+    assert not files["gadm_vnm_4_1"].exists()
+    assert files["hydrobasins_v1c"].exists()
+
+
+def test_later_run_restores_committed_remote_raw_from_minio_without_provider_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    raw = paths.raw / "gadm.zip"
+    raw.write_bytes(b"raw-from-provider")
+    checksum = sha256(raw.read_bytes()).hexdigest()
+    source_id = "gadm_vnm_4_1"
+    catalog.upsert(
+        AssetRecord(
+            asset_id="gadm-asset",
+            source_id=source_id,
+            source_version="1",
+            kind=AssetKind.RAW,
+            source_uri="https://example.invalid/gadm.zip",
+            storage_path=str(raw),
+            media_type="application/zip",
+            size_bytes=raw.stat().st_size,
+            checksum=checksum,
+            retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+            license_id="fixture",
+            pipeline_run_id="run-1",
+            status=AssetStatus.VALIDATED,
+        )
+    )
+    remote = RemoteAsset(
+        asset_id="gadm-asset",
+        source_id=source_id,
+        source_version="1",
+        uri="https://example.invalid/gadm.zip",
+        target_relative_path=Path("raw/gadm.zip"),
+        media_type="application/zip",
+        license_id="fixture",
+        expected_size=raw.stat().st_size,
+        expected_checksum=checksum,
+    )
+
+    class Adapter:
+        def resolve(self, context, available):
+            return [remote]
+
+        def validate_raw(self, path):
+            return ValidationResult(passed=True, checks={"valid": True})
+
+    class Fetcher:
+        def fetch(self, remote, run_id):
+            raise AssertionError("provider must not be fetched again")
+
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.acquisition.build_adapter", lambda spec: Adapter()
+    )
+    monkeypatch.setattr(
+        "flashflood_data.pipelines.static_landing.pipeline.inventory_existing", lambda context: []
+    )
+    store = MemoryObjectStore()
+    inventory = FakeInventory()
+
+    def service() -> StaticSourceLandingService:
+        return StaticSourceLandingService(
+            config=StaticLandingConfig(
+                basin_level=12,
+                sources=(LandingSourcePolicy(source_id=source_id, mode="individual"),),
+            ),
+            publisher=ObjectPublisher(store, "raw"),
+            inventory=inventory,
+            staging_root=tmp_path / "staging",
+            source_specs={
+                source_id: SourceSpec(
+                    source_id=source_id, adapter="gadm_admin", version="1", license_id="fixture"
+                )
+            },
+            paths=paths,
+            catalog=catalog,
+            fetcher=Fetcher(),
+            study_area=StudyAreaConfig(),
+            environment=EnvironmentSettings(_env_file=None),
+        )
+
+    first_service = service()
+    first = first_service.publish_source(source_id, "run-1")
+    first_service.cleanup_batch(first_service.register_batch(first))
+    assert not raw.exists()
+    catalog.upsert(
+        catalog.get("gadm-asset").model_copy(
+            update={
+                "storage_path": "/old-host/project/dataset/raw/gadm.zip",
+            }
+        )
+    )
+
+    second_service = service()
+    second = second_service.publish_source(source_id, "run-2")
+
+    assert raw.read_bytes() == b"raw-from-provider"
+    assert second.objects[0].reused
+    second_service.cleanup_batch(second_service.register_batch(second))
+    assert not raw.exists()
+
+
+def test_cleanup_preserves_local_raw_when_minio_copy_is_corrupt(tmp_path: Path) -> None:
+    paths = ProjectPaths.discover(tmp_path)
+    paths.ensure_output_dirs()
+    catalog = AssetCatalog(paths)
+    raw = paths.raw / "gadm.zip"
+    raw.write_bytes(b"correct")
+    catalog.upsert(
+        AssetRecord(
+            asset_id="gadm-asset",
+            source_id="gadm_vnm_4_1",
+            source_version="1",
+            kind=AssetKind.RAW,
+            source_uri="https://example.invalid/gadm.zip",
+            storage_path=str(raw),
+            media_type="application/zip",
+            size_bytes=raw.stat().st_size,
+            checksum=sha256(raw.read_bytes()).hexdigest(),
+            retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+            license_id="fixture",
+            pipeline_run_id="run-1",
+            status=AssetStatus.VALIDATED,
+        )
+    )
+    prepared = PreparedObject(
+        source_id="gadm_vnm_4_1",
+        source_version="1",
+        asset_id="gadm-asset",
+        path=raw,
+        filename=raw.name,
+        media_type="application/zip",
+        source_uri="https://example.invalid/gadm.zip",
+        license_id="fixture",
+        retrieved_at=datetime(2026, 9, 16, tzinfo=UTC),
+    )
+    store = MemoryObjectStore()
+    service = StaticSourceLandingService(
+        config=StaticLandingConfig(
+            basin_level=12,
+            sources=(LandingSourcePolicy(source_id="gadm_vnm_4_1", mode="individual"),),
+        ),
+        publisher=ObjectPublisher(store, "raw"),
+        inventory=FakeInventory(),
+        staging_root=tmp_path / "staging",
+        source_preparer=lambda source_id, run_id: (prepared,),
+        source_specs={
+            "gadm_vnm_4_1": SourceSpec(
+                source_id="gadm_vnm_4_1", adapter="gadm_admin", version="1", license_id="fixture"
+            )
+        },
+        paths=paths,
+        catalog=catalog,
+    )
+    batch = service.publish_source("gadm_vnm_4_1", "run-1")
+    registered = service.register_batch(batch)
+    store.data[batch.objects[0].object_key] = b"corrupt"
+
+    with pytest.raises(ObjectConflict, match="verified MinIO copy"):
+        service.cleanup_batch(registered)
+
+    assert raw.read_bytes() == b"correct"

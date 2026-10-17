@@ -1,5 +1,12 @@
 # Silver Basin Static Features Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-basin-static-features.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -27,9 +34,9 @@
 ## File structure
 
 ```text
-config/silver/basin_static_features.yaml
+config/pipelines/silver/basin_static_features.yaml
 airflow/dags/silver_basin_static_features.py
-src/flashflood_data/orchestration/silver/static_features/
+src/flashflood_data/pipelines/silver_static_features/
   __init__.py
   config.py
   models.py
@@ -43,9 +50,9 @@ src/flashflood_data/orchestration/silver/static_features/
   assemble.py
   lineage.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/static_features/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_static_features/
   test_config.py
   test_raster_inputs.py
   test_terrain.py
@@ -56,24 +63,24 @@ tests/unit/silver/static_features/
   test_assemble.py
   test_lineage.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_static_features_pipeline.py
 ```
 
-`service.py` calls the reader and source-specific calculators, then `assemble.py`, `lineage.py`, and `quality.py`. The calculators may import already-tested pure kernels in `src/flashflood_data/static/features/`; they must not import `static/workflow/runner.py`, handlers, or local file-first state.
+`pipeline.py` calls the reader and source-specific calculators, then `assemble.py`, `lineage.py`, and `quality.py`. The calculators may import already-tested pure kernels in `src/flashflood_data/pipelines/silver_static_features/`; they must not import workflow file-first đã xóa, handlers, or local file-first state.
 
 ### Task 1: Close the derived-asset contract and register schemas
 
 **Files:**
 - Modify: `docs/schema_contract/data.md`
-- Create: `config/silver/basin_static_features.yaml`
-- Create: `src/flashflood_data/orchestration/silver/static_features/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/config.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/models.py`
+- Create: `config/pipelines/silver/basin_static_features.yaml`
+- Create: `src/flashflood_data/pipelines/silver_static_features/__init__.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/config.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/models.py`
 - Modify: `src/flashflood_data/storage/iceberg_schemas.py`
-- Modify: `config/meta/static.yaml`
+- Modify: `config/shared/metadata.yaml`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Create: `tests/unit/silver/static_features/test_config.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_config.py`
 
 **Interfaces:**
 - Produces: physical `meta.derived_objects`, `silver.basin_static_feature`, and `silver.basin_feature_lineage` tables.
@@ -95,7 +102,7 @@ def test_feature_lineage_disambiguates_object_kind():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: FAIL because the Silver/derived contracts are absent.
 
 - [ ] **Step 3: Define the explicit derived registry and configuration**
@@ -122,30 +129,30 @@ The YAML must declare exact depth weights, scale factors, stream threshold, outl
 
 - [ ] **Step 4: Run contract tests**
 
-Run: `pytest tests/unit/silver/static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit contracts**
 
 ```bash
-git add docs/schema_contract/data.md config/silver/basin_static_features.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/static_features src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add docs/schema_contract/data.md config/pipelines/silver/basin_static_features.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_static_features src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_static_features/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define static feature and derived asset contracts"
 ```
 
 ### Task 2: Resolve raster inputs and compute non-hydrology features
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/static_features/reader.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/raster_inputs.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/terrain.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/soil.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/landcover.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/atlas.py`
-- Create: `tests/unit/silver/static_features/test_raster_inputs.py`
-- Create: `tests/unit/silver/static_features/test_terrain.py`
-- Create: `tests/unit/silver/static_features/test_soil.py`
-- Create: `tests/unit/silver/static_features/test_landcover.py`
-- Create: `tests/unit/silver/static_features/test_atlas.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/reader.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/raster_inputs.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/terrain.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/soil.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/landcover.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/atlas.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_raster_inputs.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_terrain.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_soil.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_landcover.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_atlas.py`
 
 **Interfaces:**
 - Consumes: `silver.dim_basin`, `bronze.raster_coverage`, BasinATLAS Bronze rows, Meta source objects.
@@ -172,7 +179,7 @@ def test_atlas_mapper_drops_unapproved_columns():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/static_features/test_raster_inputs.py tests/unit/silver/static_features/test_terrain.py tests/unit/silver/static_features/test_soil.py tests/unit/silver/static_features/test_landcover.py tests/unit/silver/static_features/test_atlas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_raster_inputs.py tests/unit/pipelines/silver_static_features/test_terrain.py tests/unit/pipelines/silver_static_features/test_soil.py tests/unit/pipelines/silver_static_features/test_landcover.py tests/unit/pipelines/silver_static_features/test_atlas.py -q`
 Expected: FAIL because the modules are missing.
 
 - [ ] **Step 3: Implement snapshot-bound readers and pure calculations**
@@ -194,23 +201,23 @@ Calculate AWC only after FC/WP conversion. Keep Q05/Q50/Q95 by property until `s
 
 - [ ] **Step 4: Run calculation tests**
 
-Run: `pytest tests/unit/silver/static_features/test_raster_inputs.py tests/unit/silver/static_features/test_terrain.py tests/unit/silver/static_features/test_soil.py tests/unit/silver/static_features/test_landcover.py tests/unit/silver/static_features/test_atlas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_raster_inputs.py tests/unit/pipelines/silver_static_features/test_terrain.py tests/unit/pipelines/silver_static_features/test_soil.py tests/unit/pipelines/silver_static_features/test_landcover.py tests/unit/pipelines/silver_static_features/test_atlas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit source calculators**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features tests/unit/silver/static_features
+git add src/flashflood_data/pipelines/silver_static_features tests/unit/pipelines/silver_static_features
 git commit -m "feat: compute static raster and Atlas features"
 ```
 
 ### Task 3: Compute hydrology and publish derived rasters safely
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/static_features/hydrology.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/lineage.py`
-- Create: `tests/unit/silver/static_features/test_hydrology.py`
-- Create: `tests/unit/silver/static_features/test_lineage.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/hydrology.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/lineage.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_hydrology.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_lineage.py`
 
 **Interfaces:**
 - Consumes: conditioned DEM window, basin polygon, hydrology config, object-store publisher.
@@ -234,7 +241,7 @@ Also test outlet snapping, positive Tc, Kb values `0.5/1/2 × Tc`, and rejection
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/static_features/test_hydrology.py tests/unit/silver/static_features/test_lineage.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_hydrology.py tests/unit/pipelines/silver_static_features/test_lineage.py -q`
 Expected: FAIL because hydrology/derived lineage modules are missing.
 
 - [ ] **Step 3: Implement the hydrology result and atomic object publication**
@@ -250,23 +257,23 @@ Upload through staging, verify checksum, then copy to the final key. Register `m
 
 - [ ] **Step 4: Run hydrology tests**
 
-Run: `pytest tests/unit/silver/static_features/test_hydrology.py tests/unit/silver/static_features/test_lineage.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_hydrology.py tests/unit/pipelines/silver_static_features/test_lineage.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit hydrology and lineage**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features/hydrology.py src/flashflood_data/orchestration/silver/static_features/lineage.py tests/unit/silver/static_features/test_hydrology.py tests/unit/silver/static_features/test_lineage.py
+git add src/flashflood_data/pipelines/silver_static_features/hydrology.py src/flashflood_data/pipelines/silver_static_features/lineage.py tests/unit/pipelines/silver_static_features/test_hydrology.py tests/unit/pipelines/silver_static_features/test_lineage.py
 git commit -m "feat: derive and register basin hydrology assets"
 ```
 
 ### Task 4: Assemble rows and enforce static-feature quality
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/static_features/assemble.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/quality.py`
-- Create: `tests/unit/silver/static_features/test_assemble.py`
-- Create: `tests/unit/silver/static_features/test_quality.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/assemble.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/quality.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_assemble.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_quality.py`
 
 **Interfaces:**
 - Consumes: all `PartialFeatureRow` values/contributions for one basin/build.
@@ -287,7 +294,7 @@ def test_negative_awc_is_fatal():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/static_features/test_assemble.py tests/unit/silver/static_features/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_assemble.py tests/unit/pipelines/silver_static_features/test_quality.py -q`
 Expected: FAIL because assembler and DQ are missing.
 
 - [ ] **Step 3: Implement deterministic assembly and named rules**
@@ -296,23 +303,23 @@ Require exactly one feature row per `(basin_id, basin_version, feature_build_ver
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/static_features/test_assemble.py tests/unit/silver/static_features/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_assemble.py tests/unit/pipelines/silver_static_features/test_quality.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit assembly and DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features/assemble.py src/flashflood_data/orchestration/silver/static_features/quality.py tests/unit/silver/static_features/test_assemble.py tests/unit/silver/static_features/test_quality.py
+git add src/flashflood_data/pipelines/silver_static_features/assemble.py src/flashflood_data/pipelines/silver_static_features/quality.py tests/unit/pipelines/silver_static_features/test_assemble.py tests/unit/pipelines/silver_static_features/test_quality.py
 git commit -m "feat: assemble and validate basin static features"
 ```
 
 ### Task 5: Add service, batch DAG, integration test, and docs
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/static_features/service.py`
-- Create: `src/flashflood_data/orchestration/silver/static_features/factory.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/pipeline.py`
+- Create: `src/flashflood_data/pipelines/silver_static_features/runtime.py`
 - Create: `airflow/dags/silver_basin_static_features.py`
-- Create: `tests/unit/silver/static_features/test_service.py`
+- Create: `tests/unit/pipelines/silver_static_features/test_pipeline.py`
 - Create: `tests/integration/silver/test_static_features_pipeline.py`
 - Modify: `tests/contract/infra/test_silver_dags.py`
 - Modify: `README.md`
@@ -340,7 +347,7 @@ def test_static_feature_dag_is_manual(dag_bag):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/static_features/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: FAIL because service/DAG are missing.
 
 - [ ] **Step 3: Implement compute fan-out and publish fan-in**
@@ -364,18 +371,18 @@ The integration fixture uses two tiny basins and tiny DEM/soil/landcover rasters
 
 - [ ] **Step 4: Run domain tests**
 
-Run: `pytest tests/unit/silver/static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Run static kernel regression tests**
 
-Run: `pytest tests/unit/static/test_terrain_features.py tests/unit/static/test_hydrology_features.py tests/unit/static/test_soil_features.py tests/unit/static/test_landcover_features.py -q`  
+Run: `pytest tests/unit/static/test_terrain_features.py tests/unit/static/test_hydrology_features.py tests/unit/static/test_soil_features.py tests/unit/static/test_landcover_features.py -q`
 Expected: PASS.
 
 - [ ] **Step 6: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/static_features airflow/dags/silver_basin_static_features.py tests/unit/silver/static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_static_features airflow/dags/silver_basin_static_features.py tests/unit/pipelines/silver_static_features tests/integration/silver/test_static_features_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver basin static feature DAG"
 ```
 

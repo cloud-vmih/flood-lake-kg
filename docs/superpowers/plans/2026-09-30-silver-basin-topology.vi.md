@@ -1,5 +1,14 @@
 # Kế hoạch triển khai topology lưu vực ở Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-basin-topology.md`
 
@@ -11,7 +20,7 @@
 
 **Kiến trúc:** Đọc một snapshot Bronze bất biến, dùng HydroBASINS làm nguồn geometry/topology, chỉ join các field BasinATLAS đã duyệt theo `HYBAS_ID`, rồi publish basin và cạnh có version. Các module chuẩn hóa/topology thuần không phụ thuộc Airflow hay storage.
 
-**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, PyArrow, Shapely, PyProj, PyIceberg, pytest.
+**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, PyArrow, Shapely, PyProj, PySpark, Apache Spark, Apache Sedona, Apache Iceberg, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
@@ -30,9 +39,9 @@
 ## Cấu trúc file
 
 ```text
-config/silver/basin_topology.yaml
+config/pipelines/silver/basin_topology.yaml
 airflow/dags/silver_basin_topology.py
-src/flashflood_data/orchestration/silver/basin/
+src/flashflood_data/pipelines/silver_basin/
   __init__.py              # public domain exports
   config.py                # YAML contract
   models.py                # basin/edge DTOs
@@ -40,31 +49,31 @@ src/flashflood_data/orchestration/silver/basin/
   normalize.py             # geometry and field normalization
   topology.py              # directed graph construction
   quality.py               # basin/topology DQ
-  service.py               # use-case orchestration
-  factory.py               # production composition
-tests/unit/silver/basin/
+  pipeline.py               # use-case orchestration
+  runtime.py               # production composition
+tests/unit/pipelines/silver_basin/
   test_config.py
   test_normalize.py
   test_topology.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_basin_pipeline.py
 tests/contract/infra/test_silver_dags.py
 ```
 
-DAG chỉ import `factory.py`. `factory.py` tạo `service.py`. Service gọi `reader.py`, `normalize.py`, `topology.py`, `quality.py`, sau đó dùng staging/publisher/audit chung. Không domain Silver nào khác import package này; pipeline phía sau đọc `silver.dim_basin` và `silver.basin_edge`.
+DAG chỉ import `runtime.py`. `runtime.py` tạo `pipeline.py`. Service gọi `reader.py`, `normalize.py`, `topology.py`, `quality.py`, sau đó dùng staging/publisher/audit chung. Không domain Silver nào khác import package này; pipeline phía sau đọc `silver.dim_basin` và `silver.basin_edge`.
 
 ### Công việc 1: Đăng ký schema vật lý và cấu hình basin
 
 **Các file:**
-- Tạo: `config/silver/basin_topology.yaml`
-- Tạo: `src/flashflood_data/orchestration/silver/basin/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/basin/config.py`
-- Tạo: `src/flashflood_data/orchestration/silver/basin/models.py`
+- Tạo: `config/pipelines/silver/basin_topology.yaml`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/__init__.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/config.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/models.py`
 - Sửa: `src/flashflood_data/storage/iceberg_schemas.py`
-- Sửa: `config/meta/static.yaml`
+- Sửa: `config/shared/metadata.yaml`
 - Sửa: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Tạo: `tests/unit/silver/basin/test_config.py`
+- Tạo: `tests/unit/pipelines/silver_basin/test_config.py`
 
 **Giao diện:**
 - Đầu ra: `BasinTopologyConfig(level, hydro_source_id, atlas_source_id, field_map, transform_version, contract_version)`.
@@ -75,7 +84,7 @@ DAG chỉ import `factory.py`. `factory.py` tạo `service.py`. Service gọi `r
 
 ```python
 def test_basin_config_is_l12_and_has_explicit_sources():
-    config = load_basin_config(ROOT / "config/silver/basin_topology.yaml")
+    config = load_basin_config(ROOT / "config/pipelines/silver/basin_topology.yaml")
     assert config.level == 12
     assert config.hydro_source_id == "hydrobasins_v1c"
     assert config.atlas_source_id == "basinatlas_v10"
@@ -87,7 +96,7 @@ def test_silver_basin_schema_has_versioned_key():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: FAIL vì config, models, và schemas chưa tồn tại.
 
 - [ ] **Bước 3: Thêm contract chính xác và validate YAML**
@@ -114,26 +123,26 @@ field_map:
   distance_to_sink_km: DIST_SINK
 ```
 
-Thêm toàn bộ cột và nullability của hai bảng Silver đã duyệt vào `_DEFINITIONS`, đồng thời thêm mô tả hai dataset vào `config/meta/static.yaml`.
+Thêm toàn bộ cột và nullability của hai bảng Silver đã duyệt vào `_DEFINITIONS`, đồng thời thêm mô tả hai dataset vào `config/shared/metadata.yaml`.
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit contract**
 
 ```bash
-git add config/silver/basin_topology.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/basin src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/basin_topology.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_basin src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver basin contracts"
 ```
 
 ### Công việc 2: Đọc và chuẩn hóa các dòng basin Bronze
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/basin/reader.py`
-- Tạo: `src/flashflood_data/orchestration/silver/basin/normalize.py`
-- Tạo: `tests/unit/silver/basin/test_normalize.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/reader.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/normalize.py`
+- Tạo: `tests/unit/pipelines/silver_basin/test_normalize.py`
 
 **Giao diện:**
 - Đầu vào: các dòng từ `bronze.basin_polygon_raw`, `BasinTopologyConfig`.
@@ -157,7 +166,7 @@ def test_normalize_rejects_missing_atlas_match():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/basin/test_normalize.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_normalize.py -q`
 Mong đợi: FAIL vì reader/normalizer chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai đọc dữ liệu theo snapshot và chuẩn hóa**
@@ -176,23 +185,23 @@ basin_version = canonical_hash({
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/basin/test_normalize.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_normalize.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit chuẩn hóa**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/basin/reader.py src/flashflood_data/orchestration/silver/basin/normalize.py tests/unit/silver/basin/test_normalize.py
+git add src/flashflood_data/pipelines/silver_basin/reader.py src/flashflood_data/pipelines/silver_basin/normalize.py tests/unit/pipelines/silver_basin/test_normalize.py
 git commit -m "feat: normalize Bronze basins for Silver"
 ```
 
 ### Công việc 3: Xây dựng topology và cổng chất lượng domain
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/basin/topology.py`
-- Tạo: `src/flashflood_data/orchestration/silver/basin/quality.py`
-- Tạo: `tests/unit/silver/basin/test_topology.py`
-- Tạo: `tests/unit/silver/basin/test_quality.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/topology.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/quality.py`
+- Tạo: `tests/unit/pipelines/silver_basin/test_topology.py`
+- Tạo: `tests/unit/pipelines/silver_basin/test_quality.py`
 
 **Giao diện:**
 - Đầu vào: `Sequence[BasinRow]`, configured topology version.
@@ -215,7 +224,7 @@ def test_cycle_is_a_fatal_quality_failure():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/basin/test_topology.py tests/unit/silver/basin/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_topology.py tests/unit/pipelines/silver_basin/test_quality.py -q`
 Mong đợi: FAIL vì topology và DQ functions chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai graph và các rule rõ ràng**
@@ -226,23 +235,23 @@ Triển khai rule nghiêm trọng cho khóa duy nhất, polygon hợp lệ, di�
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/basin/test_topology.py tests/unit/silver/basin/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_topology.py tests/unit/pipelines/silver_basin/test_quality.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit topology**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/basin/topology.py src/flashflood_data/orchestration/silver/basin/quality.py tests/unit/silver/basin/test_topology.py tests/unit/silver/basin/test_quality.py
+git add src/flashflood_data/pipelines/silver_basin/topology.py src/flashflood_data/pipelines/silver_basin/quality.py tests/unit/pipelines/silver_basin/test_topology.py tests/unit/pipelines/silver_basin/test_quality.py
 git commit -m "feat: build and validate basin topology"
 ```
 
 ### Công việc 4: Điều phối, publish và sửa build basin dang dở
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/basin/service.py`
-- Tạo: `src/flashflood_data/orchestration/silver/basin/factory.py`
-- Sửa: `src/flashflood_data/orchestration/silver/basin/__init__.py`
-- Tạo: `tests/unit/silver/basin/test_service.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/pipeline.py`
+- Tạo: `src/flashflood_data/pipelines/silver_basin/runtime.py`
+- Sửa: `src/flashflood_data/pipelines/silver_basin/__init__.py`
+- Tạo: `tests/unit/pipelines/silver_basin/test_pipeline.py`
 - Tạo: `tests/integration/silver/test_basin_pipeline.py`
 
 **Giao diện:**
@@ -265,7 +274,7 @@ def test_partial_build_publishes_only_missing_edge_table(service):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/basin/test_service.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin/test_pipeline.py -q`
 Mong đợi: FAIL vì service/factory chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai luồng nghiệp vụ**
@@ -281,13 +290,13 @@ Ghi input/output ref và một lineage edge cho từng output Bronze → Silver.
 
 - [ ] **Bước 4: Chạy unit và fake-catalog tích hợp**
 
-Chạy: `pytest tests/unit/silver/basin tests/integration/silver/test_basin_pipeline.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_basin tests/integration/silver/test_basin_pipeline.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit service**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/basin tests/unit/silver/basin/test_service.py tests/integration/silver/test_basin_pipeline.py
+git add src/flashflood_data/pipelines/silver_basin tests/unit/pipelines/silver_basin/test_pipeline.py tests/integration/silver/test_basin_pipeline.py
 git commit -m "feat: publish Silver basin topology"
 ```
 
@@ -316,7 +325,7 @@ def test_basin_dag_is_manual_and_single_run(dag_bag):
 
 - [ ] **Bước 2: Chạy DAG và xác nhận đang fail**
 
-Chạy: `pytest tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: FAIL vì DAG is absent.
 
 - [ ] **Bước 3: Triển khai TaskFlow DAG mỏng**
@@ -332,7 +341,7 @@ docker compose exec trino trino --execute 'SELECT count(*) FROM lakehouse.silver
 
 - [ ] **Bước 4: Kiểm tra DAG và bộ kiểm thử domain**
 
-Chạy: `pytest tests/contract/infra/test_silver_dags.py tests/unit/silver/basin tests/integration/silver/test_basin_pipeline.py -q`  
+Chạy: `pytest tests/contract/infra/test_silver_dags.py tests/unit/pipelines/silver_basin tests/integration/silver/test_basin_pipeline.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit DAG và tài liệu**
@@ -345,3 +354,12 @@ git commit -m "feat: add Silver basin topology DAG"
 ## Điểm kiểm tra
 
 Dừng và kiểm tra `silver.dim_basin`, `silver.basin_edge`, Meta snapshot ref và lineage bằng Trino. Chưa bắt đầu domain Silver khác cho đến khi chấp nhận số dòng L12, kiểm tra cycle và hành vi skip khi chạy lại.
+
+## Bổ sung DQ domain (11/10/2026)
+
+- Fatal: business key trùng, polygon không hợp lệ/không repair được, diện tích không dương, graph
+  có cycle, internal `next_down_id` không tồn tại.
+- Reject row: basin thiếu ID nguồn hoặc không thể ghép HydroBASINS–BasinATLAS theo policy.
+- Warning: diện tích tự tính lệch Atlas, `SORT` không khớp topo sort, thiếu sink metadata tùy chọn.
+
+`quality.py` chỉ trả evaluation; shared DQ publisher ghi `quarantine.*`, output và Meta.

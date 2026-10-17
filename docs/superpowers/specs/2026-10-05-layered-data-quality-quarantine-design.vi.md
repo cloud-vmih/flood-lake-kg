@@ -102,7 +102,7 @@ Phải có ít nhất một trong `record_json` hoặc `record_uri`. Geometry bi
 
 ## 5. Ranh giới framework và domain
 
-Package dùng chung `orchestration/dq/` chịu trách nhiệm:
+Package dùng chung `shared/quality/` chịu trách nhiệm:
 
 - model finding/evaluation;
 - tính disposition xác định;
@@ -119,7 +119,7 @@ Package domain chịu trách nhiệm:
 - chuyển row nguồn thành accepted row hoặc rejected evidence;
 - xác định warning có cho phép downstream sử dụng hay không.
 
-Framework không import parser/domain. Domain chỉ import public interface từ `orchestration.dq`.
+Framework không import parser/domain. Domain chỉ import public interface từ `flashflood_data.shared.quality`.
 
 ## 6. Luồng publish
 

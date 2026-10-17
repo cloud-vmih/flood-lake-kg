@@ -1,5 +1,12 @@
 # Silver River Network Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-river-network.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -27,9 +34,9 @@
 ## File structure
 
 ```text
-config/silver/river_network.yaml
+config/pipelines/silver/river_network.yaml
 airflow/dags/silver_river_network.py
-src/flashflood_data/orchestration/silver/river/
+src/flashflood_data/pipelines/silver_river/
   __init__.py
   config.py
   models.py
@@ -38,31 +45,31 @@ src/flashflood_data/orchestration/silver/river/
   topology.py
   basin_overlay.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/river/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_river/
   test_config.py
   test_normalize.py
   test_topology.py
   test_basin_overlay.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_river_pipeline.py
 ```
 
-`normalize.py`, `topology.py`, and `basin_overlay.py` are pure domain transforms. `service.py` owns their sequence and common publication/audit. Downstream exposure code reads Silver river tables and never imports these internals.
+`normalize.py`, `topology.py`, and `basin_overlay.py` are pure domain transforms. `pipeline.py` owns their sequence and common publication/audit. Downstream exposure code reads Silver river tables and never imports these internals.
 
 ### Task 1: Define river schemas, config, and models
 
 **Files:**
-- Create: `config/silver/river_network.yaml`
-- Create: `src/flashflood_data/orchestration/silver/river/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/river/config.py`
-- Create: `src/flashflood_data/orchestration/silver/river/models.py`
+- Create: `config/pipelines/silver/river_network.yaml`
+- Create: `src/flashflood_data/pipelines/silver_river/__init__.py`
+- Create: `src/flashflood_data/pipelines/silver_river/config.py`
+- Create: `src/flashflood_data/pipelines/silver_river/models.py`
 - Modify: `src/flashflood_data/storage/iceberg_schemas.py`
-- Modify: `config/meta/static.yaml`
+- Modify: `config/shared/metadata.yaml`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Create: `tests/unit/silver/river/test_config.py`
+- Create: `tests/unit/pipelines/silver_river/test_config.py`
 
 **Interfaces:**
 - Produces: `RiverNetworkConfig`, `RiverReachRow`, `RiverReachEdgeRow`, `RiverBasinRow`, `RiverTopologyReport`.
@@ -85,7 +92,7 @@ def test_river_basin_schema_is_versioned():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: FAIL because contracts are missing.
 
 - [ ] **Step 3: Implement validated config, models, and exact schemas**
@@ -94,24 +101,24 @@ YAML fields include source ID, provider field map, source direction convention, 
 
 - [ ] **Step 4: Run contract tests**
 
-Run: `pytest tests/unit/silver/river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit contracts**
 
 ```bash
-git add config/silver/river_network.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/river src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/river_network.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_river src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_river/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver river contracts"
 ```
 
 ### Task 2: Normalize reaches and construct topology
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/river/reader.py`
-- Create: `src/flashflood_data/orchestration/silver/river/normalize.py`
-- Create: `src/flashflood_data/orchestration/silver/river/topology.py`
-- Create: `tests/unit/silver/river/test_normalize.py`
-- Create: `tests/unit/silver/river/test_topology.py`
+- Create: `src/flashflood_data/pipelines/silver_river/reader.py`
+- Create: `src/flashflood_data/pipelines/silver_river/normalize.py`
+- Create: `src/flashflood_data/pipelines/silver_river/topology.py`
+- Create: `tests/unit/pipelines/silver_river/test_normalize.py`
+- Create: `tests/unit/pipelines/silver_river/test_topology.py`
 
 **Interfaces:**
 - Consumes: exact `bronze.river_reach_raw` snapshot and config.
@@ -136,7 +143,7 @@ def test_topology_links_provider_downstream_id():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/river/test_normalize.py tests/unit/silver/river/test_topology.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_normalize.py tests/unit/pipelines/silver_river/test_topology.py -q`
 Expected: FAIL because reader/transforms are absent.
 
 - [ ] **Step 3: Implement canonical reach and graph logic**
@@ -147,23 +154,23 @@ Generate versions from input snapshot/config and use Kahn sorting to identify cy
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/river/test_normalize.py tests/unit/silver/river/test_topology.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_normalize.py tests/unit/pipelines/silver_river/test_topology.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit reach normalization**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/river/reader.py src/flashflood_data/orchestration/silver/river/normalize.py src/flashflood_data/orchestration/silver/river/topology.py tests/unit/silver/river/test_normalize.py tests/unit/silver/river/test_topology.py
+git add src/flashflood_data/pipelines/silver_river/reader.py src/flashflood_data/pipelines/silver_river/normalize.py src/flashflood_data/pipelines/silver_river/topology.py tests/unit/pipelines/silver_river/test_normalize.py tests/unit/pipelines/silver_river/test_topology.py
 git commit -m "feat: normalize and connect river reaches"
 ```
 
 ### Task 3: Overlay reaches with basins and add quality gates
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/river/basin_overlay.py`
-- Create: `src/flashflood_data/orchestration/silver/river/quality.py`
-- Create: `tests/unit/silver/river/test_basin_overlay.py`
-- Create: `tests/unit/silver/river/test_quality.py`
+- Create: `src/flashflood_data/pipelines/silver_river/basin_overlay.py`
+- Create: `src/flashflood_data/pipelines/silver_river/quality.py`
+- Create: `tests/unit/pipelines/silver_river/test_basin_overlay.py`
+- Create: `tests/unit/pipelines/silver_river/test_quality.py`
 
 **Interfaces:**
 - Produces: `overlay_reaches_with_basins(reaches, basins, config) -> list[RiverBasinRow]`.
@@ -184,7 +191,7 @@ def test_cycle_and_ratio_over_one_are_fatal():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/river/test_basin_overlay.py tests/unit/silver/river/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_basin_overlay.py tests/unit/pipelines/silver_river/test_quality.py -q`
 Expected: FAIL because overlay/DQ are absent.
 
 - [ ] **Step 3: Implement spatial index, relation semantics, and named rules**
@@ -193,23 +200,23 @@ Calculate `length_inside_km` after intersection in metric CRS. `spatial_relation
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/river/test_basin_overlay.py tests/unit/silver/river/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_basin_overlay.py tests/unit/pipelines/silver_river/test_quality.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit overlay and DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/river/basin_overlay.py src/flashflood_data/orchestration/silver/river/quality.py tests/unit/silver/river/test_basin_overlay.py tests/unit/silver/river/test_quality.py
+git add src/flashflood_data/pipelines/silver_river/basin_overlay.py src/flashflood_data/pipelines/silver_river/quality.py tests/unit/pipelines/silver_river/test_basin_overlay.py tests/unit/pipelines/silver_river/test_quality.py
 git commit -m "feat: relate river reaches to basins"
 ```
 
 ### Task 4: Add service, manual DAG, integration test, and docs
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/river/service.py`
-- Create: `src/flashflood_data/orchestration/silver/river/factory.py`
+- Create: `src/flashflood_data/pipelines/silver_river/pipeline.py`
+- Create: `src/flashflood_data/pipelines/silver_river/runtime.py`
 - Create: `airflow/dags/silver_river_network.py`
-- Create: `tests/unit/silver/river/test_service.py`
+- Create: `tests/unit/pipelines/silver_river/test_pipeline.py`
 - Create: `tests/integration/silver/test_river_pipeline.py`
 - Modify: `tests/contract/infra/test_silver_dags.py`
 - Modify: `README.md`
@@ -237,7 +244,7 @@ def test_river_dag_waits_for_all_compute_batches(dag_bag):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/river/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: FAIL because service/DAG are absent.
 
 - [ ] **Step 3: Implement service and TaskFlow graph**
@@ -246,13 +253,13 @@ Use common discovery with Bronze river and Silver basin snapshots. Compute reach
 
 - [ ] **Step 4: Run domain tests**
 
-Run: `pytest tests/unit/silver/river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/river airflow/dags/silver_river_network.py tests/unit/silver/river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_river airflow/dags/silver_river_network.py tests/unit/pipelines/silver_river tests/integration/silver/test_river_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver river network DAG"
 ```
 

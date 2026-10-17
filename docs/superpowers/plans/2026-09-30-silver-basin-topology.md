@@ -1,5 +1,12 @@
 # Silver Basin Topology Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-basin-topology.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -27,9 +34,9 @@
 ## File structure
 
 ```text
-config/silver/basin_topology.yaml
+config/pipelines/silver/basin_topology.yaml
 airflow/dags/silver_basin_topology.py
-src/flashflood_data/orchestration/silver/basin/
+src/flashflood_data/pipelines/silver_basin/
   __init__.py              # public domain exports
   config.py                # YAML contract
   models.py                # basin/edge DTOs
@@ -37,31 +44,31 @@ src/flashflood_data/orchestration/silver/basin/
   normalize.py             # geometry and field normalization
   topology.py              # directed graph construction
   quality.py               # basin/topology DQ
-  service.py               # use-case orchestration
-  factory.py               # production composition
-tests/unit/silver/basin/
+  pipeline.py               # use-case orchestration
+  runtime.py               # production composition
+tests/unit/pipelines/silver_basin/
   test_config.py
   test_normalize.py
   test_topology.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_basin_pipeline.py
 tests/contract/infra/test_silver_dags.py
 ```
 
-The DAG imports only `factory.py`. `factory.py` builds `service.py`. The service calls `reader.py`, `normalize.py`, `topology.py`, and `quality.py`, then shared staging/publisher/audit. No other Silver domain imports this package; downstream pipelines consume `silver.dim_basin` and `silver.basin_edge`.
+The DAG imports only `runtime.py`. `runtime.py` builds `pipeline.py`. The service calls `reader.py`, `normalize.py`, `topology.py`, and `quality.py`, then shared staging/publisher/audit. No other Silver domain imports this package; downstream pipelines consume `silver.dim_basin` and `silver.basin_edge`.
 
 ### Task 1: Register physical schemas and basin configuration
 
 **Files:**
-- Create: `config/silver/basin_topology.yaml`
-- Create: `src/flashflood_data/orchestration/silver/basin/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/basin/config.py`
-- Create: `src/flashflood_data/orchestration/silver/basin/models.py`
+- Create: `config/pipelines/silver/basin_topology.yaml`
+- Create: `src/flashflood_data/pipelines/silver_basin/__init__.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/config.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/models.py`
 - Modify: `src/flashflood_data/storage/iceberg_schemas.py`
-- Modify: `config/meta/static.yaml`
+- Modify: `config/shared/metadata.yaml`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Create: `tests/unit/silver/basin/test_config.py`
+- Create: `tests/unit/pipelines/silver_basin/test_config.py`
 
 **Interfaces:**
 - Produces: `BasinTopologyConfig(level, hydro_source_id, atlas_source_id, field_map, transform_version, contract_version)`.
@@ -72,7 +79,7 @@ The DAG imports only `factory.py`. `factory.py` builds `service.py`. The service
 
 ```python
 def test_basin_config_is_l12_and_has_explicit_sources():
-    config = load_basin_config(ROOT / "config/silver/basin_topology.yaml")
+    config = load_basin_config(ROOT / "config/pipelines/silver/basin_topology.yaml")
     assert config.level == 12
     assert config.hydro_source_id == "hydrobasins_v1c"
     assert config.atlas_source_id == "basinatlas_v10"
@@ -84,7 +91,7 @@ def test_silver_basin_schema_has_versioned_key():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: FAIL because config, models, and schemas are missing.
 
 - [ ] **Step 3: Add the exact contract and validated YAML**
@@ -111,26 +118,26 @@ field_map:
   distance_to_sink_km: DIST_SINK
 ```
 
-Add every column and nullability from the two approved Silver tables to `_DEFINITIONS`, and add both dataset descriptions to `config/meta/static.yaml`.
+Add every column and nullability from the two approved Silver tables to `_DEFINITIONS`, and add both dataset descriptions to `config/shared/metadata.yaml`.
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit contract**
 
 ```bash
-git add config/silver/basin_topology.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/basin src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/basin_topology.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_basin src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_basin/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver basin contracts"
 ```
 
 ### Task 2: Read and normalize Bronze basin rows
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/basin/reader.py`
-- Create: `src/flashflood_data/orchestration/silver/basin/normalize.py`
-- Create: `tests/unit/silver/basin/test_normalize.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/reader.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/normalize.py`
+- Create: `tests/unit/pipelines/silver_basin/test_normalize.py`
 
 **Interfaces:**
 - Consumes: rows from `bronze.basin_polygon_raw`, `BasinTopologyConfig`.
@@ -154,7 +161,7 @@ def test_normalize_rejects_missing_atlas_match():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/basin/test_normalize.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_normalize.py -q`
 Expected: FAIL because reader/normalizer do not exist.
 
 - [ ] **Step 3: Implement snapshot-bound reading and normalization**
@@ -173,23 +180,23 @@ basin_version = canonical_hash({
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/basin/test_normalize.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_normalize.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit normalization**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/basin/reader.py src/flashflood_data/orchestration/silver/basin/normalize.py tests/unit/silver/basin/test_normalize.py
+git add src/flashflood_data/pipelines/silver_basin/reader.py src/flashflood_data/pipelines/silver_basin/normalize.py tests/unit/pipelines/silver_basin/test_normalize.py
 git commit -m "feat: normalize Bronze basins for Silver"
 ```
 
 ### Task 3: Build topology and domain quality gates
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/basin/topology.py`
-- Create: `src/flashflood_data/orchestration/silver/basin/quality.py`
-- Create: `tests/unit/silver/basin/test_topology.py`
-- Create: `tests/unit/silver/basin/test_quality.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/topology.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/quality.py`
+- Create: `tests/unit/pipelines/silver_basin/test_topology.py`
+- Create: `tests/unit/pipelines/silver_basin/test_quality.py`
 
 **Interfaces:**
 - Consumes: `Sequence[BasinRow]`, configured topology version.
@@ -212,7 +219,7 @@ def test_cycle_is_a_fatal_quality_failure():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/basin/test_topology.py tests/unit/silver/basin/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_topology.py tests/unit/pipelines/silver_basin/test_quality.py -q`
 Expected: FAIL because topology and DQ functions are missing.
 
 - [ ] **Step 3: Implement graph construction and explicit rules**
@@ -223,23 +230,23 @@ Implement fatal rules for unique keys, valid polygon, positive area, acyclic gra
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/basin/test_topology.py tests/unit/silver/basin/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_topology.py tests/unit/pipelines/silver_basin/test_quality.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit topology**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/basin/topology.py src/flashflood_data/orchestration/silver/basin/quality.py tests/unit/silver/basin/test_topology.py tests/unit/silver/basin/test_quality.py
+git add src/flashflood_data/pipelines/silver_basin/topology.py src/flashflood_data/pipelines/silver_basin/quality.py tests/unit/pipelines/silver_basin/test_topology.py tests/unit/pipelines/silver_basin/test_quality.py
 git commit -m "feat: build and validate basin topology"
 ```
 
 ### Task 4: Orchestrate, publish, and repair basin builds
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/basin/service.py`
-- Create: `src/flashflood_data/orchestration/silver/basin/factory.py`
-- Modify: `src/flashflood_data/orchestration/silver/basin/__init__.py`
-- Create: `tests/unit/silver/basin/test_service.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/pipeline.py`
+- Create: `src/flashflood_data/pipelines/silver_basin/runtime.py`
+- Modify: `src/flashflood_data/pipelines/silver_basin/__init__.py`
+- Create: `tests/unit/pipelines/silver_basin/test_pipeline.py`
 - Create: `tests/integration/silver/test_basin_pipeline.py`
 
 **Interfaces:**
@@ -262,7 +269,7 @@ def test_partial_build_publishes_only_missing_edge_table(service):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/basin/test_service.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin/test_pipeline.py -q`
 Expected: FAIL because the service/factory are missing.
 
 - [ ] **Step 3: Implement the use case**
@@ -278,13 +285,13 @@ Record input/output refs and one lineage edge per Bronze-to-Silver output. On ex
 
 - [ ] **Step 4: Run unit and fake-catalog integration tests**
 
-Run: `pytest tests/unit/silver/basin tests/integration/silver/test_basin_pipeline.py -q`  
+Run: `pytest tests/unit/pipelines/silver_basin tests/integration/silver/test_basin_pipeline.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit service**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/basin tests/unit/silver/basin/test_service.py tests/integration/silver/test_basin_pipeline.py
+git add src/flashflood_data/pipelines/silver_basin tests/unit/pipelines/silver_basin/test_pipeline.py tests/integration/silver/test_basin_pipeline.py
 git commit -m "feat: publish Silver basin topology"
 ```
 
@@ -313,7 +320,7 @@ def test_basin_dag_is_manual_and_single_run(dag_bag):
 
 - [ ] **Step 2: Run the DAG test and verify failure**
 
-Run: `pytest tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/contract/infra/test_silver_dags.py -q`
 Expected: FAIL because the DAG is absent.
 
 - [ ] **Step 3: Implement the thin TaskFlow DAG**
@@ -329,7 +336,7 @@ docker compose exec trino trino --execute 'SELECT count(*) FROM lakehouse.silver
 
 - [ ] **Step 4: Validate DAG and domain suite**
 
-Run: `pytest tests/contract/infra/test_silver_dags.py tests/unit/silver/basin tests/integration/silver/test_basin_pipeline.py -q`  
+Run: `pytest tests/contract/infra/test_silver_dags.py tests/unit/pipelines/silver_basin tests/integration/silver/test_basin_pipeline.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit DAG and docs**

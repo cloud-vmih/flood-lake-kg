@@ -1,5 +1,16 @@
 # Kế hoạch triển khai sự kiện lũ ở Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
+> **Đã được thay thế:** dùng [2026-10-09-flood-event-silver.vi.md](2026-10-09-flood-event-silver.vi.md). Plan này chỉ xử lý record có cấu trúc và không còn phản ánh thiết kế bài báo → mention → event hiện hành.
+
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-flood-events.md`
 
@@ -11,7 +22,7 @@
 
 **Kiến trúc:** Dùng identity nguồn/object để giữ event ID ổn định, chỉ tăng revision khi nội dung chuẩn hóa thay đổi và gán basin từ footprint đã xác minh, điểm được báo cáo hoặc tham chiếu hành chính đã cấu hình. Pipeline này không có parse tài liệu, chunk, embedding, bảng bridge evidence hay Qdrant.
 
-**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, PyArrow, Shapely, GeoPandas, PyProj, PyIceberg, pytest.
+**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, PyArrow, Shapely, GeoPandas, PyProj, PySpark, Apache Spark, Apache Sedona, Apache Iceberg, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
@@ -30,9 +41,9 @@
 ## Cấu trúc file
 
 ```text
-config/silver/flood_events.yaml
+config/pipelines/silver/flood_events.yaml
 airflow/dags/silver_flood_events.py
-src/flashflood_data/orchestration/silver/events/
+src/flashflood_data/pipelines/flood_events/
   __init__.py
   config.py
   models.py
@@ -40,14 +51,14 @@ src/flashflood_data/orchestration/silver/events/
   normalize.py
   basin_link.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/events/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/flood_events/
   test_config.py
   test_normalize.py
   test_basin_link.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_event_pipeline.py
 ```
 
@@ -56,14 +67,14 @@ Service đọc snapshot event, object, admin tùy chọn và basin. `normalize.p
 ### Công việc 1: Định nghĩa schema event, mapping nguồn và model
 
 **Các file:**
-- Tạo: `config/silver/flood_events.yaml`
-- Tạo: `src/flashflood_data/orchestration/silver/events/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/events/config.py`
-- Tạo: `src/flashflood_data/orchestration/silver/events/models.py`
+- Tạo: `config/pipelines/silver/flood_events.yaml`
+- Tạo: `src/flashflood_data/pipelines/flood_events/__init__.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/config.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/models.py`
 - Sửa: `src/flashflood_data/storage/iceberg_schemas.py`
-- Sửa: `config/meta/static.yaml`
+- Sửa: `config/shared/metadata.yaml`
 - Sửa: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Tạo: `tests/unit/silver/events/test_config.py`
+- Tạo: `tests/unit/pipelines/flood_events/test_config.py`
 
 **Giao diện:**
 - Đầu ra: `FloodEventConfig`, `ObservedFloodEventRow`, `EventBasinRow`, `NormalizedEventCandidate`.
@@ -85,7 +96,7 @@ def test_event_schema_keeps_nullable_document_reference():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: FAIL vì contracts chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai mapping nguồn và chính xác schemas**
@@ -96,22 +107,22 @@ Chỉ đăng ký hai bảng output. Không đăng ký hoặc tạo schema runtim
 
 - [ ] **Bước 4: Chạy kiểm thử contract**
 
-Chạy: `pytest tests/unit/silver/events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit contracts**
 
 ```bash
-git add config/silver/flood_events.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/events src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/flood_events.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/flood_events src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/flood_events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver flood event contracts"
 ```
 
 ### Công việc 2: Chuẩn hóa identity event ổn định và revision
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/events/reader.py`
-- Tạo: `src/flashflood_data/orchestration/silver/events/normalize.py`
-- Tạo: `tests/unit/silver/events/test_normalize.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/reader.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/normalize.py`
+- Tạo: `tests/unit/pipelines/flood_events/test_normalize.py`
 
 **Giao diện:**
 - Đầu vào: `bronze.historical_event_raw`, matching `meta.source_objects`, hiện có event revisions, source mapping.
@@ -137,7 +148,7 @@ def test_changed_content_increments_revision_and_clears_document_id():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/events/test_normalize.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_normalize.py -q`
 Mong đợi: FAIL vì reader/normalizer are absent.
 
 - [ ] **Bước 3: Triển khai chuẩn hóa gắn với nguồn**
@@ -155,23 +166,23 @@ Chuẩn hóa timestamp sang UTC mà không tự bịa độ chính xác còn thi
 
 - [ ] **Bước 4: Chạy kiểm thử chuẩn hóa**
 
-Chạy: `pytest tests/unit/silver/events/test_normalize.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_normalize.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit chuẩn hóa**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/events/reader.py src/flashflood_data/orchestration/silver/events/normalize.py tests/unit/silver/events/test_normalize.py
+git add src/flashflood_data/pipelines/flood_events/reader.py src/flashflood_data/pipelines/flood_events/normalize.py tests/unit/pipelines/flood_events/test_normalize.py
 git commit -m "feat: normalize revisioned flood events"
 ```
 
 ### Công việc 3: Liên kết event với basin và kiểm soát ngữ nghĩa diện tích
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/events/basin_link.py`
-- Tạo: `src/flashflood_data/orchestration/silver/events/quality.py`
-- Tạo: `tests/unit/silver/events/test_basin_link.py`
-- Tạo: `tests/unit/silver/events/test_quality.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/basin_link.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/quality.py`
+- Tạo: `tests/unit/pipelines/flood_events/test_basin_link.py`
+- Tạo: `tests/unit/pipelines/flood_events/test_quality.py`
 
 **Giao diện:**
 - Đầu vào: normalized event, `silver.dim_basin`, optional `bronze.admin_boundary_raw` lookup.
@@ -196,7 +207,7 @@ def test_reported_point_links_without_affected_area():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/events/test_basin_link.py tests/unit/silver/events/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_basin_link.py tests/unit/pipelines/flood_events/test_quality.py -q`
 Mong đợi: FAIL vì basin linking/DQ are absent.
 
 - [ ] **Bước 3: Triển khai thứ tự ưu tiên gán và rule DQ**
@@ -214,23 +225,23 @@ Chỉ nhánh đầu tiên tính diện tích trong CRS bảo toàn diện tích.
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/events/test_basin_link.py tests/unit/silver/events/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_basin_link.py tests/unit/pipelines/flood_events/test_quality.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit basin links và DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/events/basin_link.py src/flashflood_data/orchestration/silver/events/quality.py tests/unit/silver/events/test_basin_link.py tests/unit/silver/events/test_quality.py
+git add src/flashflood_data/pipelines/flood_events/basin_link.py src/flashflood_data/pipelines/flood_events/quality.py tests/unit/pipelines/flood_events/test_basin_link.py tests/unit/pipelines/flood_events/test_quality.py
 git commit -m "feat: link flood events to basins"
 ```
 
 ### Công việc 4: Thêm service, DAG chạy thủ công, kiểm thử tích hợp và tài liệu
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/events/service.py`
-- Tạo: `src/flashflood_data/orchestration/silver/events/factory.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/pipeline.py`
+- Tạo: `src/flashflood_data/pipelines/flood_events/runtime.py`
 - Tạo: `airflow/dags/silver_flood_events.py`
-- Tạo: `tests/unit/silver/events/test_service.py`
+- Tạo: `tests/unit/pipelines/flood_events/test_pipeline.py`
 - Tạo: `tests/integration/silver/test_event_pipeline.py`
 - Sửa: `tests/contract/infra/test_silver_dags.py`
 - Sửa: `README.md`
@@ -260,7 +271,7 @@ def test_event_dag_is_manual(dag_bag):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/events/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: FAIL vì service/DAG are absent.
 
 - [ ] **Bước 3: Triển khai service tăng dần và TaskFlow graph**
@@ -277,19 +288,29 @@ discover_inputs -> plan_event_batches -> normalize_and_link.expand
 
 - [ ] **Bước 4: Chạy kiểm thử domain và quét dependency đã hoãn**
 
-Chạy: `pytest tests/unit/silver/events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/flood_events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: PASS.
 
-Chạy: `rg -n "qdrant|embedding|document_chunk|event_evidence" src/flashflood_data/orchestration/silver/events airflow/dags/silver_flood_events.py`  
+Chạy: `rg -n "qdrant|embedding|document_chunk|event_evidence" src/flashflood_data/pipelines/flood_events airflow/dags/silver_flood_events.py`
 Mong đợi: không có kết quả.
 
 - [ ] **Bước 5: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/events airflow/dags/silver_flood_events.py tests/unit/silver/events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/flood_events airflow/dags/silver_flood_events.py tests/unit/pipelines/flood_events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver flood event DAG"
 ```
 
 ## Điểm kiểm tra
 
 Kiểm tra một tập event nhỏ trong Trino. Xác nhận stable ID, thay đổi revision, current flag, hành vi area null cho point/admin, diện tích footprint theo basin, Meta lineage và không có code runtime document/Qdrant.
+
+## Bổ sung DQ domain (11/10/2026)
+
+- Fatal: event/revision key trùng, `end_time < start_time`, fraction ngoài `[0,1]`, có diện tích
+  footprint cho geometry point/admin, thiếu basin version, hơn một current revision.
+- Reject row: document không có bằng chứng thời gian/địa điểm tối thiểu để tạo event candidate.
+- Warning: địa danh không liên kết được hoặc mơ hồ, point/admin không có diện tích ảnh hưởng.
+
+NLP confidence thấp là warning hoặc reject theo policy có version; không biến suy đoán thành fact
+không có provenance. Runtime event không chứa document chunk/Qdrant trong giai đoạn này.

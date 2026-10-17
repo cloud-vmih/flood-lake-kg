@@ -1,5 +1,12 @@
 # Silver Weather Basin Aggregation Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-weather-aggregation.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -28,9 +35,9 @@
 ## File structure
 
 ```text
-config/silver/weather_aggregation.yaml
+config/pipelines/silver/weather_aggregation.yaml
 airflow/dags/silver_weather_aggregation.py
-src/flashflood_data/orchestration/silver/weather/
+src/flashflood_data/pipelines/silver_weather/
   __init__.py
   config.py
   models.py
@@ -39,15 +46,15 @@ src/flashflood_data/orchestration/silver/weather/
   aggregate.py
   revisions.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/weather/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_weather/
   test_config.py
   test_weights.py
   test_aggregate.py
   test_revisions.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_weather_aggregation_pipeline.py
 ```
 
@@ -56,14 +63,14 @@ The service reads three table contracts, calls `weights.py` only for missing com
 ### Task 1: Add schemas, config, and row contracts
 
 **Files:**
-- Create: `config/silver/weather_aggregation.yaml`
-- Create: `src/flashflood_data/orchestration/silver/weather/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/weather/config.py`
-- Create: `src/flashflood_data/orchestration/silver/weather/models.py`
+- Create: `config/pipelines/silver/weather_aggregation.yaml`
+- Create: `src/flashflood_data/pipelines/silver_weather/__init__.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/config.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/models.py`
 - Modify: `src/flashflood_data/storage/iceberg_schemas.py`
-- Modify: `config/meta/static.yaml`
+- Modify: `config/shared/metadata.yaml`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Create: `tests/unit/silver/weather/test_config.py`
+- Create: `tests/unit/pipelines/silver_weather/test_config.py`
 
 **Interfaces:**
 - Produces: physical `silver.grid_basin_weight` and `silver.basin_weather_value`.
@@ -87,7 +94,7 @@ def test_basin_weather_schema_keeps_source_and_revision():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: FAIL because config/models/schemas are absent.
 
 - [ ] **Step 3: Implement validated policy and physical contracts**
@@ -98,22 +105,22 @@ Add every approved column from `docs/schema_contract/data.md`. Register both dat
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit contracts**
 
 ```bash
-git add config/silver/weather_aggregation.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/weather src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/weather_aggregation.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_weather src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver weather contracts"
 ```
 
 ### Task 2: Build reusable grid-basin weights
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/weather/reader.py`
-- Create: `src/flashflood_data/orchestration/silver/weather/weights.py`
-- Create: `tests/unit/silver/weather/test_weights.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/reader.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/weights.py`
+- Create: `tests/unit/pipelines/silver_weather/test_weights.py`
 
 **Interfaces:**
 - Consumes: rows from `silver.source_grid`, `silver.dim_basin`, and existing weights.
@@ -135,7 +142,7 @@ def test_partial_cell_uses_intersection_area():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/weather/test_weights.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_weights.py -q`
 Expected: FAIL because reader/weights do not exist.
 
 - [ ] **Step 3: Implement indexed overlay in equal-area CRS**
@@ -152,25 +159,25 @@ Skip zero-area touches. Generate `geometry_processing_version` from the configur
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/weather/test_weights.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_weights.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit weights**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/weather/reader.py src/flashflood_data/orchestration/silver/weather/weights.py tests/unit/silver/weather/test_weights.py
+git add src/flashflood_data/pipelines/silver_weather/reader.py src/flashflood_data/pipelines/silver_weather/weights.py tests/unit/pipelines/silver_weather/test_weights.py
 git commit -m "feat: build source-grid basin weights"
 ```
 
 ### Task 3: Aggregate slices and retain revision semantics
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/weather/aggregate.py`
-- Create: `src/flashflood_data/orchestration/silver/weather/revisions.py`
-- Create: `src/flashflood_data/orchestration/silver/weather/quality.py`
-- Create: `tests/unit/silver/weather/test_aggregate.py`
-- Create: `tests/unit/silver/weather/test_revisions.py`
-- Create: `tests/unit/silver/weather/test_quality.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/aggregate.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/revisions.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/quality.py`
+- Create: `tests/unit/pipelines/silver_weather/test_aggregate.py`
+- Create: `tests/unit/pipelines/silver_weather/test_revisions.py`
+- Create: `tests/unit/pipelines/silver_weather/test_quality.py`
 
 **Interfaces:**
 - Consumes: one `weather_raster_slice`, cell-index lookup, relevant weights, basin/version, variable policy.
@@ -195,7 +202,7 @@ def test_shifted_now_windows_are_both_retained():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/weather/test_aggregate.py tests/unit/silver/weather/test_revisions.py tests/unit/silver/weather/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_aggregate.py tests/unit/pipelines/silver_weather/test_revisions.py tests/unit/pipelines/silver_weather/test_quality.py -q`
 Expected: FAIL because aggregation/revision/DQ code is absent.
 
 - [ ] **Step 3: Implement aligned array aggregation and full business identity**
@@ -214,23 +221,23 @@ Fatal DQ: array misalignment, unknown cell, duplicate business key, unit/value-k
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/weather/test_aggregate.py tests/unit/silver/weather/test_revisions.py tests/unit/silver/weather/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_aggregate.py tests/unit/pipelines/silver_weather/test_revisions.py tests/unit/pipelines/silver_weather/test_quality.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit aggregation**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/weather/aggregate.py src/flashflood_data/orchestration/silver/weather/revisions.py src/flashflood_data/orchestration/silver/weather/quality.py tests/unit/silver/weather/test_aggregate.py tests/unit/silver/weather/test_revisions.py tests/unit/silver/weather/test_quality.py
+git add src/flashflood_data/pipelines/silver_weather/aggregate.py src/flashflood_data/pipelines/silver_weather/revisions.py src/flashflood_data/pipelines/silver_weather/quality.py tests/unit/pipelines/silver_weather/test_aggregate.py tests/unit/pipelines/silver_weather/test_revisions.py tests/unit/pipelines/silver_weather/test_quality.py
 git commit -m "feat: aggregate weather slices by basin"
 ```
 
 ### Task 4: Add incremental service, DAG, and integration coverage
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/weather/service.py`
-- Create: `src/flashflood_data/orchestration/silver/weather/factory.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/pipeline.py`
+- Create: `src/flashflood_data/pipelines/silver_weather/runtime.py`
 - Create: `airflow/dags/silver_weather_aggregation.py`
-- Create: `tests/unit/silver/weather/test_service.py`
+- Create: `tests/unit/pipelines/silver_weather/test_pipeline.py`
 - Create: `tests/integration/silver/test_weather_aggregation_pipeline.py`
 - Modify: `tests/contract/infra/test_silver_dags.py`
 - Modify: `README.md`
@@ -260,7 +267,7 @@ def test_weather_dag_has_one_publish_task(dag_bag):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/weather/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: FAIL because service/DAG are absent.
 
 - [ ] **Step 3: Implement incremental planning and TaskFlow graph**
@@ -285,13 +292,13 @@ The integration test creates a two-cell grid, two basins, NOW/Standard slices, o
 
 - [ ] **Step 4: Run domain and existing weather regression tests**
 
-Run: `pytest tests/unit/silver/weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/unit/weather tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/unit/pipelines/weather_ingest tests/contract/infra/test_silver_dags.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit the weather Silver pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/weather airflow/dags/silver_weather_aggregation.py tests/unit/silver/weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_weather airflow/dags/silver_weather_aggregation.py tests/unit/pipelines/silver_weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver weather aggregation DAG"
 ```
 

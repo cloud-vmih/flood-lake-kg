@@ -7,8 +7,8 @@ from uuid import uuid4
 import typer
 
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.orchestration.bronze.config import load_bronze_config
-from flashflood_data.orchestration.bronze.factory import build_bronze_service
+from flashflood_data.pipelines.static_bronze.config import load_bronze_config
+from flashflood_data.pipelines.static_bronze.runtime import build_bronze_service
 
 bronze_app = typer.Typer(no_args_is_help=True)
 
@@ -22,17 +22,21 @@ def backfill(
     run_id: Annotated[str | None, typer.Option("--run-id")] = None,
 ) -> None:
     """Parse existing registered raw objects; never call acquisition adapters."""
-    config = load_bronze_config(ProjectPaths.discover().root / "config" / "bronze" / "static.yaml")
+    config = load_bronze_config(
+        ProjectPaths.discover().root / "config" / "pipelines" / "static_bronze.yaml"
+    )
     if source_id not in config.sources:
         raise typer.BadParameter("unknown Bronze source", param_hint="--source-id")
     service = build_bronze_service()
     version = config.parser_version(source_id)
-    selected = list(service.discover(
-        source_id, parser_version=version, force_reprocess=force_reprocess
-    ))
+    selected = list(
+        service.discover(source_id, parser_version=version, force_reprocess=force_reprocess)
+    )
     if object_id is not None:
         if object_id not in selected:
-            raise typer.BadParameter("object is not available for this source", param_hint="--object-id")
+            raise typer.BadParameter(
+                "object is not available for this source", param_hint="--object-id"
+            )
         selected = [object_id]
     if dry_run:
         typer.echo(json.dumps({"source_id": source_id, "object_ids": selected}, sort_keys=True))

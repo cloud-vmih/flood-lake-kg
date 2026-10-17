@@ -23,7 +23,7 @@ from flashflood_data.catalog.models import (
     ValidationResult,
 )
 from flashflood_data.core.config import EnvironmentSettings
-from flashflood_data.static.sources.budget import StorageBudget
+from flashflood_data.shared.storage_budget import StorageBudget
 from flashflood_data.storage.http import (
     BudgetRejected,
     DownloadFailed,
@@ -117,9 +117,7 @@ def test_default_client_allows_slow_provider_responses(project_paths, catalog) -
     fetcher = HttpFetcher(
         project_paths,
         catalog,
-        StorageBudget(
-            project_paths.dataset, soft_cap_bytes=2**30, minimum_free_bytes=0
-        ),
+        StorageBudget(project_paths.dataset, soft_cap_bytes=2**30, minimum_free_bytes=0),
     )
     try:
         assert fetcher.client.timeout.connect == 30.0
@@ -202,7 +200,9 @@ def test_fetcher_preserves_ephemeral_headers_when_resuming(
 
     def first_response(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(200, headers={"ETag": '"fixture-v1"'}, stream=InterruptedStream(b"valid-"))
+        return httpx.Response(
+            200, headers={"ETag": '"fixture-v1"'}, stream=InterruptedStream(b"valid-")
+        )
 
     def resumed_response(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -214,10 +214,15 @@ def test_fetcher_preserves_ephemeral_headers_when_resuming(
 
     respx.get(remote_asset.uri).mock(side_effect=[first_response, resumed_response])
 
-    record = fetcher.fetch(remote_asset, "run-resume-auth", headers={"Authorization": "Bearer ephemeral"})
+    record = fetcher.fetch(
+        remote_asset, "run-resume-auth", headers={"Authorization": "Bearer ephemeral"}
+    )
 
     assert Path(record.storage_path).read_bytes() == b"valid-payload"
-    assert [request.headers.get("Authorization") for request in requests] == ["Bearer ephemeral", "Bearer ephemeral"]
+    assert [request.headers.get("Authorization") for request in requests] == [
+        "Bearer ephemeral",
+        "Bearer ephemeral",
+    ]
     assert requests[1].headers["Range"] == "bytes=6-"
 
 
@@ -267,9 +272,7 @@ def test_stream_aborts_and_quarantines_before_exceeding_conservative_bound(
     fetcher: HttpFetcher, project_paths, catalog, remote_asset: RemoteAsset
 ) -> None:
     stream = ChunkStream(b"1234", b"56")
-    remote = remote_asset.model_copy(
-        update={"expected_size": None, "budget_size_bytes": 5}
-    )
+    remote = remote_asset.model_copy(update={"expected_size": None, "budget_size_bytes": 5})
     respx.get(remote.uri).mock(return_value=httpx.Response(200, stream=stream))
 
     with pytest.raises(PayloadMismatch, match="budget_size_exceeded"):
@@ -548,7 +551,10 @@ def test_partial_without_sidecar_is_discarded_and_restarted(
 ) -> None:
     payload = b"fresh!"
     remote = remote_asset.model_copy(
-        update={"expected_size": len(payload), "expected_checksum": hashlib.sha256(payload).hexdigest()}
+        update={
+            "expected_size": len(payload),
+            "expected_checksum": hashlib.sha256(payload).hexdigest(),
+        }
     )
     target = project_paths.dataset / remote.target_relative_path
     target.parent.mkdir(parents=True)
@@ -640,7 +646,10 @@ def test_mismatched_resume_fingerprint_discards_partial_before_request(
 ) -> None:
     payload = b"fresh!"
     remote = remote_asset.model_copy(
-        update={"expected_size": len(payload), "expected_checksum": hashlib.sha256(payload).hexdigest()}
+        update={
+            "expected_size": len(payload),
+            "expected_checksum": hashlib.sha256(payload).hexdigest(),
+        }
     )
     _interrupt_owned_partial(project_paths, catalog, remote)
     state_path = next((project_paths.catalog / "download_state").glob("*.json"))
@@ -829,9 +838,7 @@ def test_stale_unheld_lock_file_does_not_block_fetch(
     lock_path = fetcher.lock_path(remote_asset)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.touch()
-    respx.get(remote_asset.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    respx.get(remote_asset.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     record = fetcher.fetch(remote_asset, "run-stale-lock")
 
@@ -1042,9 +1049,7 @@ def test_http_target_must_resolve_beneath_dataset_raw(
     fetcher: HttpFetcher, catalog, remote_asset: RemoteAsset, target: Path
 ) -> None:
     remote = remote_asset.model_copy(update={"target_relative_path": target})
-    route = respx.get(remote.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    route = respx.get(remote.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     with pytest.raises(ValueError, match="dataset/raw"):
         fetcher.fetch(remote, "run-target-traversal")
@@ -1380,7 +1385,9 @@ def test_quarantine_retains_partial_and_pending_state_until_catalog_transition_s
             state_path = next((project_paths.catalog / "download_state").glob("*.json"))
             observed_pending_state.update(json.loads(state_path.read_text(encoding="utf-8")))
             assert partial.read_bytes() == payload
-            assert Path(str(observed_pending_state["pending_quarantine_path"])).read_bytes() == payload
+            assert (
+                Path(str(observed_pending_state["pending_quarantine_path"])).read_bytes() == payload
+            )
         return real_transition(record_id, target, **updates)
 
     monkeypatch.setattr(catalog, "transition", inspect_transition)
@@ -1479,12 +1486,8 @@ def test_target_appearing_during_publication_is_preserved(
         Path(destination).write_bytes(b"concurrent-valid-final")
         raise FileExistsError(destination)
 
-    monkeypatch.setattr(
-        "flashflood_data.storage.http.quarantine.os.link", competing_publication
-    )
-    respx.get(remote_asset.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    monkeypatch.setattr("flashflood_data.storage.http.quarantine.os.link", competing_publication)
+    respx.get(remote_asset.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     with pytest.raises(ExistingAssetConflict):
         fetcher.fetch(remote_asset, "run-race")
@@ -1556,9 +1559,7 @@ def test_partial_cleanup_failure_cannot_turn_catalogued_success_into_failure(
         real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", failing_partial_unlink)
-    respx.get(remote_asset.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    respx.get(remote_asset.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     record = fetcher.fetch(remote_asset, "run-cleanup-failure")
 
@@ -1703,12 +1704,8 @@ def test_failed_asset_without_published_bytes_can_retry_corrected_remote_identit
     failed = catalog.get(remote_asset.asset_id)
     assert failed.status is AssetStatus.FAILED
     assert not Path(failed.storage_path).exists()
-    corrected = remote_asset.model_copy(
-        update={"uri": f"{remote_asset.uri}&SCALESIZE=Long(100)"}
-    )
-    respx.get(corrected.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    corrected = remote_asset.model_copy(update={"uri": f"{remote_asset.uri}&SCALESIZE=Long(100)"})
+    respx.get(corrected.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     record = fetcher.fetch(corrected, "run-corrected")
 
@@ -1757,9 +1754,7 @@ def test_existing_fetching_row_with_same_provenance_continues_legally(
     )
     catalog.upsert(discovered)
     catalog.transition(remote_asset.asset_id, AssetStatus.FETCHING)
-    respx.get(remote_asset.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    respx.get(remote_asset.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     record = fetcher.fetch(remote_asset, "run-continue")
 
@@ -1852,9 +1847,7 @@ def test_catalog_observes_fetching_then_fetched_lifecycle(
         return real_upsert(record)
 
     monkeypatch.setattr(catalog, "upsert", recording_upsert)
-    respx.get(remote_asset.uri).mock(
-        return_value=httpx.Response(200, content=b"valid-payload")
-    )
+    respx.get(remote_asset.uri).mock(return_value=httpx.Response(200, content=b"valid-payload"))
 
     fetcher.fetch(remote_asset, "run-lifecycle")
 
@@ -1964,7 +1957,7 @@ def test_redaction_filter_handles_digest_google_signatures_and_non_string_args()
             'response="fixture-response"; X-Safe: kept'
         ),
         (
-            'Authorization: Digest username="fixture-user\\\";fixture-suffix", '
+            'Authorization: Digest username="fixture-user\\";fixture-suffix", '
             'response="fixture-response"; X-Safe: kept'
         ),
     ],
@@ -1973,9 +1966,7 @@ def test_redaction_filter_handles_digest_google_signatures_and_non_string_args()
 def test_redaction_filter_consumes_quoted_digest_values_to_unquoted_separator(
     authorization: str,
 ) -> None:
-    record = logging.LogRecord(
-        "fixture", logging.ERROR, __file__, 1, authorization, (), None
-    )
+    record = logging.LogRecord("fixture", logging.ERROR, __file__, 1, authorization, (), None)
 
     assert SecretRedactionFilter().filter(record)
     rendered = record.getMessage()
@@ -2007,8 +1998,7 @@ def test_redaction_filter_treats_authorization_query_as_query_not_header() -> No
     assert SecretRedactionFilter().filter(record)
 
     assert record.getMessage() == (
-        "url=https://example.invalid/file?authorization=[REDACTED]&"
-        "safe=kept&tile=N21E103"
+        "url=https://example.invalid/file?authorization=[REDACTED]&safe=kept&tile=N21E103"
     )
 
 
@@ -2040,10 +2030,7 @@ def test_redaction_filter_stops_authorization_at_multiline_header_boundary() -> 
     "message,expected,secret",
     [
         (
-            (
-                "{'Authorization': 'Digest fixture-dict-secret;fixture-suffix', "
-                "'safe': 'kept'}"
-            ),
+            ("{'Authorization': 'Digest fixture-dict-secret;fixture-suffix', 'safe': 'kept'}"),
             "{'Authorization': '[REDACTED]', 'safe': 'kept'}",
             "fixture-dict-secret",
         ),
@@ -2065,9 +2052,7 @@ def test_redaction_filter_handles_quoted_mapping_authorization_fields(
     expected: str,
     secret: str,
 ) -> None:
-    record = logging.LogRecord(
-        "fixture", logging.ERROR, __file__, 1, message, (), None
-    )
+    record = logging.LogRecord("fixture", logging.ERROR, __file__, 1, message, (), None)
 
     assert SecretRedactionFilter().filter(record)
 

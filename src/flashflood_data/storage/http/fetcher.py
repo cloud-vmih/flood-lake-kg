@@ -23,7 +23,7 @@ from flashflood_data.catalog.models import (
 )
 from flashflood_data.core.config import EnvironmentSettings
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.static.sources.budget import StorageBudget
+from flashflood_data.shared.storage_budget import StorageBudget
 from flashflood_data.storage.http.errors import (
     BoundExceeded as _BoundExceeded,
 )

@@ -44,6 +44,8 @@ class FakeSpark:
 
     def sql(self, statement: str) -> FakeResult:
         self.statements.append(statement)
+        if "ST_AsText" in statement:
+            return FakeResult([("POINT (102 21)",)])
         if statement.startswith("SELECT"):
             if self.read_error:
                 raise self.read_error
@@ -67,6 +69,14 @@ def test_catalog_options_require_secrets_and_redact_credentials() -> None:
     assert options[f"{prefix}.credential"] == "client:secret"
     assert options[f"{prefix}.io-impl"] == "org.apache.iceberg.aws.s3.S3FileIO"
     assert options[f"{prefix}.s3.endpoint"] == "http://minio:9000"
+    assert options["spark.sql.extensions"] == (
+        "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,"
+        "org.apache.sedona.sql.SedonaSqlExtensions"
+    )
+    assert options["spark.serializer"] == "org.apache.spark.serializer.KryoSerializer"
+    assert options["spark.kryo.registrator"] == (
+        "org.apache.sedona.core.serde.SedonaKryoRegistrator"
+    )
     assert "credential" in options["spark.redaction.regex"].lower()
 
     for missing in env:
@@ -82,6 +92,16 @@ def test_smoke_namespace_is_generated_and_not_user_controlled() -> None:
 
     assert re.fullmatch(r"smoke_[0-9a-f]{32}", first)
     assert first != second
+
+
+def test_sedona_spatial_function_is_available() -> None:
+    spark = FakeSpark()
+
+    smoke.run_spatial_smoke(spark)
+
+    assert spark.statements == [
+        "SELECT ST_AsText(ST_Point(102.0, 21.0)) AS wkt"
+    ]
 
 
 def test_roundtrip_cleans_up_only_its_table_after_success() -> None:

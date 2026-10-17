@@ -19,7 +19,7 @@ from uuid import uuid4
 from pyiceberg.expressions import EqualTo
 
 from flashflood_data.core.lakehouse import LakehouseSettings
-from flashflood_data.orchestration.landing.models import SourceObjectRow
+from flashflood_data.pipelines.static_landing.models import SourceObjectRow
 from flashflood_data.storage.iceberg import SourceObjectInventory, load_polaris_catalog
 from flashflood_data.storage.object_store import ObjectPublisher, PyArrowS3ObjectStore
 

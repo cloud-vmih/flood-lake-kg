@@ -16,14 +16,14 @@ def test_each_dynamic_source_has_one_thin_restart_safe_dag() -> None:
         ast.parse(source)
         assert dag_id in source
         assert config_name in source
-        assert "build_weather_dag" in source
+        assert "build_project_weather_dag" in source
         assert "static_source" not in source
 
 
 def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
-    source = (
-        ROOT / "src/flashflood_data/orchestration/weather/airflow_factory.py"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src/flashflood_data/pipelines/weather_ingest/airflow.py").read_text(
+        encoding="utf-8"
+    )
     tree = ast.parse(source)
     for task_name in (
         "load_cursor",
@@ -52,8 +52,10 @@ def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
     assert ".expand(" in source
     assert "bronze_task_batch_size" in source
     assert '.expand(planned_document=plan["missing"])' not in source
-    assert '@task(retries=0, trigger_rule="none_failed")\n    def verify_contiguous_coverage' in source
-    assert '@task(retries=0, outlets=[WEATHER_BRONZE_ASSET])' in source
+    assert (
+        '@task(retries=0, trigger_rule="none_failed")\n    def verify_contiguous_coverage' in source
+    )
+    assert "@task(retries=0, outlets=[WEATHER_BRONZE_ASSET])" in source
     assert "weather_bronze_updated" in source
     assert "outlets=" in source
     assert 'pool="weather_fetch"' in source
@@ -74,6 +76,6 @@ def test_shared_factory_exposes_landing_raw_and_bronze_boundaries() -> None:
 
 def test_dynamic_writers_have_dedicated_serial_pools() -> None:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
-    assert 'airflow pools set weather_raw_writer 1' in compose
-    assert 'airflow pools set weather_bronze_writer 1' in compose
-    assert 'airflow pools set weather_fetch 4' in compose
+    assert "airflow pools set weather_raw_writer 1" in compose
+    assert "airflow pools set weather_bronze_writer 1" in compose
+    assert "airflow pools set weather_fetch 4" in compose

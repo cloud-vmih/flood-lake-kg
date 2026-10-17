@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from pyarrow import fs
 
 from flashflood_data.core.lakehouse import LakehouseSettings
-from flashflood_data.orchestration.landing.models import PublishedObject
+from flashflood_data.shared.contracts import PublishedObject
 
 _CHUNK_SIZE = 8 * 1024 * 1024
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._=@+-]*$")

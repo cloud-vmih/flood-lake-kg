@@ -1,5 +1,7 @@
 # Static Source Landing to MinIO and Iceberg Implementation Plan
 
+> **Tài liệu lịch sử:** Kế hoạch này ghi lại cấu trúc tại thời điểm triển khai. Đường dẫn runtime hiện hành nằm trong `flashflood_data.pipelines`; xem `docs/superpowers/specs/2026-10-09-vertical-slice-pipeline-architecture.vi.md` và README của từng pipeline trước khi sửa code.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build the first static-source DAG that acquires or reuses approved source assets, selects basin level 12, publishes immutable raw objects and manifests to MinIO, and registers each object in the Iceberg `meta.source_objects` inventory through Polaris.
@@ -37,7 +39,7 @@ DAG. The final integration and workflow commits are `297571a` and `fd4df08`.
 New production files:
 
 ```text
-config/landing/static.yaml
+config/pipelines/static_landing.yaml
 src/flashflood_data/core/lakehouse.py
 src/flashflood_data/storage/object_store.py
 src/flashflood_data/storage/iceberg.py
@@ -88,7 +90,7 @@ README.md
 ### Task 1: Landing configuration and immutable contracts
 
 **Files:**
-- Create: `config/landing/static.yaml`
+- Create: `config/pipelines/static_landing.yaml`
 - Create: `src/flashflood_data/core/lakehouse.py`
 - Create: `src/flashflood_data/orchestration/__init__.py`
 - Create: `src/flashflood_data/orchestration/landing/__init__.py`
@@ -219,7 +221,7 @@ Expected: PASS.
 - [x] **Step 6: Commit the contracts**
 
 ```bash
-git add config/landing/static.yaml src/flashflood_data/core/lakehouse.py src/flashflood_data/orchestration tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_landing_config.py
+git add config/pipelines/static_landing.yaml src/flashflood_data/core/lakehouse.py src/flashflood_data/orchestration tests/unit/core/test_lakehouse_config.py tests/unit/orchestration/landing/test_landing_config.py
 git commit -m "feat: define source landing contracts"
 ```
 
@@ -699,7 +701,7 @@ Expected: FAIL because `land-static` is not listed or routed.
 
 - [x] **Step 3: Add the service factory and CLI command**
 
-The factory loads `LakehouseSettings`, `config/landing/static.yaml`, existing source specs, local
+The factory loads `LakehouseSettings`, `config/pipelines/static_landing.yaml`, existing source specs, local
 `ProjectPaths`, `AssetCatalog`, `HttpFetcher`, `PyArrowS3ObjectStore`, and the Polaris inventory.
 The command emits exactly one sorted JSON summary. Configuration failures exit 2; completed exits
 0; partial or failed exits 1.

@@ -64,6 +64,7 @@ def main() -> None:
                "status": "ok" if fetched.ok else "fail",
                "http": fetched.http, "elapsed_s": fetched.elapsed_s,
                "title": "", "text_len": 0, "scope": "",
+               "text": "",
                "flood_hits": "", "place_hits": "", "exclude_hits": "",
                "keep": "", "keep_reason": "", "error": fetched.error}
         if fetched.ok:
@@ -71,7 +72,7 @@ def main() -> None:
             hits = keywords.match(parsed["text"], kw)
             keep, reason = keywords.decide(hits)
             rec.update(title=parsed["title"], text_len=parsed["text_len"],
-                       scope=parsed["scope"],
+                       scope=parsed["scope"], text = parsed["text"],
                        flood_hits="|".join(hits.get("flood", [])),
                        place_hits="|".join(keywords.place_hits(hits)),
                        exclude_hits="|".join(hits.get("exclude", [])),

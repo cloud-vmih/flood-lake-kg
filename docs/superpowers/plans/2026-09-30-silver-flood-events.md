@@ -1,5 +1,14 @@
 # Silver Flood Events Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
+> **Superseded:** use `2026-10-09-flood-event-silver.vi.md`. This plan only handles structured records and does not represent the current article → mention → event design.
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-flood-events.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -27,9 +36,9 @@
 ## File structure
 
 ```text
-config/silver/flood_events.yaml
+config/pipelines/silver/flood_events.yaml
 airflow/dags/silver_flood_events.py
-src/flashflood_data/orchestration/silver/events/
+src/flashflood_data/pipelines/flood_events/
   __init__.py
   config.py
   models.py
@@ -37,14 +46,14 @@ src/flashflood_data/orchestration/silver/events/
   normalize.py
   basin_link.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/events/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/flood_events/
   test_config.py
   test_normalize.py
   test_basin_link.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_event_pipeline.py
 ```
 
@@ -53,14 +62,14 @@ The service reads event, object, optional admin, and basin snapshots. `normalize
 ### Task 1: Define event schemas, source mappings, and models
 
 **Files:**
-- Create: `config/silver/flood_events.yaml`
-- Create: `src/flashflood_data/orchestration/silver/events/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/events/config.py`
-- Create: `src/flashflood_data/orchestration/silver/events/models.py`
+- Create: `config/pipelines/silver/flood_events.yaml`
+- Create: `src/flashflood_data/pipelines/flood_events/__init__.py`
+- Create: `src/flashflood_data/pipelines/flood_events/config.py`
+- Create: `src/flashflood_data/pipelines/flood_events/models.py`
 - Modify: `src/flashflood_data/storage/iceberg_schemas.py`
-- Modify: `config/meta/static.yaml`
+- Modify: `config/shared/metadata.yaml`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Create: `tests/unit/silver/events/test_config.py`
+- Create: `tests/unit/pipelines/flood_events/test_config.py`
 
 **Interfaces:**
 - Produces: `FloodEventConfig`, `ObservedFloodEventRow`, `EventBasinRow`, `NormalizedEventCandidate`.
@@ -82,7 +91,7 @@ def test_event_schema_keeps_nullable_document_reference():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: FAIL because contracts are missing.
 
 - [ ] **Step 3: Implement source mapping and exact schemas**
@@ -93,22 +102,22 @@ Register only the two output tables. Do not register or create schemas for defer
 
 - [ ] **Step 4: Run contract tests**
 
-Run: `pytest tests/unit/silver/events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit contracts**
 
 ```bash
-git add config/silver/flood_events.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/events src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/flood_events.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/flood_events src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/flood_events/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver flood event contracts"
 ```
 
 ### Task 2: Normalize stable event identities and revisions
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/events/reader.py`
-- Create: `src/flashflood_data/orchestration/silver/events/normalize.py`
-- Create: `tests/unit/silver/events/test_normalize.py`
+- Create: `src/flashflood_data/pipelines/flood_events/reader.py`
+- Create: `src/flashflood_data/pipelines/flood_events/normalize.py`
+- Create: `tests/unit/pipelines/flood_events/test_normalize.py`
 
 **Interfaces:**
 - Consumes: `bronze.historical_event_raw`, matching `meta.source_objects`, existing event revisions, source mapping.
@@ -134,7 +143,7 @@ def test_changed_content_increments_revision_and_clears_document_id():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/events/test_normalize.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_normalize.py -q`
 Expected: FAIL because reader/normalizer are absent.
 
 - [ ] **Step 3: Implement source-bound normalization**
@@ -152,23 +161,23 @@ Normalize timestamps to UTC without inventing missing precision, preserve report
 
 - [ ] **Step 4: Run normalization tests**
 
-Run: `pytest tests/unit/silver/events/test_normalize.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_normalize.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit normalization**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/events/reader.py src/flashflood_data/orchestration/silver/events/normalize.py tests/unit/silver/events/test_normalize.py
+git add src/flashflood_data/pipelines/flood_events/reader.py src/flashflood_data/pipelines/flood_events/normalize.py tests/unit/pipelines/flood_events/test_normalize.py
 git commit -m "feat: normalize revisioned flood events"
 ```
 
 ### Task 3: Link events to basins and enforce area semantics
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/events/basin_link.py`
-- Create: `src/flashflood_data/orchestration/silver/events/quality.py`
-- Create: `tests/unit/silver/events/test_basin_link.py`
-- Create: `tests/unit/silver/events/test_quality.py`
+- Create: `src/flashflood_data/pipelines/flood_events/basin_link.py`
+- Create: `src/flashflood_data/pipelines/flood_events/quality.py`
+- Create: `tests/unit/pipelines/flood_events/test_basin_link.py`
+- Create: `tests/unit/pipelines/flood_events/test_quality.py`
 
 **Interfaces:**
 - Consumes: normalized event, `silver.dim_basin`, optional `bronze.admin_boundary_raw` lookup.
@@ -193,7 +202,7 @@ def test_reported_point_links_without_affected_area():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/events/test_basin_link.py tests/unit/silver/events/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_basin_link.py tests/unit/pipelines/flood_events/test_quality.py -q`
 Expected: FAIL because basin linking/DQ are absent.
 
 - [ ] **Step 3: Implement assignment precedence and DQ rules**
@@ -211,23 +220,23 @@ Only the first branch computes area in the configured equal-area CRS. Admin/poin
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/events/test_basin_link.py tests/unit/silver/events/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_basin_link.py tests/unit/pipelines/flood_events/test_quality.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit basin links and DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/events/basin_link.py src/flashflood_data/orchestration/silver/events/quality.py tests/unit/silver/events/test_basin_link.py tests/unit/silver/events/test_quality.py
+git add src/flashflood_data/pipelines/flood_events/basin_link.py src/flashflood_data/pipelines/flood_events/quality.py tests/unit/pipelines/flood_events/test_basin_link.py tests/unit/pipelines/flood_events/test_quality.py
 git commit -m "feat: link flood events to basins"
 ```
 
 ### Task 4: Add service, manual DAG, integration test, and docs
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/events/service.py`
-- Create: `src/flashflood_data/orchestration/silver/events/factory.py`
+- Create: `src/flashflood_data/pipelines/flood_events/pipeline.py`
+- Create: `src/flashflood_data/pipelines/flood_events/runtime.py`
 - Create: `airflow/dags/silver_flood_events.py`
-- Create: `tests/unit/silver/events/test_service.py`
+- Create: `tests/unit/pipelines/flood_events/test_pipeline.py`
 - Create: `tests/integration/silver/test_event_pipeline.py`
 - Modify: `tests/contract/infra/test_silver_dags.py`
 - Modify: `README.md`
@@ -257,7 +266,7 @@ def test_event_dag_is_manual(dag_bag):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/events/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: FAIL because service/DAG are absent.
 
 - [ ] **Step 3: Implement incremental service and TaskFlow graph**
@@ -274,16 +283,16 @@ discover_inputs -> plan_event_batches -> normalize_and_link.expand
 
 - [ ] **Step 4: Run domain tests and scan for deferred dependencies**
 
-Run: `pytest tests/unit/silver/events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/flood_events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: PASS.
 
-Run: `rg -n "qdrant|embedding|document_chunk|event_evidence" src/flashflood_data/orchestration/silver/events airflow/dags/silver_flood_events.py`  
+Run: `rg -n "qdrant|embedding|document_chunk|event_evidence" src/flashflood_data/pipelines/flood_events airflow/dags/silver_flood_events.py`
 Expected: no matches.
 
 - [ ] **Step 5: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/events airflow/dags/silver_flood_events.py tests/unit/silver/events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/flood_events airflow/dags/silver_flood_events.py tests/unit/pipelines/flood_events tests/integration/silver/test_event_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver flood event DAG"
 ```
 

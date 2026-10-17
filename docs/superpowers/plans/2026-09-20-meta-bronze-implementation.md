@@ -1,5 +1,7 @@
 # Meta and Bronze Implementation Plan
 
+> **Tài liệu lịch sử:** Kế hoạch này ghi lại cấu trúc tại thời điểm triển khai. Đường dẫn runtime hiện hành nằm trong `flashflood_data.pipelines`; xem `docs/superpowers/specs/2026-10-09-vertical-slice-pipeline-architecture.vi.md` và README của từng pipeline trước khi sửa code.
+
 > **For agentic workers:** Execute the tasks in order, check each box after verification, and review each independently testable result before starting the next. Use the repository's execution workflow when implementation begins.
 
 **Goal:** Turn the approved Meta and Bronze data contract into queryable Iceberg tables over the raw objects already in MinIO, with repeatable parsing, quality evidence, and snapshot-level lineage.
@@ -65,7 +67,7 @@ The DAG files define orchestration only. `landing` must not import Bronze parser
 | Contract and schema | `docs/schema_contract/data.md`, `src/flashflood_data/storage/iceberg_schemas.py`, `tests/contract/storage/test_meta_bronze_schemas.py` | Frozen column names, nullability, grain, table properties. |
 | Iceberg writing | `src/flashflood_data/storage/iceberg_tables.py`, `tests/unit/storage/test_iceberg_tables.py` | Catalog/table creation, atomic object replacement, key/conflict checks, snapshot IDs. Keep `storage/iceberg.py` as the existing source-object adapter. |
 | Meta services | `src/flashflood_data/orchestration/meta/{registry,runs,quality,lineage}.py`, `airflow/dags/static_source_landing.py`, corresponding unit tests | Extend the existing landing DAG with raw-source registries, attempts and run audit; serve Bronze run/QA/snapshot/lineage recording. |
-| Bronze parsers | `config/bronze/static.yaml`, `src/flashflood_data/orchestration/bronze/{registry,vector,raster,events,osm,service}.py`, corresponding unit tests | Route by source/media type, use pinned parser/QA policy and produce Arrow rows without Silver mapping. |
+| Bronze parsers | `config/pipelines/static_bronze.yaml`, `src/flashflood_data/orchestration/bronze/{registry,vector,raster,events,osm,service}.py`, corresponding unit tests | Route by source/media type, use pinned parser/QA policy and produce Arrow rows without Silver mapping. |
 | Runtime | `airflow/dags/static_source_to_bronze.py`, `src/flashflood_data/cli/commands/bronze.py`, `tests/contract/infra/test_static_source_to_bronze_dag.py` | Airflow owns production parse scheduling and status; CLI calls the same service for tests/manual backfill. |
 | End-to-end | `tools/smoke/meta_bronze.sh`, `tests/integration/lakehouse/test_meta_bronze_smoke.py`, `README.md` | One fixture through MinIO → Iceberg → Meta audit, including retry. |
 
@@ -73,10 +75,10 @@ Do not call the existing local `dataset/harmonized` products Bronze. Reuse its r
 
 ## Task 1 — Freeze missing contract details and write feasibility probes
 
-**Files:** `docs/schema_contract/data.md`, `docs/son_la_flood_class_diagram.drawio`, `config/bronze/static.yaml`, `tests/contract/storage/test_meta_bronze_schemas.py`, `tests/fixtures/static_pipeline/`.
+**Files:** `docs/schema_contract/data.md`, `docs/son_la_flood_class_diagram.drawio`, `config/pipelines/static_bronze.yaml`, `tests/contract/storage/test_meta_bronze_schemas.py`, `tests/fixtures/static_pipeline/`.
 
 - [x] Add `bronze.admin_boundary_raw` to the contract/diagram with grain `(object_id, source_feature_id)` and columns `object_id`, `source_feature_id`, `source_id`, `source_fields_json`, `geometry_wkb`, `crs`, `bbox_wgs84`, `ingest_run_id`, `parser_version`, `quality_status`. State which admin assets are input and why sidecars are excluded.
-- [x] Pin rule identifiers/severities for raw object availability, ZIP membership, CRS, WGS84 bbox, geometry type, duplicate source key, raster band metadata, and expected nonempty output. Put source-to-parser routing, `contract_version` and `parser_version` in `config/bronze/static.yaml`; never infer them from run time.
+- [x] Pin rule identifiers/severities for raw object availability, ZIP membership, CRS, WGS84 bbox, geometry type, duplicate source key, raster band metadata, and expected nonempty output. Put source-to-parser routing, `contract_version` and `parser_version` in `config/pipelines/static_bronze.yaml`; never infer them from run time.
 - [x] Build one tiny L12 ZIP, one raster, one historical row, and one PBF fixture or use the existing fixture if it retains OSM IDs and tags. Run read probes against immutable local/MinIO-backed bytes and record resource use for PBF. Confirm source ZIP member naming rather than relying on filenames alone.
 - [x] Write a repository-level contract test that compares all actual Arrow schemas to the column sets and nullability in this document; the test should fail until Task 2 supplies schemas. Review the contract delta before creating physical tables.
 
@@ -98,7 +100,7 @@ Do not call the existing local `dataset/harmonized` products Bronze. Reuse its r
 
 **Files:** `src/flashflood_data/orchestration/meta/registry.py`, `src/flashflood_data/orchestration/meta/attempts.py`, `src/flashflood_data/orchestration/landing/service.py`, `airflow/dags/static_source_landing.py`, tests under `tests/unit/orchestration/meta/` and `tests/contract/infra/`.
 
-- [x] Add tests proving a repeated registry seed does not duplicate `(source_id, source_version)` or `(dataset_id, contract_version)` and that a changed contract creates a new version rather than mutating history. Seed source facts from `config/landing/static.yaml` plus a curated registry manifest for provider/license/owner/policy fields; never invent missing license or access policy values.
+- [x] Add tests proving a repeated registry seed does not duplicate `(source_id, source_version)` or `(dataset_id, contract_version)` and that a changed contract creates a new version rather than mutating history. Seed source facts from `config/pipelines/static_landing.yaml` plus a curated registry manifest for provider/license/owner/policy fields; never invent missing license or access policy values.
 - [x] Implement `source_registry` and `dataset_registry` writers. Include `meta` and `bronze` dataset entries, schema refs, owner and quality/access/retention policy refs; reject incomplete rows instead of using placeholder strings.
 - [x] Add a registry preflight to `static_source_landing` before its source groups. It seeds/checks `meta.source_registry` and `meta.dataset_registry`; the existing `register_batch` still writes `meta.source_objects` after MinIO publication. A registry failure stops that landing run before raw publication.
 - [x] Add landing instrumentation that records `ingest_attempts` for every asset attempt, including HTTP status/error code if observed. Stable `(ingest_run_id, source_id, asset_id, attempt_no)` must survive Airflow task retry; use actual request fingerprint from the landing service, not a new random ID.

@@ -1,5 +1,12 @@
 # Silver Common Foundation Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-common-foundation.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -26,7 +33,7 @@
 ## File structure
 
 ```text
-src/flashflood_data/orchestration/silver/
+src/flashflood_data/shared/silver/
   __init__.py                     # public Silver package
   common/
     __init__.py                   # exports stable common interfaces
@@ -36,8 +43,8 @@ src/flashflood_data/orchestration/silver/
     staging.py                    # run-scoped Parquet batches
     publisher.py                  # one-writer Iceberg publication
     audit.py                      # Meta run/DQ/snapshot/lineage recording
-    factory.py                    # production dependencies
-tests/unit/silver/common/
+    runtime.py                    # production dependencies
+tests/unit/shared/silver/
   test_versioning.py
   test_discovery.py
   test_staging.py
@@ -46,16 +53,16 @@ tests/unit/silver/common/
 tests/contract/test_architecture.py
 ```
 
-`models.py` and `versioning.py` are leaf modules. `discovery.py`, `staging.py`, `publisher.py`, and `audit.py` consume those types. `factory.py` constructs dependencies but does not call pipeline behavior. Domain packages import only the public names exported by `common/__init__.py`.
+`models.py` and `versioning.py` are leaf modules. `discovery.py`, `staging.py`, `publisher.py`, and `audit.py` consume those types. `runtime.py` constructs dependencies but does not call pipeline behavior. Domain packages import only the public names exported by `common/__init__.py`.
 
 ### Task 1: Define shared models and deterministic build identity
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/common/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/common/models.py`
-- Create: `src/flashflood_data/orchestration/silver/common/versioning.py`
-- Create: `tests/unit/silver/common/test_versioning.py`
+- Create: `src/flashflood_data/shared/silver/__init__.py`
+- Create: `src/flashflood_data/shared/silver/__init__.py`
+- Create: `src/flashflood_data/shared/silver/models.py`
+- Create: `src/flashflood_data/shared/silver/versioning.py`
+- Create: `tests/unit/shared/silver/test_versioning.py`
 
 **Interfaces:**
 - Produces: `InputSnapshotRef(table_name: str, snapshot_id: int)`.
@@ -86,7 +93,7 @@ def test_build_signature_changes_with_snapshot():
 
 - [ ] **Step 2: Run the tests and verify the missing-module failure**
 
-Run: `pytest tests/unit/silver/common/test_versioning.py -q`  
+Run: `pytest tests/unit/shared/silver/test_versioning.py -q`
 Expected: FAIL because the Silver common package does not exist.
 
 - [ ] **Step 3: Implement the DTOs and canonical hash**
@@ -112,13 +119,13 @@ Validate non-empty names/versions and positive snapshot IDs in the Pydantic mode
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/common/test_versioning.py -q`  
+Run: `pytest tests/unit/shared/silver/test_versioning.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit the identity contract**
 
 ```bash
-git add src/flashflood_data/orchestration/silver tests/unit/silver/common/test_versioning.py
+git add src/flashflood_data/shared/silver tests/unit/shared/silver/test_versioning.py
 git commit -m "feat: add Silver build identity contract"
 ```
 
@@ -126,8 +133,8 @@ git commit -m "feat: add Silver build identity contract"
 
 **Files:**
 - Modify: `src/flashflood_data/storage/iceberg_tables.py`
-- Create: `src/flashflood_data/orchestration/silver/common/discovery.py`
-- Create: `tests/unit/silver/common/test_discovery.py`
+- Create: `src/flashflood_data/shared/silver/discovery.py`
+- Create: `tests/unit/shared/silver/test_discovery.py`
 - Modify: `tests/unit/storage/test_iceberg_tables.py`
 
 **Interfaces:**
@@ -164,7 +171,7 @@ Use explicit fake snapshots and Meta rows; do not connect to Polaris.
 
 - [ ] **Step 2: Run the tests and verify failure**
 
-Run: `pytest tests/unit/silver/common/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`  
+Run: `pytest tests/unit/shared/silver/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`
 Expected: FAIL because snapshot scanning and discovery do not exist.
 
 - [ ] **Step 3: Implement storage reads and discovery**
@@ -188,21 +195,21 @@ It then finds successful/partial Meta runs with the same `job_name` and signatur
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/common/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`  
+Run: `pytest tests/unit/shared/silver/test_discovery.py tests/unit/storage/test_iceberg_tables.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit discovery**
 
 ```bash
-git add src/flashflood_data/storage/iceberg_tables.py src/flashflood_data/orchestration/silver/common/discovery.py tests/unit/silver/common/test_discovery.py tests/unit/storage/test_iceberg_tables.py
+git add src/flashflood_data/storage/iceberg_tables.py src/flashflood_data/shared/silver/discovery.py tests/unit/shared/silver/test_discovery.py tests/unit/storage/test_iceberg_tables.py
 git commit -m "feat: discover Silver builds from Iceberg snapshots"
 ```
 
 ### Task 3: Implement run-scoped staging
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/common/staging.py`
-- Create: `tests/unit/silver/common/test_staging.py`
+- Create: `src/flashflood_data/shared/silver/staging.py`
+- Create: `tests/unit/shared/silver/test_staging.py`
 
 **Interfaces:**
 - Consumes: `SilverBuildRequest`.
@@ -228,7 +235,7 @@ def test_cleanup_rejects_incomplete_run(tmp_path):
 
 - [ ] **Step 2: Run the tests and verify failure**
 
-Run: `pytest tests/unit/silver/common/test_staging.py -q`  
+Run: `pytest tests/unit/shared/silver/test_staging.py -q`
 Expected: FAIL because `SilverStaging` is missing.
 
 - [ ] **Step 3: Implement atomic Parquet batches and markers**
@@ -245,23 +252,23 @@ Write each Parquet file through a temporary sibling and `Path.replace`. Reject d
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/common/test_staging.py -q`  
+Run: `pytest tests/unit/shared/silver/test_staging.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit staging**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/common/staging.py tests/unit/silver/common/test_staging.py
+git add src/flashflood_data/shared/silver/staging.py tests/unit/shared/silver/test_staging.py
 git commit -m "feat: add Silver batch staging"
 ```
 
 ### Task 4: Add one-writer publication and Meta audit
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/common/publisher.py`
-- Create: `src/flashflood_data/orchestration/silver/common/audit.py`
-- Create: `tests/unit/silver/common/test_publisher.py`
-- Create: `tests/unit/silver/common/test_audit.py`
+- Create: `src/flashflood_data/shared/silver/publisher.py`
+- Create: `src/flashflood_data/shared/silver/audit.py`
+- Create: `tests/unit/shared/silver/test_publisher.py`
+- Create: `tests/unit/shared/silver/test_audit.py`
 
 **Interfaces:**
 - Consumes: `StagedBatch`, `PublishedOutput`, shared `QualityResult`, `IcebergTableStore`, `MetaRecorder`.
@@ -293,7 +300,7 @@ Also assert fatal pre-commit DQ prevents `publish`, and `finish_success` rejects
 
 - [ ] **Step 2: Run the tests and verify failure**
 
-Run: `pytest tests/unit/silver/common/test_publisher.py tests/unit/silver/common/test_audit.py -q`  
+Run: `pytest tests/unit/shared/silver/test_publisher.py tests/unit/shared/silver/test_audit.py -q`
 Expected: FAIL because the classes are missing.
 
 - [ ] **Step 3: Implement publisher and audit state transitions**
@@ -310,21 +317,21 @@ Lineage is one edge per input snapshot/output snapshot pair. Warnings do not blo
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/common/test_publisher.py tests/unit/silver/common/test_audit.py -q`  
+Run: `pytest tests/unit/shared/silver/test_publisher.py tests/unit/shared/silver/test_audit.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit publication and audit**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/common/publisher.py src/flashflood_data/orchestration/silver/common/audit.py tests/unit/silver/common/test_publisher.py tests/unit/silver/common/test_audit.py
+git add src/flashflood_data/shared/silver/publisher.py src/flashflood_data/shared/silver/audit.py tests/unit/shared/silver/test_publisher.py tests/unit/shared/silver/test_audit.py
 git commit -m "feat: publish and audit Silver builds"
 ```
 
 ### Task 5: Compose production dependencies and enforce architecture
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/common/factory.py`
-- Modify: `src/flashflood_data/orchestration/silver/common/__init__.py`
+- Create: `src/flashflood_data/shared/silver/runtime.py`
+- Modify: `src/flashflood_data/shared/silver/__init__.py`
 - Modify: `tests/contract/test_architecture.py`
 - Modify: `docs/pipeline_architecture_and_roadmap.md`
 
@@ -337,8 +344,8 @@ git commit -m "feat: publish and audit Silver builds"
 
 ```python
 def test_common_package_does_not_import_domains():
-    imports = imported_modules_under("src/flashflood_data/orchestration/silver/common")
-    assert not any(name.startswith("flashflood_data.orchestration.silver.basin") for name in imports)
+    imports = imported_modules_under("src/flashflood_data/shared/silver")
+    assert not any(name.startswith("flashflood_data.pipelines.silver_basin") for name in imports)
 
 def test_factory_composes_shared_dependencies(monkeypatch, tmp_path):
     dependencies = build_silver_dependencies(tmp_path)
@@ -348,7 +355,7 @@ def test_factory_composes_shared_dependencies(monkeypatch, tmp_path):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/contract/test_architecture.py tests/unit/silver/common -q`  
+Run: `pytest tests/contract/test_architecture.py tests/unit/shared/silver -q`
 Expected: FAIL because the factory/export boundary is incomplete.
 
 - [ ] **Step 3: Implement the dependency container and document the call flow**
@@ -364,18 +371,18 @@ Document that domain packages exchange data through table contracts, not service
 
 - [ ] **Step 4: Run the common suite**
 
-Run: `pytest tests/unit/silver/common tests/unit/storage/test_iceberg_tables.py tests/contract/test_architecture.py -q`  
+Run: `pytest tests/unit/shared/silver tests/unit/storage/test_iceberg_tables.py tests/contract/test_architecture.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Run repository quality checks**
 
-Run: `ruff check src tests`  
+Run: `ruff check src tests`
 Expected: PASS.
 
 - [ ] **Step 6: Commit the common foundation**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/common tests/contract/test_architecture.py docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/shared/silver tests/contract/test_architecture.py docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: complete Silver common foundation"
 ```
 

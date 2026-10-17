@@ -5,7 +5,7 @@ import pyarrow as pa
 import pytest
 from pyiceberg.exceptions import CommitFailedException
 
-from flashflood_data.orchestration.landing.models import SourceObjectRow
+from flashflood_data.pipelines.static_landing.models import SourceObjectRow
 from flashflood_data.storage.iceberg import (
     SourceObjectConflict,
     SourceObjectInventory,
@@ -144,7 +144,12 @@ def test_source_locations_returns_only_available_committed_payloads() -> None:
     class LocationTable(FakeTable):
         def scan(self, **kwargs: object):
             assert kwargs["selected_fields"] == (
-                "asset_id", "source_version", "checksum", "object_uri", "size_bytes", "status"
+                "asset_id",
+                "source_version",
+                "checksum",
+                "object_uri",
+                "size_bytes",
+                "status",
             )
             assert kwargs["row_filter"].term.name == "source_id"
             return SimpleNamespace(to_arrow=lambda: pa.Table.from_pylist([available, unavailable]))
@@ -184,6 +189,6 @@ def test_available_objects_can_limit_scan_to_registered_object_ids() -> None:
 
     inventory = SourceObjectInventory(FakeCatalog(BatchTable(existing=[])))
 
-    assert inventory.available_objects(
-        "fixture-source", object_ids=("object-1",)
-    ) == (SourceObjectRow.model_validate(available),)
+    assert inventory.available_objects("fixture-source", object_ids=("object-1",)) == (
+        SourceObjectRow.model_validate(available),
+    )

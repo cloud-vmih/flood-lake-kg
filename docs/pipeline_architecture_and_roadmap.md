@@ -1,6 +1,6 @@
 # Kiến trúc pipeline dữ liệu và kế hoạch triển khai
 
-**Cập nhật:** 28/09/2026
+**Cập nhật:** 10/10/2026
 **Phạm vi:** pipeline Raw/Landing, Meta và Bronze hiện có cho static/weather; kế hoạch tách flood event; kế hoạch Silver/Gold cho GSMaP, ERA5-Land và IFS/Open-Meteo.
 
 Tài liệu này phân biệt rõ:
@@ -10,6 +10,11 @@ Tài liệu này phân biệt rõ:
 - **Kế hoạch:** thứ tự thay đổi code, migration và tiêu chí nghiệm thu.
 
 Schema chi tiết của từng bảng nằm tại [schema_contract/data.md](schema_contract/data.md). README vẫn là tài liệu cài đặt và vận hành nhanh; file này tập trung vào cách pipeline hoạt động và thứ tự đọc code.
+
+Runtime Bronze → Silver đã chốt tại
+[spark_bronze_to_silver_architecture.md](spark_bronze_to_silver_architecture.md); implementation plan
+nền tảng nằm tại
+[2026-10-10-spark-silver-foundation.vi.md](superpowers/plans/2026-10-10-spark-silver-foundation.vi.md).
 
 ## 1. Khái niệm chung
 
@@ -21,7 +26,7 @@ Schema chi tiết của từng bảng nằm tại [schema_contract/data.md](sche
 | Raw | Payload gần nguyên trạng do provider trả về, được lưu bất biến trong MinIO. |
 | Meta | Registry, run, quality, snapshot và lineage của tất cả pipeline. |
 | Bronze | Dữ liệu đã parse theo cấu trúc nguồn nhưng chưa harmonize về mô hình nghiệp vụ chung. |
-| Silver | Dữ liệu đã chuẩn hóa CRS, unit, thời gian, ID và quan hệ không gian. |
+| Silver | Dữ liệu đã chuẩn hóa CRS, unit, thời gian, ID và quan hệ không gian; Spark/Sedona là compute engine mặc định. |
 | Gold | Dữ liệu tổng hợp theo basin, chỉ báo, trạng thái và sản phẩm phân tích. |
 
 Landing là **quá trình**, Raw là **tầng lưu trữ**. Một luồng chuẩn luôn có dạng:
@@ -35,7 +40,7 @@ flowchart LR
   M --> B
   B --> BT["Iceberg Bronze"]
   B --> Q["Meta run + quality<br/>snapshot + lineage"]
-  BT --> S["Silver harmonization"]
+  BT --> S["Spark/Sedona Silver harmonization"]
   S --> G["Gold / serving"]
 ```
 
@@ -132,25 +137,25 @@ Các source group hiện được nối tuần tự. Các thao tác publish/regi
 
 | Thứ tự | Hàm/lớp | File | Vai trò |
 | ---: | --- | --- | --- |
-| 1 | `static_source_landing_dag()` | [`airflow/dags/static_source_landing.py`](../airflow/dags/static_source_landing.py) | Khai báo DAG, source group và dependency. |
-| 2 | `register_meta_registry()` | cùng file DAG | Đọc registry source/dataset rồi seed Meta. |
-| 3 | `build_static_landing_service()` | [`src/flashflood_data/cli/app.py`](../src/flashflood_data/cli/app.py) | Ghép config, catalog, MinIO, Iceberg, fetcher và service. |
-| 4 | `StaticSourceLandingService.prepare_run()` | [`src/flashflood_data/orchestration/landing/service.py`](../src/flashflood_data/orchestration/landing/service.py) | Tạo staging và inventory các source local đúng một lần trong service instance. |
-| 5 | `acquire_validated_assets()` | [`src/flashflood_data/orchestration/landing/sources.py`](../src/flashflood_data/orchestration/landing/sources.py) | Resolve, fetch/reuse và validate asset; không harmonize. |
+| 1 | `static_source_landing_dag()` | [`pipelines/static_landing/airflow.py`](../src/flashflood_data/pipelines/static_landing/airflow.py) | Khai báo DAG, source group và dependency; file dưới `airflow/dags` chỉ import DAG này. |
+| 2 | `register_meta_registry()` | cùng `airflow.py` | Đọc registry source/dataset rồi seed Meta. |
+| 3 | `build_static_landing_service()` | [`pipelines/static_landing/runtime.py`](../src/flashflood_data/pipelines/static_landing/runtime.py) | Ghép config, catalog, MinIO, Iceberg, fetcher và service. |
+| 4 | `StaticSourceLandingService.prepare_run()` | [`src/flashflood_data/pipelines/static_landing/pipeline.py`](../src/flashflood_data/pipelines/static_landing/pipeline.py) | Tạo staging và inventory các source local đúng một lần trong service instance. |
+| 5 | `acquire_validated_assets()` | [`src/flashflood_data/pipelines/static_landing/acquisition.py`](../src/flashflood_data/pipelines/static_landing/acquisition.py) | Resolve, fetch/reuse và validate asset; không harmonize. |
 | 6 | `prepare_source_objects()` | cùng file | Chọn object chính xác; đóng gói shapefile sidecar thành ZIP xác định. |
-| 7 | `StaticSourceLandingService.publish_source()` | `landing/service.py` | Tính checksum/object ID, publish payload + manifest bất biến. |
+| 7 | `StaticSourceLandingService.publish_source()` | `pipelines/static_landing/pipeline.py` | Tính checksum/object ID, publish payload + manifest bất biến. |
 | 8 | `ObjectPublisher` | [`src/flashflood_data/storage/object_store.py`](../src/flashflood_data/storage/object_store.py) | Ghi object vào MinIO và phát hiện conflict. |
 | 9 | `SourceObjectInventory.register_many()` | [`src/flashflood_data/storage/iceberg.py`](../src/flashflood_data/storage/iceberg.py) | Commit các hàng `meta.source_objects` trong một snapshot. |
-| 10 | `audit_registered_batch()` | [`src/flashflood_data/orchestration/landing/meta_audit.py`](../src/flashflood_data/orchestration/landing/meta_audit.py) | Đối soát batch đăng ký, ghi run/quality/snapshot. |
-| 11 | `cleanup_batch()` | DAG và `landing/service.py` | Dọn staging/local copy sau khi MinIO và Iceberg đã được xác minh. |
+| 10 | `audit_registered_batch()` | [`src/flashflood_data/pipelines/static_landing/audit.py`](../src/flashflood_data/pipelines/static_landing/audit.py) | Đối soát batch đăng ký, ghi run/quality/snapshot. |
+| 11 | `cleanup_batch()` | `airflow.py` và `pipeline.py` | Dọn staging/local copy sau khi MinIO và Iceberg đã được xác minh. |
 | 12 | `publish_run_summary()` | file DAG | Tổng hợp completed/failed source; làm run fail nếu thiếu source. |
 
 ### 3.4. Cấu hình liên quan
 
 | File | Chức năng |
 | --- | --- |
-| [`config/landing/static.yaml`](../config/landing/static.yaml) | Source nào được land, mode individual/bundle, selection và basin level 12. |
-| [`config/meta/static.yaml`](../config/meta/static.yaml) | Provider/source registry và dataset registry của static pipeline. |
+| [`config/pipelines/static_landing.yaml`](../config/pipelines/static_landing.yaml) | Source nào được land, mode individual/bundle, selection và basin level 12. |
+| [`config/shared/metadata.yaml`](../config/shared/metadata.yaml) | Provider/source registry và dataset registry của static pipeline. |
 | [`config/sources/`](../config/sources/) | Source spec, adapter, version, license và setting truy cập. |
 | [`config/study_area.yaml`](../config/study_area.yaml) | AOI và threshold QA dùng bởi source adapter. |
 | [`.env.example`](../.env.example) | Tên biến môi trường; secrets thật chỉ nằm trong `.env` hoặc Airflow Connection. |
@@ -178,18 +183,22 @@ DAG đọc inventory Raw, chỉ chọn object cần xử lý và chia thành wor
 admin dùng 25 object/batch, SoilGrids dùng 16 object/batch; source khác mặc định một object.
 Task tải object từ MinIO vào temporary directory, parse, chạy quality gate rồi thay thế atomically
 toàn bộ lát Bronze của batch trong một snapshot. Quality và lineage vẫn có scope theo từng object.
+Checksum/container/CRS lỗi chặn object; feature lỗi được tách sang quarantine; feature sửa được
+vẫn publish với warning. Một object fatal không còn làm mất các object tốt trong cùng batch.
 
 ### 4.2. Luồng task
 
 ```mermaid
 flowchart LR
-  C["config/bronze/static.yaml"] --> D["discover_batches(source_id)"]
+  C["config/pipelines/static_bronze.yaml"] --> D["discover_batches(source_id)"]
   SO["meta.source_objects"] --> D
   D -->|"danh sách batch object_id"| M["dynamic mapped process_batch"]
   M --> DL["download + verify checksum"]
   DL --> P["parser theo source"]
-  P --> QA["pre-commit quality"]
-  QA --> W["replace nhiều object trong một Iceberg transaction"]
+  P --> QA["DQ theo object + feature"]
+  QA --> Q["quarantine rejected object/row"]
+  QA --> W["replace object tốt + xóa slice object blocked"]
+  Q --> W
   W --> PM["snapshot + quality + lineage + succeeded run"]
 ```
 
@@ -202,7 +211,8 @@ lần discover tiếp theo.
 Object chỉ được coi là đã xử lý khi đồng thời có:
 
 1. Lineage khớp `object_id`, bảng đích và `mapping_version`.
-2. `meta.pipeline_runs` có trạng thái `succeeded` và `published_at` khác null.
+2. `meta.pipeline_runs` có trạng thái `succeeded` hoặc `succeeded_with_warning` và
+   `published_at` khác null.
 3. Lát dữ liệu của `object_id` vẫn tồn tại trong bảng Bronze.
 
 Thay parser version, thay OSM policy hoặc dùng `force_reprocess=true` sẽ xử lý lại object. Việc ghi dùng replace-by-object nên retry không append thêm cùng một lát dữ liệu.
@@ -211,23 +221,23 @@ Thay parser version, thay OSM policy hoặc dùng `force_reprocess=true` sẽ x�
 
 | Thứ tự | Hàm/lớp | File | Vai trò |
 | ---: | --- | --- | --- |
-| 1 | `static_source_to_bronze_dag()` | [`airflow/dags/static_source_to_bronze.py`](../airflow/dags/static_source_to_bronze.py) | Tạo discover task cho từng source và mapped parse tasks. |
-| 2 | `load_bronze_config()` | [`src/flashflood_data/orchestration/bronze/config.py`](../src/flashflood_data/orchestration/bronze/config.py) | Validate target table, parser version, batch size và source status. |
-| 3 | `build_bronze_service()` | [`src/flashflood_data/orchestration/bronze/factory.py`](../src/flashflood_data/orchestration/bronze/factory.py) | Ghép inventory, MinIO, Iceberg writer, Meta recorder và OSM policy. |
-| 4 | `BronzeService.discover()` | [`src/flashflood_data/orchestration/bronze/service.py`](../src/flashflood_data/orchestration/bronze/service.py) | Đối chiếu raw object, run, lineage và lát Bronze. |
+| 1 | `static_source_to_bronze_dag()` | [`pipelines/static_bronze/airflow.py`](../src/flashflood_data/pipelines/static_bronze/airflow.py) | Tạo discover task và mapped parse; file dưới `airflow/dags` chỉ import DAG này. |
+| 2 | `load_bronze_config()` | [`src/flashflood_data/pipelines/static_bronze/config.py`](../src/flashflood_data/pipelines/static_bronze/config.py) | Validate target table, parser version, batch size và source status. |
+| 3 | `build_bronze_service()` | [`src/flashflood_data/pipelines/static_bronze/runtime.py`](../src/flashflood_data/pipelines/static_bronze/runtime.py) | Ghép inventory, MinIO, Iceberg writer, Meta recorder và OSM policy. |
+| 4 | `BronzeService.discover()` | [`src/flashflood_data/pipelines/static_bronze/pipeline.py`](../src/flashflood_data/pipelines/static_bronze/pipeline.py) | Đối chiếu raw object, run, lineage và lát Bronze. |
 | 5 | `BronzeService.process_batch()` / `process_object()` | cùng file | Batch Admin/SoilGrids hoặc xử lý một object; download, verify, parse, QA, commit và publish Meta. |
-| 6 | parser vector/raster/event | [`src/flashflood_data/orchestration/bronze/parsers.py`](../src/flashflood_data/orchestration/bronze/parsers.py) | Chuyển raw payload thành row source-faithful. |
-| 7 | parser OSM | [`src/flashflood_data/orchestration/bronze/osm.py`](../src/flashflood_data/orchestration/bronze/osm.py) | Stream PBF theo batch và lọc nhóm phục vụ lũ. |
-| 8 | `check_parsed_rows()` | [`src/flashflood_data/orchestration/bronze/quality.py`](../src/flashflood_data/orchestration/bronze/quality.py) | Kiểm tra nonempty, key, geometry, bbox và raster metadata. |
+| 6 | parser vector/raster | [`src/flashflood_data/pipelines/static_bronze/parsers.py`](../src/flashflood_data/pipelines/static_bronze/parsers.py) | Chuyển raw payload static thành row source-faithful. Parser event thuộc pipeline `flood_events`. |
+| 7 | parser OSM | [`src/flashflood_data/pipelines/static_bronze/osm.py`](../src/flashflood_data/pipelines/static_bronze/osm.py) | Stream PBF theo batch và lọc nhóm phục vụ lũ. |
+| 8 | `check_parsed_rows()` | [`src/flashflood_data/pipelines/static_bronze/quality.py`](../src/flashflood_data/pipelines/static_bronze/quality.py) | Kiểm tra nonempty, key, geometry, bbox và raster metadata. |
 | 9 | `IcebergTableStore` | [`src/flashflood_data/storage/iceberg_tables.py`](../src/flashflood_data/storage/iceberg_tables.py) | Ensure table và replace atomically một hoặc nhiều object trong một snapshot. |
-| 10 | `MetaRecorder` | [`src/flashflood_data/orchestration/meta/service.py`](../src/flashflood_data/orchestration/meta/service.py) | Ghi pipeline run, quality, snapshot reference và lineage edge. |
+| 10 | `MetaRecorder` | [`src/flashflood_data/shared/metadata/service.py`](../src/flashflood_data/shared/metadata/service.py) | Ghi pipeline run, quality, snapshot reference và lineage edge. |
 
 ### 4.5. Cấu hình và schema
 
 | File | Chức năng |
 | --- | --- |
-| [`config/bronze/static.yaml`](../config/bronze/static.yaml) | `source_id → target_table`, parser version, batch size và QA rules. |
-| [`config/bronze/osm.yaml`](../config/bronze/osm.yaml) | Các tag hydrology, hydraulic structure, transport và critical facility được giữ. |
+| [`config/pipelines/static_bronze.yaml`](../config/pipelines/static_bronze.yaml) | `source_id → target_table`, parser version, batch size và QA rules. |
+| [`config/pipelines/static_bronze_osm.yaml`](../config/pipelines/static_bronze_osm.yaml) | Các tag hydrology, hydraulic structure, transport và critical facility được giữ. |
 | [`src/flashflood_data/storage/iceberg_schemas.py`](../src/flashflood_data/storage/iceberg_schemas.py) | Arrow schema và business key của Meta/Bronze. |
 | [`src/flashflood_data/storage/iceberg_tables.py`](../src/flashflood_data/storage/iceberg_tables.py) | Tạo/ghi bảng Iceberg qua Polaris. |
 
@@ -285,21 +295,29 @@ Luồng trên mô tả dữ liệu đã có; hai static DAG không còn tạo ho
 Thứ tự dưới đây giúp người mới hiểu pipeline mà không phải đọc toàn repository:
 
 1. [`compose.yaml`](../compose.yaml): service, volume và environment của MinIO, Polaris, Airflow.
-2. [`config/landing/static.yaml`](../config/landing/static.yaml): danh sách và cách đóng gói source.
-3. [`airflow/dags/static_source_landing.py`](../airflow/dags/static_source_landing.py): graph Airflow của Landing.
-4. [`orchestration/landing/models.py`](../src/flashflood_data/orchestration/landing/models.py): contract truyền giữa task.
-5. [`orchestration/landing/sources.py`](../src/flashflood_data/orchestration/landing/sources.py): resolve/fetch/reuse/select asset.
-6. [`orchestration/landing/service.py`](../src/flashflood_data/orchestration/landing/service.py): transaction publish → register → cleanup.
-7. [`storage/object_store.py`](../src/flashflood_data/storage/object_store.py): cách ghi/đọc MinIO.
-8. [`storage/iceberg.py`](../src/flashflood_data/storage/iceberg.py): inventory `source_objects`.
-9. [`config/bronze/static.yaml`](../config/bronze/static.yaml): source nào parse vào bảng nào.
-10. [`airflow/dags/static_source_to_bronze.py`](../airflow/dags/static_source_to_bronze.py): discover và dynamic mapping.
-11. [`orchestration/bronze/service.py`](../src/flashflood_data/orchestration/bronze/service.py): transaction parse và publish.
-12. [`orchestration/bronze/parsers.py`](../src/flashflood_data/orchestration/bronze/parsers.py): row được tạo như thế nào.
-13. [`orchestration/meta/service.py`](../src/flashflood_data/orchestration/meta/service.py): run, DQ, snapshot và lineage.
-14. [`docs/schema_contract/data.md`](schema_contract/data.md): ý nghĩa và grain của các bảng.
+2. [`config/pipelines/static_landing.yaml`](../config/pipelines/static_landing.yaml): danh sách và cách đóng gói source.
+3. [`pipelines/static_landing/README.md`](../src/flashflood_data/pipelines/static_landing/README.md): nhiệm vụ và thứ tự đọc.
+4. [`pipelines/static_landing/airflow.py`](../src/flashflood_data/pipelines/static_landing/airflow.py): graph Airflow của Landing.
+5. [`pipelines/static_landing/runtime.py`](../src/flashflood_data/pipelines/static_landing/runtime.py): composition root.
+6. [`pipelines/static_landing/models.py`](../src/flashflood_data/pipelines/static_landing/models.py): contract truyền giữa task.
+7. [`pipelines/static_landing/acquisition.py`](../src/flashflood_data/pipelines/static_landing/acquisition.py): resolve/fetch/reuse/select asset.
+8. [`pipelines/static_landing/pipeline.py`](../src/flashflood_data/pipelines/static_landing/pipeline.py): transaction publish → register → cleanup.
+9. [`storage/object_store.py`](../src/flashflood_data/storage/object_store.py): cách ghi/đọc MinIO.
+10. [`storage/iceberg.py`](../src/flashflood_data/storage/iceberg.py): inventory `source_objects`.
+11. [`pipelines/static_bronze/README.md`](../src/flashflood_data/pipelines/static_bronze/README.md): ranh giới Raw → Bronze.
+12. [`pipelines/static_bronze/airflow.py`](../src/flashflood_data/pipelines/static_bronze/airflow.py): discover và dynamic mapping.
+13. [`pipelines/static_bronze/pipeline.py`](../src/flashflood_data/pipelines/static_bronze/pipeline.py): transaction parse và publish.
+14. [`pipelines/static_bronze/parsers.py`](../src/flashflood_data/pipelines/static_bronze/parsers.py): row được tạo như thế nào.
+15. [`shared/metadata/service.py`](../src/flashflood_data/shared/metadata/service.py): run, DQ, snapshot và lineage.
+16. [`docs/schema_contract/data.md`](schema_contract/data.md): ý nghĩa và grain của các bảng.
 
 ## 7. Kiến trúc pipeline mục tiêu
+
+Từ ngày 10/10/2026, toàn bộ Bronze → Silver dùng kiến trúc trong
+[spark_bronze_to_silver_architecture.md](spark_bronze_to_silver_architecture.md). Airflow điều phối,
+Spark/Sedona xử lý ETL và commit Iceberg; Python job chỉ giữ các thuật toán hydrology raster, graph
+hoặc NLP không phù hợp với Spark SQL. Các mô tả “Python/PyIceberg writer” trong plan Silver cũ đã bị
+thay thế bởi execution contract này.
 
 Static, flood event và weather dùng chung MinIO, Iceberg Meta, DQ và lineage, nhưng mỗi domain có DAG và nhịp cập nhật riêng.
 
@@ -323,7 +341,7 @@ flowchart TD
     GS --> ASSET
     EI --> ASSET
     II --> ASSET
-    ASSET --> WS["weather_bronze_to_silver"]
+    ASSET --> WS["silver_weather_aggregation<br/>Spark/Sedona"]
     WS --> WG["weather_silver_to_gold"]
     WG --> TH["threat_b0_b3"]
   end
@@ -360,7 +378,7 @@ Cách tổ chức này giảm độ trễ và giúp vận hành theo source, nh�
 - Raw đã commit không bị rollback nếu Bronze lỗi.
 - Lần chạy sau discover lại Raw chưa parse và tiếp tục Bronze.
 - Asset event chỉ là tín hiệu đánh thức downstream; Meta và snapshot đã publish mới là nguồn sự thật.
-- Silver và Gold là DAG dùng chung, không nằm trong ingest DAG của provider.
+- Silver và Gold là DAG dùng chung, không nằm trong ingest DAG của provider; Silver gọi Spark application độc lập.
 - DAG chỉ orchestration; planner, provider adapter, parser, QA và storage transaction nằm trong package Python.
 - Backfill, catch-up và polling dùng chung service; chúng chỉ khác khoảng thời gian cần lập kế hoạch.
 - Không xóa raw object hoặc snapshot cũ khi provider phát hành revision mới.
@@ -422,34 +440,38 @@ Quy tắc chạy lại:
 
 ```text
 airflow/dags/
-├── flood_evidence_landing.py
-├── flood_evidence_to_bronze.py
-└── flood_event_harmonize.py
+├── flood_news_landing.py
+├── flood_news_to_bronze.py
+├── flood_event_mentions.py
+└── silver_flood_events.py
 
-config/
-├── landing/flood_event.yaml
-├── bronze/flood_event.yaml
-└── meta/flood_event.yaml
+config/pipelines/
+├── flood_news/
+│   ├── landing.yaml
+│   └── bronze.yaml
+└── flood_events/
+    ├── mentions.yaml
+    └── events.yaml
 
-src/flashflood_data/orchestration/flood_event/
-├── models.py
-├── landing.py
-├── parsers.py
-├── bronze.py
-├── harmonize.py
-└── quality.py
+src/flashflood_data/pipelines/
+├── flood_news/              # URL → Raw → bài báo Bronze
+└── flood_events/            # tài liệu/mention → event → basin Silver
 ```
+
+Mỗi thư mục pipeline có `README.md`, `airflow.py`, `runtime.py` và các file nghiệp vụ đặt cạnh
+nhau. File dưới `airflow/dags/` chỉ import DAG; không tạo lại tầng `orchestration` hoặc chia
+thành nhiều package kỹ thuật lồng nhau.
 
 ### 8.5. Migration khỏi static pipeline
 
 Trạng thái migration:
 
-1. Đã gỡ source khỏi `EXPECTED_SOURCE_IDS`, danh sách CLI mặc định, `config/landing/static.yaml` và `config/bronze/static.yaml`; hai static DAG không còn tạo task cho flood event.
-2. Giữ tạm source/dataset declaration trong `config/meta/static.yaml` cùng adapter/parser/schema để dữ liệu legacy vẫn có contract trong lúc chưa có pipeline mới.
+1. Đã gỡ source khỏi `EXPECTED_SOURCE_IDS`, danh sách CLI mặc định, `config/pipelines/static_landing.yaml` và `config/pipelines/static_bronze.yaml`; hai static DAG không còn tạo task cho flood event.
+2. Giữ tạm source/dataset declaration trong `config/shared/metadata.yaml` cùng adapter/parser/schema để dữ liệu legacy vẫn có contract trong lúc chưa có pipeline mới.
 3. Tạo event configs, service và DAG mới.
 4. Cho event Bronze service nhận cả source legacy `historical_flood_evidence_2020_2026` và source dài hạn `son_la_flood_evidence_compilation`.
 5. Kiểm tra pipeline mới nhận ra object/snapshot đã publish và không tạo trùng.
-6. Chuyển source/dataset declaration sang Meta config của event pipeline; sau đó mới bỏ declaration tương ứng khỏi `config/meta/static.yaml`.
+6. Chuyển source/dataset declaration sang Meta config của event pipeline; sau đó mới bỏ declaration tương ứng khỏi `config/shared/metadata.yaml`.
 7. Giữ nguyên raw object, Meta lineage và dữ liệu `bronze.historical_event_raw` hiện có.
 
 Không cần ingest lại Raw chỉ vì thay owner DAG.
@@ -475,7 +497,8 @@ Chính sách chọn dữ liệu:
 
 GSMaP NOW và IFS provisional không bị xóa chỉ vì dữ liệu final xuất hiện. Bronze và metadata audit
 được giữ; scoped Raw của hai nguồn transient hết hạn sau 7 ngày nhưng chỉ được xóa khi đã có
-Bronze snapshot, DQ passed và lineage. GSMaP Standard và ERA5-Land Raw là durable.
+Bronze snapshot, DQ `passed|warning` và lineage. Object có slice reject mang lifecycle `failed`
+và giữ Raw để review; object chỉ warning vẫn có thể hết hạn. GSMaP Standard và ERA5-Land Raw là durable.
 
 ### 9.2. Một ingest DAG cho mỗi source
 
@@ -751,13 +774,14 @@ airflow/dags/
 ├── weather_silver_to_gold.py       # kế hoạch
 └── threat_b0_b3.py                 # kế hoạch
 
-config/dynamic/
+config/pipelines/weather/
 ├── gsmap_now.yaml
 ├── gsmap_standard.yaml
 ├── era5_land.yaml
 └── ifs.yaml
 
-src/flashflood_data/orchestration/weather/
+src/flashflood_data/pipelines/weather_ingest/
+├── README.md
 ├── models.py
 ├── config.py
 ├── planner.py
@@ -769,23 +793,33 @@ src/flashflood_data/orchestration/weather/
 ├── grids.py
 ├── subset.py
 ├── lifecycle.py
-├── factory.py
-├── airflow_factory.py
-├── providers/
+├── runtime.py
+├── airflow.py
+└── providers/
 │   ├── gsmap.py
 │   ├── era5_land.py
 │   └── ifs_openmeteo.py
-├── silver/                         # kế hoạch
-│   ├── grid.py
-│   ├── basin_weights.py
-│   └── service.py
-└── gold/                           # kế hoạch
-    ├── selector.py
-    ├── windows.py
-    └── service.py
+
+src/flashflood_data/pipelines/silver_weather/  # kế hoạch riêng
+├── README.md
+├── airflow.py
+├── runtime.py
+├── grid.py
+├── basin_weights.py
+└── pipeline.py
+
+src/flashflood_data/pipelines/gold_weather/    # kế hoạch riêng
+├── README.md
+├── airflow.py
+├── runtime.py
+├── selector.py
+├── windows.py
+└── pipeline.py
 ```
 
-DAG file chỉ khai báo TaskGroup, task dependency, schedule, pool và DAG conf. Provider API, cursor, fetch, parse và commit không viết trực tiếp trong DAG.
+Mỗi file trong `airflow/dags/` chỉ import object DAG từ vertical slice tương ứng. Task graph,
+provider API, cursor, fetch, parse và commit nằm trong package pipeline; Silver và Gold không
+được nhét ngược vào `weather_ingest`.
 
 ## 10. Kế hoạch triển khai theo thứ tự
 
@@ -818,8 +852,9 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [x] Tái sử dụng `ObjectPublisher`, `SourceObjectInventory` và `MetaRecorder`.
 - [x] Tạo parser dispatch và Bronze raster-slice contract.
 - [x] Discover quét mọi Raw weather object chưa có parser version hiện tại.
-- [x] Thêm DQ cơ bản cho non-empty parse, unit, temporal interval và precipitation/runoff âm.
-- [ ] Bổ sung DQ thống kê missing, out-of-order và spatial/temporal coverage trên payload thật.
+- [x] Thêm DQ theo raster slice: checksum/readable, non-empty, array alignment, source-grid,
+  unit, temporal interval, flux âm, null-ratio warning và quarantine.
+- [ ] Bổ sung DQ out-of-order và spatial/temporal coverage bằng thống kê payload thật ở Silver.
 
 **Nghiệm thu:** fake provider chạy trọn Landing → Raw/Meta → Bronze; rerun không tạo lát trùng; Bronze lỗi có thể phục hồi từ Raw.
 
@@ -851,6 +886,8 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [x] Tạo `silver.source_grid` với stable cell identity và membership scope cho từng provider.
 - [ ] Tạo `grid_basin_weight` cho basin L12.
 - [ ] Tạo `basin_weather_value`, chuẩn hóa variable/unit/interval/revision và aggregate theo basin.
+- [ ] Chạy weight, join và aggregate bằng Spark/Sedona; không kéo toàn bộ raster slice về process Airflow.
+- [ ] Dùng Spark publish/MERGE Iceberg và DQ/quarantine chung.
 - [ ] Trigger bằng Bronze asset event và thêm reconciliation theo snapshot Meta.
 - [ ] Kiểm thử area weight, valid coverage, missing và cửa sổ không chồng lấn.
 
@@ -871,7 +908,7 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [ ] Tạo config/model/service và ba DAG ở mục 8.
 - [ ] Thay ID theo STT/vị trí dòng bằng stable source record ID.
 - [ ] Cho pipeline mới tiếp quản object legacy và bảng `bronze.historical_event_raw`.
-- [x] Gỡ event source khỏi hai static DAG; giữ adapter/parser cho pipeline mới tái sử dụng.
+- [x] Gỡ event source, adapter và parser khỏi hai static pipeline; chuyển parser có thể tái sử dụng sang `pipelines/flood_events`.
 - [ ] Giữ nguyên Raw, Meta lineage và snapshot cũ.
 
 **Nghiệm thu:** static DAG không còn sở hữu flood event; rerun không tăng row ngoài ý muốn; evidence mới và revision event hoạt động đúng.
@@ -881,11 +918,20 @@ Mỗi task phải tạo ra đầu ra chạy và kiểm thử độc lập. Khôn
 - [ ] Theo dõi source lag, polling lag, processing lag, data age, gap count và watermark age.
 - [ ] Cảnh báo stale/missing theo product; không tự đổi nguồn âm thầm.
 - [ ] Thêm reconcile command cho weather và flood event.
-- [ ] Viết runbook backfill, retry, quarantine, revision và recovery sau downtime.
+- [x] Viết runbook DQ/quarantine, migration audit/apply và retry đúng loại lỗi.
 - [x] Cập nhật README, schema contract và draw.io theo code đã triển khai.
 - [ ] Kiểm thử Compose restart trên Linux và WSL2 với state được giữ.
 
 **Nghiệm thu:** có thể replay một khoảng từ Raw; run lỗi không công bố snapshot hoàn tất; teammate dừng rồi bật Compose vẫn catch-up được.
+
+### 10.1. Migration DQ cho Bronze cũ
+
+`bronze_quality_backfill` là DAG manual, pause mặc định, chạy tuần tự qua pool `bronze_writer`.
+Planner pin snapshot và tạo checkpoint theo `(dataset_id, snapshot_id, policy_id, object_id)`.
+`mode=audit` không rewrite Bronze và không gọi provider; `mode=apply` mới chuẩn hóa row hoặc parse
+lại từ Raw trong MinIO. Raw mất/hết hạn được ghi `mark_raw_unavailable`, không tự download lại.
+Chi tiết vận hành nằm trong
+[`docs/runbooks/data_quality_and_quarantine.md`](runbooks/data_quality_and_quarantine.md).
 
 ## 11. Quyết định đã chốt và điểm cần xác minh
 

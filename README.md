@@ -16,7 +16,7 @@ flowchart LR
     E --> F
     F --> G[Iceberg bronze]
     F --> H[Quality và lineage trong meta]
-    G --> I[Silver L12 - kế hoạch tiếp theo]
+    G --> I[Silver L12 qua Spark/Sedona - runtime đã sẵn sàng]
     B --> W[GSMaP NOW / Standard<br/>ERA5-Land / IFS ingest]
     W --> D
     W --> E
@@ -29,7 +29,7 @@ hướng dẫn chạy lại pipeline đó.
 
 ## Trạng thái hiện tại
 
-Cập nhật ngày **28/09/2026**:
+Cập nhật ngày **11/10/2026**:
 
 | Hạng mục | Trạng thái |
 | --- | --- |
@@ -38,8 +38,9 @@ Cập nhật ngày **28/09/2026**:
 | Static Source Landing | 10 nguồn đang hoạt động; source flood-event legacy đã gỡ khỏi DAG nhưng dữ liệu cũ vẫn được giữ |
 | Static Bronze | Sáu bảng Bronze đã có dữ liệu; parser chạy idempotent theo `object_id` |
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
-| Spark/Iceberg | Đã có profile tùy chọn và smoke test ghi–đọc bảng tạm |
-| Silver L12 | Chưa triển khai |
+| Spark/Sedona/Iceberg | Runtime local đã pin Spark 4.1.3, Scala 2.13, Java 17, Iceberg 1.11.0 và Sedona 1.9.1; smoke spatial SQL + ghi/đọc/xóa Iceberg đã chạy thành công |
+| DQ/quarantine | Contract/policy/quarantine đã tích hợp vào Landing, static Bronze và weather Bronze; có lifecycle guard, DAG migration Bronze cũ và smoke cô lập; Silver/Gold sẽ dùng cùng contract |
+| Silver L12 | Chưa triển khai; sẽ dùng Spark/Sedona, với Python chuyên dụng cho hydrology raster và NLP |
 | GSMaP, ERA5-Land và IFS | Bốn DAG scoped Raw → Meta → Bronze đã hoàn tất; GSMaP Standard và ERA5-Land đã tối ưu giới hạn backfill, resume theo object thiếu và bốn fetch task song song; các DAG tạo mới đều pause |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
@@ -185,7 +186,7 @@ OPEN_METEO_API_KEY=
 ```
 
 Tài khoản CDS phải chấp nhận terms của dataset ERA5-Land trước lần tải đầu. Không đặt secret trong
-`config/dynamic/*.yaml`.
+`config/pipelines/weather/*.yaml`.
 
 Tài liệu provider: [JAXA GSMaP user guide](https://sharaku.eorc.jaxa.jp/GSMaP/guide.html),
 [Copernicus CDS API setup](https://cds.climate.copernicus.eu/how-to-api),
@@ -262,7 +263,7 @@ Các task có vai trò khác nhau:
 | `audit_registered_meta` | Ghi `ingest_attempts`, `quality_results`, `table_snapshot_ref`, `pipeline_runs` |
 | `publish_run_summary` | Tổng hợp source thành công/thất bại cho toàn DAG run |
 
-Mười source hiện được cấu hình trong `config/landing/static.yaml`:
+Mười source hiện được cấu hình trong `config/pipelines/static_landing.yaml`:
 
 ```text
 sonla_admin_2025
@@ -338,13 +339,13 @@ Raw ở MinIO; Bronze không mosaic hoặc cắt raster theo AOI.
 Mỗi lần chạy, task `discover_<source_id>` vẫn kiểm tra toàn bộ object khả dụng. Một object được
 skip khi đồng thời có:
 
-- pipeline run đã publish thành công;
+- pipeline run có trạng thái `succeeded` hoặc `succeeded_with_warning` và đã publish;
 - lineage đúng `(object_id, target_table, parser_version)`;
 - slice của object vẫn tồn tại trong bảng Bronze.
 
 Object mới từ Landing được parse và thêm slice mới. Object cũ hợp lệ không tạo parse task. Bật
 `force_reprocess` sẽ xử lý lại object và replace đúng slice của object đó, không append trùng.
-Danh sách còn thiếu được chia theo `batch_size` trong `config/bronze/static.yaml`; các source
+Danh sách còn thiếu được chia theo `batch_size` trong `config/pipelines/static_bronze.yaml`; các source
 khác mặc định một object/task.
 
 ### Chạy Bronze DAG
@@ -417,8 +418,23 @@ s3://raw/weather/<source_id>/<product>/<spatial_scope_id>/YYYY/MM/DD/<asset_id>/
 `meta.source_objects` giữ inventory, `meta.ingest_watermarks` giữ cursor riêng theo scope và
 `meta.object_lifecycle` giữ vòng đời object. GSMaP Standard và ERA5-Land có retention `durable`.
 GSMaP NOW và IFS có retention `transient_7d`: cleanup chỉ xóa payload và manifest Raw sau 7 ngày
-khi đã có Bronze snapshot, QA `passed` và lineage; Bronze vẫn được giữ. Nếu bất kỳ bằng chứng nào
-thiếu hoặc MinIO delete lỗi, object không được đánh dấu `expired` và lần sau sẽ thử lại.
+khi đã có Bronze snapshot, QA `passed|warning` và lineage; Bronze vẫn được giữ. Object có slice
+reject mang lifecycle `failed` nên Raw tiếp tục được giữ để review. Nếu bất kỳ bằng chứng nào thiếu
+hoặc MinIO delete lỗi, object không được đánh dấu `expired` và lần sau sẽ thử lại.
+
+### Audit/migrate DQ cho Bronze cũ
+
+DAG `bronze_quality_backfill` được pause mặc định và không có schedule. Chạy audit trước; lệnh này
+không rewrite Bronze và không gọi provider:
+
+```bash
+make dq-audit-plan DATASET=bronze.weather_raster_slice LIMIT=100
+make lakehouse-dq-smoke
+```
+
+Sau khi review Meta/quarantine, trigger DAG với `mode=apply` cho batch nhỏ. Checkpoint gồm
+dataset, input snapshot, policy và object nên có thể chạy tiếp mà không làm lại object đã apply.
+Chi tiết xem [runbook DQ/quarantine](docs/runbooks/data_quality_and_quarantine.md).
 
 ERA5-Land Bronze giữ accumulation gốc từ 00 UTC; de-accumulate theo giờ thuộc Silver tương lai.
 `silver.grid_basin_weight` và `silver.basin_weather_value` chưa triển khai; hiện chưa có bước
@@ -565,7 +581,7 @@ Các endpoint local:
 | Trino | <http://127.0.0.1:8083/> |
 | PostgreSQL | Chỉ nội bộ Docker tại `postgres:5432` |
 
-## Spark tùy chọn
+## Spark cho Bronze → Silver
 
 Spark không khởi động cùng stack cơ sở:
 
@@ -577,8 +593,14 @@ make spark-smoke
 make spark-down
 ```
 
-Smoke test tạo một bảng Iceberg tạm qua Polaris/MinIO, đọc lại rồi xóa bảng. Spark hiện là runtime
-chuẩn bị cho transform lớn; hai DAG static hiện tại chạy bằng Python/Airflow.
+Smoke test gọi hàm spatial SQL của Sedona, tạo một bảng Iceberg tạm qua Polaris/MinIO, đọc lại rồi
+xóa bảng. Spark là compute engine
+mặc định cho các pipeline Bronze → Silver sắp triển khai; hai DAG Raw/Bronze hiện tại vẫn chạy bằng
+Python/Airflow. Airflow sẽ gọi `spark-submit`, không tạo Spark driver trong scheduler. Các thuật toán
+hydrology raster và NLP dùng Python job riêng, ghi Parquet staging để Spark DQ/assemble/commit.
+
+Kiến trúc và lộ trình chi tiết nằm tại
+[docs/spark_bronze_to_silver_architecture.md](docs/spark_bronze_to_silver_architecture.md).
 
 ## Cấu trúc code liên quan pipeline DAG
 
@@ -594,19 +616,29 @@ chuẩn bị cho transform lớn; hai DAG static hiện tại chạy bằng Pyth
 ├── config/
 │   ├── study_area.yaml                # L12, upstream hops, buffer và CRS
 │   ├── sources/*.yaml                 # Adapter, version và policy của nguồn
-│   ├── dynamic/*.yaml                 # Product, schedule, biến, overlap và chunk weather
-│   ├── landing/static.yaml            # 10 source đang hoạt động và selection của Landing
-│   ├── bronze/static.yaml             # source → parser/table/version
-│   ├── bronze/osm.yaml                # Allowlist OSM phục vụ lũ
-│   └── meta/static.yaml               # Registry nguồn/dataset
+│   ├── pipelines/static_landing.yaml  # 10 source và selection của Landing
+│   ├── pipelines/static_bronze.yaml   # source → parser/table/version
+│   ├── pipelines/static_bronze_osm.yaml # Allowlist OSM phục vụ lũ
+│   ├── pipelines/weather/*.yaml       # Product, schedule, biến, overlap và chunk
+│   ├── spark/local.yaml               # Resource/profile Spark Silver trên máy local
+│   ├── quality/*.yaml                 # Policy DQ có version cho Bronze/Silver/Gold
+│   └── shared/metadata.yaml           # Registry nguồn/dataset dùng chung
 ├── src/flashflood_data/
-│   ├── orchestration/landing/         # Acquire, publish, register, audit, cleanup
-│   ├── orchestration/bronze/          # Discover, parse, quality, reconcile
-│   ├── orchestration/weather/          # Planner, watermark, provider, Raw/Bronze, DAG factory
-│   ├── orchestration/meta/            # Ghi registry, run, quality, snapshot, lineage
-│   ├── static/sources/                # Adapter theo từng nhà cung cấp
-│   └── storage/                       # MinIO, Polaris và Iceberg table/schema
-├── infra/                             # Docker image và cấu hình service
+│   ├── pipelines/study_area/          # Dựng 5 AOI L12 trước các DAG
+│   ├── pipelines/static_landing/      # Landing flow, runtime và source adapters
+│   ├── pipelines/static_bronze/       # Discover, parse, quality và reconcile
+│   ├── pipelines/weather_ingest/      # Planner, provider, Raw/Bronze và DAG factory
+│   ├── pipelines/quality_migration/    # Audit/apply DQ cho Bronze cũ, không fetch provider
+│   ├── pipelines/flood_events/        # Parser/event logic đã tách khỏi static; DAG chưa có
+│   ├── pipelines/silver_static_features/ # Kernel DEM/soil/landcover/population cho Silver
+│   ├── shared/contracts/              # DTO object/batch dùng giữa các pipeline và storage
+│   ├── shared/geospatial/             # Raster/vector/zonal/overlay primitive dùng chung
+│   ├── shared/metadata/               # Registry, run, quality, snapshot và lineage
+│   ├── shared/quality/                 # Finding, policy, quarantine và publish coordinator
+│   ├── shared/spark/                   # Runtime config, request/snapshot DTO và Spark session
+│   ├── shared/batching.py             # Batch helper dùng giữa các pipeline
+│   └── storage/                       # MinIO, HTTP, Polaris và Iceberg; không chứa rule nguồn
+├── infra/docker/spark/                # Image Spark/Sedona/Iceberg cho Silver
 ├── tools/bootstrap/                   # Init môi trường và prerequisite
 ├── tools/smoke/                       # Smoke test stack/pipeline
 ├── tests/                             # Unit, contract và integration tests
@@ -618,22 +650,49 @@ Adapter là lớp nối pipeline chung với chi tiết từng nguồn. Ví dụ
 DEM adapter chọn tile CDSE và WorldCover adapter chọn tile lớp phủ. DAG chỉ điều phối dependency,
 retry, mapping và pool; logic dữ liệu nằm trong package để test và CLI recovery dùng chung.
 
+Mỗi file trong `airflow/dags/` chỉ là entrypoint mỏng. Đọc code theo package pipeline:
+
+- [Static Landing](src/flashflood_data/pipelines/static_landing/README.md)
+- [Static Raw → Bronze](src/flashflood_data/pipelines/static_bronze/README.md)
+- [Dynamic weather ingest](src/flashflood_data/pipelines/weather_ingest/README.md)
+- [Study area L12](src/flashflood_data/pipelines/study_area/README.md)
+- [Silver static feature kernels](src/flashflood_data/pipelines/silver_static_features/README.md)
+- [Flood events](src/flashflood_data/pipelines/flood_events/README.md)
+- [Shared và storage](src/flashflood_data/shared/README.md)
+
+Trong mỗi package, đọc `README.md`, rồi đến `airflow.py`, `runtime.py`, file pipeline/service và
+parser hoặc adapter. Cấu trúc vertical slice gom flow nghiệp vụ dưới một thư mục pipeline;
+`shared` chỉ giữ contract/primitive có ít nhất hai owner, còn `storage` chỉ làm I/O hạ tầng.
+
+Package `flashflood_data.static` và workflow file-first cũ đã bị xóa. AOI thuộc `study_area`,
+source adapter thuộc `static_landing`, parser static thuộc `static_bronze`, thuật toán tổng hợp
+feature thuộc `silver_static_features`, còn parser sự kiện thuộc `flood_events`. Vì vậy khi tìm
+logic của một DAG không cần lần theo một package `static` thứ hai.
+
+Sau khi pull commit refactor này trên máy đang chạy stack, chạy `make lakehouse-up` để build lại
+image và recreate các container Airflow với module path mới. Không xóa `dataset/lakehouse/` và
+không cần ingest lại Raw/Bronze; DAG ID, task ID, schema, object key và config value không đổi.
+
 ## Pipeline tiếp theo
 
 Thứ tự triển khai dự kiến:
 
-1. Chạy sample thật cho GSMaP, ERA5-Land và IFS; xác minh credential, quota, format, latency và
-   kích thước trước khi backfill lớn.
-2. `static_bronze_to_silver`: schema chuẩn L12, topology, raster/OSM aggregate theo basin.
-3. `flood_event_landing`, `flood_event_to_bronze` và `flood_event_harmonize`: tách sự kiện lũ
-   khỏi static pipeline.
-4. `weather_bronze_to_silver` và `weather_silver_to_gold`: map grid → basin L12, chọn
-   final/provisional và tạo basin-hour forcing.
-5. Threat B0–B3, Knowledge Graph, routing, API và dashboard.
+1. Chạy `bronze_quality_backfill` ở `mode=audit` theo từng bảng, review reject/fatal rồi mới apply.
+2. Bổ sung Spark submit lifecycle, pinned-snapshot read, staging và Iceberg publish dùng chung.
+3. Xây `silver_basin_topology` làm vertical slice đầu tiên và dùng DQ contract hiện có.
+4. Xây `silver_weather_aggregation` bằng Spark để kiểm chứng workload lớn và incremental load.
+5. Xây static features theo Spark planner/publisher + Python hydrology raster.
+6. Xây river network, exposure và flood event theo các Spark domain job riêng.
+7. Xây Gold, threat B0–B3, Knowledge Graph, routing, API và dashboard.
+
+Runbook kiểm tra/reprocess nằm tại
+[`docs/runbooks/data_quality_and_quarantine.md`](docs/runbooks/data_quality_and_quarantine.md).
 
 Schema contract hiện tại nằm tại [docs/schema_contract/data.md](docs/schema_contract/data.md).
 Tổng quan pipeline và kế hoạch tiếp theo nằm tại
 [docs/pipeline_architecture_and_roadmap.md](docs/pipeline_architecture_and_roadmap.md).
+Quyết định runtime Silver nằm tại
+[docs/spark_bronze_to_silver_architecture.md](docs/spark_bronze_to_silver_architecture.md).
 
 ## Phát triển và kiểm tra
 
@@ -643,5 +702,6 @@ make lint
 docker compose config --quiet
 ```
 
-Bộ test gần nhất: **579 passed**. Trước khi push, không commit `.env`, volume dưới
+Bộ test gần nhất: **594 passed**. Số test giảm vì test của workflow file-first đã xóa cùng code;
+test thuật toán và các pipeline hiện hành đã được chuyển sang đúng package. Trước khi push, không commit `.env`, volume dưới
 `dataset/lakehouse/` hoặc credential cá nhân.

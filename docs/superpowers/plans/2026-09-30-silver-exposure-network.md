@@ -1,5 +1,12 @@
 # Silver Exposure Network Implementation Plan
 
+> **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
+> tests. Execution follows the authoritative
+> [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow
+> submits Spark/Sedona applications; specialized Python jobs write Parquet staging; Spark performs
+> final DQ and Iceberg commits. Earlier PyIceberg/Python-writer steps are superseded.
+
+
 **Vietnamese version:** `docs/superpowers/plans/2026-09-30-silver-exposure-network.vi.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -15,7 +22,7 @@
 ## Global Constraints
 
 - Requires common foundation, basin topology, and river network outputs.
-- Only the flood-relevant OSM groups approved in `config/bronze/osm.yaml` enter Silver.
+- Only the flood-relevant OSM groups approved in `config/pipelines/static_bronze_osm.yaml` enter Silver.
 - Facility capacity and demographic subgroups remain null unless directly supplied by a source.
 - Road graph IDs are stable for the OSM snapshot and graph-processing version.
 - Bridge/ford classification uses OSM evidence; a pure geometric intersection is `unknown`.
@@ -28,10 +35,10 @@
 ## File structure
 
 ```text
-config/silver/exposure_network.yaml
+config/pipelines/silver/exposure_network.yaml
 airflow/dags/silver_exposure_network.py
-src/flashflood_data/orchestration/spatial_grid.py
-src/flashflood_data/orchestration/silver/exposure/
+src/flashflood_data/shared/spatial_grid.py
+src/flashflood_data/pipelines/silver_exposure/
   __init__.py
   config.py
   models.py
@@ -43,9 +50,9 @@ src/flashflood_data/orchestration/silver/exposure/
   basin_overlay.py
   crossings.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/exposure/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_exposure/
   test_config.py
   test_osm_tags.py
   test_facilities.py
@@ -54,30 +61,30 @@ tests/unit/silver/exposure/
   test_basin_overlay.py
   test_crossings.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_exposure_pipeline.py
 ```
 
-`reader.py` is the only domain file that reads Iceberg/object storage. Pure transforms consume models. `service.py` orchestrates them and common publication. Weather and exposure share `orchestration/spatial_grid.py`; neither imports the other domain.
+`reader.py` is the only domain file that reads Iceberg/object storage. Pure transforms consume models. `pipeline.py` orchestrates them and common publication. Weather and exposure share `shared/spatial_grid.py`; neither imports the other domain.
 
 ### Task 1: Generalize source-grid registration and add exposure contracts
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/spatial_grid.py`
-- Modify: `src/flashflood_data/orchestration/weather/grids.py`
-- Modify: `tests/unit/weather/test_grids.py`
-- Create: `config/silver/exposure_network.yaml`
-- Create: `src/flashflood_data/orchestration/silver/exposure/__init__.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/config.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/models.py`
+- Create: `src/flashflood_data/shared/spatial_grid.py`
+- Modify: `src/flashflood_data/pipelines/weather_ingest/grids.py`
+- Modify: `tests/unit/pipelines/weather_ingest/test_grids.py`
+- Create: `config/pipelines/silver/exposure_network.yaml`
+- Create: `src/flashflood_data/pipelines/silver_exposure/__init__.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/config.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/models.py`
 - Modify: `src/flashflood_data/storage/iceberg_schemas.py`
-- Modify: `config/meta/static.yaml`
+- Modify: `config/shared/metadata.yaml`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Create: `tests/unit/silver/exposure/test_config.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_config.py`
 
 **Interfaces:**
-- Produces: source-independent `GridDefinition`, `GridCell`, `SourceGridRegistrar` in `orchestration.spatial_grid`.
-- Keeps: existing imports from `orchestration.weather.grids` through explicit re-exports.
+- Produces: source-independent `GridDefinition`, `GridCell`, `SourceGridRegistrar` in `shared.spatial_grid`.
+- Keeps: existing imports from `pipelines.weather_ingest.grids` through explicit re-exports.
 - Produces: `ExposureConfig` and row models for all eight exposure tables.
 - Produces physical facility, facility-basin, population, road-node, road-edge, road-basin, and river-crossing tables.
 
@@ -85,8 +92,8 @@ tests/integration/silver/test_exposure_pipeline.py
 
 ```python
 def test_weather_grid_public_api_is_preserved():
-    from flashflood_data.orchestration.weather.grids import GridDefinition
-    from flashflood_data.orchestration.spatial_grid import GridDefinition as Shared
+    from flashflood_data.pipelines.weather_ingest.grids import GridDefinition
+    from flashflood_data.shared.spatial_grid import GridDefinition as Shared
     assert GridDefinition is Shared
 
 def test_exposure_config_facilities_are_explicit():
@@ -100,37 +107,37 @@ def test_road_edge_schema_keeps_bridge_and_tunnel():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/weather/test_grids.py tests/unit/silver/exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/weather_ingest/test_grids.py tests/unit/pipelines/silver_exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: FAIL because the shared module and exposure contracts are absent.
 
 - [ ] **Step 3: Move grid primitives without behavior changes and define contracts**
 
-Move stable grid identity, row/column addressing, cell geometry, and registry logic from `weather/grids.py` into `orchestration/spatial_grid.py`. Keep weather re-exports so existing callers do not change in the same task.
+Move stable grid identity, row/column addressing, cell geometry, and registry logic from `weather/grids.py` into `shared/spatial_grid.py`. Keep weather re-exports so existing callers do not change in the same task.
 
 The exposure YAML declares facility tag mappings, allowed road classes, speed defaults by class, graph/geometry versions, population source/year/value semantics, equal-area/distance CRS, and batch sizes. Add the exact approved table fields and primary keys from `data.md` to physical schemas and dataset registry.
 
 - [ ] **Step 4: Run compatibility and contract tests**
 
-Run: `pytest tests/unit/weather/test_grids.py tests/unit/silver/exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Run: `pytest tests/unit/pipelines/weather_ingest/test_grids.py tests/unit/pipelines/silver_exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit grid extraction and contracts**
 
 ```bash
-git add src/flashflood_data/orchestration/spatial_grid.py src/flashflood_data/orchestration/weather/grids.py config/silver/exposure_network.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/exposure src/flashflood_data/storage/iceberg_schemas.py tests/unit/weather/test_grids.py tests/unit/silver/exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add src/flashflood_data/shared/spatial_grid.py src/flashflood_data/pipelines/weather_ingest/grids.py config/pipelines/silver/exposure_network.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_exposure src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/weather_ingest/test_grids.py tests/unit/pipelines/silver_exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "refactor: share source grid registration"
 ```
 
 ### Task 2: Normalize OSM facilities and road graph
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/exposure/reader.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/osm_tags.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/facilities.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/roads.py`
-- Create: `tests/unit/silver/exposure/test_osm_tags.py`
-- Create: `tests/unit/silver/exposure/test_facilities.py`
-- Create: `tests/unit/silver/exposure/test_roads.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/reader.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/osm_tags.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/facilities.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/roads.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_osm_tags.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_facilities.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_roads.py`
 
 **Interfaces:**
 - Consumes: exact `bronze.osm_feature_raw` snapshot.
@@ -157,7 +164,7 @@ def test_capacity_is_not_inferred_from_name():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/exposure/test_osm_tags.py tests/unit/silver/exposure/test_facilities.py tests/unit/silver/exposure/test_roads.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_osm_tags.py tests/unit/pipelines/silver_exposure/test_facilities.py tests/unit/pipelines/silver_exposure/test_roads.py -q`
 Expected: FAIL because the OSM transforms are absent.
 
 - [ ] **Step 3: Implement approved mapping and stable graph identities**
@@ -166,21 +173,21 @@ Parse `tags_json` once and keep only configured classes. Facility ID hashes OSM 
 
 - [ ] **Step 4: Run OSM transform tests**
 
-Run: `pytest tests/unit/silver/exposure/test_osm_tags.py tests/unit/silver/exposure/test_facilities.py tests/unit/silver/exposure/test_roads.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_osm_tags.py tests/unit/pipelines/silver_exposure/test_facilities.py tests/unit/pipelines/silver_exposure/test_roads.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit OSM transforms**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure/reader.py src/flashflood_data/orchestration/silver/exposure/osm_tags.py src/flashflood_data/orchestration/silver/exposure/facilities.py src/flashflood_data/orchestration/silver/exposure/roads.py tests/unit/silver/exposure/test_osm_tags.py tests/unit/silver/exposure/test_facilities.py tests/unit/silver/exposure/test_roads.py
+git add src/flashflood_data/pipelines/silver_exposure/reader.py src/flashflood_data/pipelines/silver_exposure/osm_tags.py src/flashflood_data/pipelines/silver_exposure/facilities.py src/flashflood_data/pipelines/silver_exposure/roads.py tests/unit/pipelines/silver_exposure/test_osm_tags.py tests/unit/pipelines/silver_exposure/test_facilities.py tests/unit/pipelines/silver_exposure/test_roads.py
 git commit -m "feat: normalize flood exposure OSM features"
 ```
 
 ### Task 3: Register WorldPop cells and populate the population grid
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/exposure/population.py`
-- Create: `tests/unit/silver/exposure/test_population.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/population.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_population.py`
 
 **Interfaces:**
 - Consumes: WorldPop `bronze.raster_coverage`, Raw object metadata, `SourceGridRegistrar`.
@@ -202,7 +209,7 @@ def test_demographic_subgroups_remain_null_without_source_bands():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/exposure/test_population.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_population.py -q`
 Expected: FAIL because population conversion is absent.
 
 - [ ] **Step 3: Implement globally anchored raster cell identity**
@@ -211,25 +218,25 @@ Use raster transform, dimensions, CRS, and checksum to define `source_grid_versi
 
 - [ ] **Step 4: Run population and weather-grid regression tests**
 
-Run: `pytest tests/unit/silver/exposure/test_population.py tests/unit/weather/test_grids.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_population.py tests/unit/pipelines/weather_ingest/test_grids.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit population conversion**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure/population.py tests/unit/silver/exposure/test_population.py
+git add src/flashflood_data/pipelines/silver_exposure/population.py tests/unit/pipelines/silver_exposure/test_population.py
 git commit -m "feat: register WorldPop population cells"
 ```
 
 ### Task 4: Add basin relations, river crossings, and quality gates
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/exposure/basin_overlay.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/crossings.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/quality.py`
-- Create: `tests/unit/silver/exposure/test_basin_overlay.py`
-- Create: `tests/unit/silver/exposure/test_crossings.py`
-- Create: `tests/unit/silver/exposure/test_quality.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/basin_overlay.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/crossings.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/quality.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_basin_overlay.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_crossings.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_quality.py`
 
 **Interfaces:**
 - Produces: `assign_facilities_to_basins`, `overlay_roads_with_basins`, `detect_river_crossings`.
@@ -253,7 +260,7 @@ def test_untagged_intersection_remains_unknown():
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/exposure/test_basin_overlay.py tests/unit/silver/exposure/test_crossings.py tests/unit/silver/exposure/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_basin_overlay.py tests/unit/pipelines/silver_exposure/test_crossings.py tests/unit/pipelines/silver_exposure/test_quality.py -q`
 Expected: FAIL because spatial modules are absent.
 
 - [ ] **Step 3: Implement indexed joins and explicit DQ**
@@ -262,23 +269,23 @@ Use spatial indexes and projected coordinates. Facility assignment handles point
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `pytest tests/unit/silver/exposure/test_basin_overlay.py tests/unit/silver/exposure/test_crossings.py tests/unit/silver/exposure/test_quality.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_basin_overlay.py tests/unit/pipelines/silver_exposure/test_crossings.py tests/unit/pipelines/silver_exposure/test_quality.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit relations and DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure/basin_overlay.py src/flashflood_data/orchestration/silver/exposure/crossings.py src/flashflood_data/orchestration/silver/exposure/quality.py tests/unit/silver/exposure/test_basin_overlay.py tests/unit/silver/exposure/test_crossings.py tests/unit/silver/exposure/test_quality.py
+git add src/flashflood_data/pipelines/silver_exposure/basin_overlay.py src/flashflood_data/pipelines/silver_exposure/crossings.py src/flashflood_data/pipelines/silver_exposure/quality.py tests/unit/pipelines/silver_exposure/test_basin_overlay.py tests/unit/pipelines/silver_exposure/test_crossings.py tests/unit/pipelines/silver_exposure/test_quality.py
 git commit -m "feat: relate exposure assets to basins and rivers"
 ```
 
 ### Task 5: Add service, DAG, integration coverage, and docs
 
 **Files:**
-- Create: `src/flashflood_data/orchestration/silver/exposure/service.py`
-- Create: `src/flashflood_data/orchestration/silver/exposure/factory.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/pipeline.py`
+- Create: `src/flashflood_data/pipelines/silver_exposure/runtime.py`
 - Create: `airflow/dags/silver_exposure_network.py`
-- Create: `tests/unit/silver/exposure/test_service.py`
+- Create: `tests/unit/pipelines/silver_exposure/test_pipeline.py`
 - Create: `tests/integration/silver/test_exposure_pipeline.py`
 - Modify: `tests/contract/infra/test_silver_dags.py`
 - Modify: `README.md`
@@ -305,7 +312,7 @@ def test_exposure_dag_declares_bounded_compute_groups(dag_bag):
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `pytest tests/unit/silver/exposure/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Expected: FAIL because service/DAG are absent.
 
 - [ ] **Step 3: Implement family compute and serialized publication**
@@ -314,13 +321,13 @@ Discover exact OSM, WorldPop, basin, and river snapshots. Stage each output fami
 
 - [ ] **Step 4: Run domain and weather regression tests**
 
-Run: `pytest tests/unit/silver/exposure tests/integration/silver/test_exposure_pipeline.py tests/unit/weather/test_grids.py tests/contract/infra/test_silver_dags.py -q`  
+Run: `pytest tests/unit/pipelines/silver_exposure tests/integration/silver/test_exposure_pipeline.py tests/unit/pipelines/weather_ingest/test_grids.py tests/contract/infra/test_silver_dags.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure src/flashflood_data/orchestration/spatial_grid.py src/flashflood_data/orchestration/weather/grids.py airflow/dags/silver_exposure_network.py tests/unit/silver/exposure tests/integration/silver/test_exposure_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_exposure src/flashflood_data/shared/spatial_grid.py src/flashflood_data/pipelines/weather_ingest/grids.py airflow/dags/silver_exposure_network.py tests/unit/pipelines/silver_exposure tests/integration/silver/test_exposure_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver exposure network DAG"
 ```
 

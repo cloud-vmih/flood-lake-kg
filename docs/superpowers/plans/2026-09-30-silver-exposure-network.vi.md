@@ -1,5 +1,14 @@
 # Kế hoạch triển khai mạng lưới phơi nhiễm ở Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-exposure-network.md`
 
@@ -9,16 +18,16 @@
 
 **Mục tiêu:** Xây dựng cơ sở thiết yếu, cell dân số, đồ thị đường, quan hệ với basin và giao cắt đường–sông có version từ OSM và WorldPop ở Bronze.
 
-**Kiến trúc:** Chuẩn hóa tập OSM tag đã duyệt qua các transform facility và road riêng, đăng ký grid WorldPop bằng dịch vụ identity grid dùng chung, rồi tính quan hệ không gian với version basin và river chuẩn. Tách bước tính toán theo nhóm output nhưng mỗi bảng Iceberg vẫn chỉ có một writer.
+**Kiến trúc:** Chuẩn hóa tập OSM tag đã duyệt qua các transform facility và road riêng, đăng ký grid WorldPop bằng dịch vụ identity grid dùng chung, rồi tính quan hệ không gian với version basin và river chuẩn. Tách bước tính toán theo nhóm output nhưng mỗi bảng Iceberg chỉ có một Spark publish application.
 
-**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, PyArrow, Rasterio, GeoPandas, Shapely, PyProj, NetworkX, PyIceberg, pytest.
+**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, PyArrow, Rasterio, GeoPandas, Shapely, PyProj, NetworkX, PySpark, Apache Spark, Apache Sedona, Apache Iceberg, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
 ## Ràng buộc chung
 
 - Yêu cầu đã có output của nền tảng dùng chung, basin topology và river network.
-- Chỉ các nhóm OSM phục vụ lũ đã duyệt trong `config/bronze/osm.yaml` được đưa vào Silver.
+- Chỉ các nhóm OSM phục vụ lũ đã duyệt trong `config/pipelines/static_bronze_osm.yaml` được đưa vào Silver.
 - Capacity của facility và nhóm dân số con giữ null nếu nguồn không cung cấp trực tiếp.
 - ID đồ thị đường ổn định theo OSM snapshot và graph-processing version.
 - Phân loại bridge/ford dựa trên bằng chứng OSM; giao cắt chỉ suy từ geometry có loại `unknown`.
@@ -31,10 +40,10 @@
 ## Cấu trúc file
 
 ```text
-config/silver/exposure_network.yaml
+config/pipelines/silver/exposure_network.yaml
 airflow/dags/silver_exposure_network.py
-src/flashflood_data/orchestration/spatial_grid.py
-src/flashflood_data/orchestration/silver/exposure/
+src/flashflood_data/shared/spatial_grid.py
+src/flashflood_data/pipelines/silver_exposure/
   __init__.py
   config.py
   models.py
@@ -46,9 +55,9 @@ src/flashflood_data/orchestration/silver/exposure/
   basin_overlay.py
   crossings.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/exposure/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_exposure/
   test_config.py
   test_osm_tags.py
   test_facilities.py
@@ -57,30 +66,30 @@ tests/unit/silver/exposure/
   test_basin_overlay.py
   test_crossings.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_exposure_pipeline.py
 ```
 
-`reader.py` là file domain duy nhất đọc Iceberg/object storage. Transform thuần chỉ nhận model. `service.py` điều phối các transform và phần publish chung. Weather và exposure dùng chung `orchestration/spatial_grid.py`; hai domain không import lẫn nhau.
+`reader.py` là file domain duy nhất đọc Iceberg/object storage. Transform thuần chỉ nhận model. `pipeline.py` điều phối các transform và phần publish chung. Weather và exposure dùng chung `shared/spatial_grid.py`; hai domain không import lẫn nhau.
 
 ### Công việc 1: Dùng chung hóa đăng ký source grid và thêm contract exposure
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/spatial_grid.py`
-- Sửa: `src/flashflood_data/orchestration/weather/grids.py`
-- Sửa: `tests/unit/weather/test_grids.py`
-- Tạo: `config/silver/exposure_network.yaml`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/config.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/models.py`
+- Tạo: `src/flashflood_data/shared/spatial_grid.py`
+- Sửa: `src/flashflood_data/pipelines/weather_ingest/grids.py`
+- Sửa: `tests/unit/pipelines/weather_ingest/test_grids.py`
+- Tạo: `config/pipelines/silver/exposure_network.yaml`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/__init__.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/config.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/models.py`
 - Sửa: `src/flashflood_data/storage/iceberg_schemas.py`
-- Sửa: `config/meta/static.yaml`
+- Sửa: `config/shared/metadata.yaml`
 - Sửa: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Tạo: `tests/unit/silver/exposure/test_config.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_config.py`
 
 **Giao diện:**
-- Đầu ra: source-independent `GridDefinition`, `GridCell`, `SourceGridRegistrar` in `orchestration.spatial_grid`.
-- Giữ tương thích: các import hiện có từ `orchestration.weather.grids` thông qua re-export rõ ràng.
+- Đầu ra: source-independent `GridDefinition`, `GridCell`, `SourceGridRegistrar` in `shared.spatial_grid`.
+- Giữ tương thích: các import hiện có từ `pipelines.weather_ingest.grids` thông qua re-export rõ ràng.
 - Đầu ra: `ExposureConfig` và row models for all eight exposure tables.
 - Produces physical facility, facility-basin, population, road-node, road-edge, road-basin, và river-crossing tables.
 
@@ -88,8 +97,8 @@ tests/integration/silver/test_exposure_pipeline.py
 
 ```python
 def test_weather_grid_public_api_is_preserved():
-    from flashflood_data.orchestration.weather.grids import GridDefinition
-    from flashflood_data.orchestration.spatial_grid import GridDefinition as Shared
+    from flashflood_data.pipelines.weather_ingest.grids import GridDefinition
+    from flashflood_data.shared.spatial_grid import GridDefinition as Shared
     assert GridDefinition is Shared
 
 def test_exposure_config_facilities_are_explicit():
@@ -103,37 +112,37 @@ def test_road_edge_schema_keeps_bridge_and_tunnel():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/weather/test_grids.py tests/unit/silver/exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/weather_ingest/test_grids.py tests/unit/pipelines/silver_exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: FAIL vì shared module và exposure contracts are absent.
 
 - [ ] **Bước 3: Chuyển grid primitive không đổi hành vi và định nghĩa contract**
 
-Chuyển identity grid ổn định, cách đánh địa chỉ row/column, cell geometry và logic registry từ `weather/grids.py` sang `orchestration/spatial_grid.py`. Giữ re-export trong weather để caller hiện có không phải đổi trong cùng công việc.
+Chuyển identity grid ổn định, cách đánh địa chỉ row/column, cell geometry và logic registry từ `weather/grids.py` sang `shared/spatial_grid.py`. Giữ re-export trong weather để caller hiện có không phải đổi trong cùng công việc.
 
 YAML exposure khai báo mapping tag facility, road class được phép, tốc độ mặc định theo class, graph/geometry version, ngữ nghĩa source/year/value của population, CRS diện tích/khoảng cách và batch size. Thêm chính xác field và primary key đã duyệt trong `data.md` vào schema vật lý và dataset registry.
 
 - [ ] **Bước 4: Chạy tương thích và contract**
 
-Chạy: `pytest tests/unit/weather/test_grids.py tests/unit/silver/exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/weather_ingest/test_grids.py tests/unit/pipelines/silver_exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit grid extraction và contracts**
 
 ```bash
-git add src/flashflood_data/orchestration/spatial_grid.py src/flashflood_data/orchestration/weather/grids.py config/silver/exposure_network.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/exposure src/flashflood_data/storage/iceberg_schemas.py tests/unit/weather/test_grids.py tests/unit/silver/exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add src/flashflood_data/shared/spatial_grid.py src/flashflood_data/pipelines/weather_ingest/grids.py config/pipelines/silver/exposure_network.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_exposure src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/weather_ingest/test_grids.py tests/unit/pipelines/silver_exposure/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "refactor: share source grid registration"
 ```
 
 ### Công việc 2: Chuẩn hóa facility OSM và đồ thị đường
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/reader.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/osm_tags.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/facilities.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/roads.py`
-- Tạo: `tests/unit/silver/exposure/test_osm_tags.py`
-- Tạo: `tests/unit/silver/exposure/test_facilities.py`
-- Tạo: `tests/unit/silver/exposure/test_roads.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/reader.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/osm_tags.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/facilities.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/roads.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_osm_tags.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_facilities.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_roads.py`
 
 **Giao diện:**
 - Đầu vào: exact `bronze.osm_feature_raw` snapshot.
@@ -160,7 +169,7 @@ def test_capacity_is_not_inferred_from_name():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/exposure/test_osm_tags.py tests/unit/silver/exposure/test_facilities.py tests/unit/silver/exposure/test_roads.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_osm_tags.py tests/unit/pipelines/silver_exposure/test_facilities.py tests/unit/pipelines/silver_exposure/test_roads.py -q`
 Mong đợi: FAIL vì OSM transforms are absent.
 
 - [ ] **Bước 3: Triển khai mapping đã duyệt và identity graph ổn định**
@@ -169,21 +178,21 @@ Parse `tags_json` một lần và chỉ giữ class đã cấu hình. Facility I
 
 - [ ] **Bước 4: Chạy kiểm thử transform OSM**
 
-Chạy: `pytest tests/unit/silver/exposure/test_osm_tags.py tests/unit/silver/exposure/test_facilities.py tests/unit/silver/exposure/test_roads.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_osm_tags.py tests/unit/pipelines/silver_exposure/test_facilities.py tests/unit/pipelines/silver_exposure/test_roads.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit OSM transforms**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure/reader.py src/flashflood_data/orchestration/silver/exposure/osm_tags.py src/flashflood_data/orchestration/silver/exposure/facilities.py src/flashflood_data/orchestration/silver/exposure/roads.py tests/unit/silver/exposure/test_osm_tags.py tests/unit/silver/exposure/test_facilities.py tests/unit/silver/exposure/test_roads.py
+git add src/flashflood_data/pipelines/silver_exposure/reader.py src/flashflood_data/pipelines/silver_exposure/osm_tags.py src/flashflood_data/pipelines/silver_exposure/facilities.py src/flashflood_data/pipelines/silver_exposure/roads.py tests/unit/pipelines/silver_exposure/test_osm_tags.py tests/unit/pipelines/silver_exposure/test_facilities.py tests/unit/pipelines/silver_exposure/test_roads.py
 git commit -m "feat: normalize flood exposure OSM features"
 ```
 
 ### Công việc 3: Đăng ký cell WorldPop và tạo population grid
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/population.py`
-- Tạo: `tests/unit/silver/exposure/test_population.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/population.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_population.py`
 
 **Giao diện:**
 - Đầu vào: WorldPop `bronze.raster_coverage`, Raw object metadata, `SourceGridRegistrar`.
@@ -205,7 +214,7 @@ def test_demographic_subgroups_remain_null_without_source_bands():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/exposure/test_population.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_population.py -q`
 Mong đợi: FAIL vì population conversion is absent.
 
 - [ ] **Bước 3: Triển khai identity cell raster neo toàn cục**
@@ -214,25 +223,25 @@ Dùng raster transform, kích thước, CRS và checksum để định nghĩa `s
 
 - [ ] **Bước 4: Chạy kiểm thử hồi quy population và weather grid**
 
-Chạy: `pytest tests/unit/silver/exposure/test_population.py tests/unit/weather/test_grids.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_population.py tests/unit/pipelines/weather_ingest/test_grids.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit population conversion**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure/population.py tests/unit/silver/exposure/test_population.py
+git add src/flashflood_data/pipelines/silver_exposure/population.py tests/unit/pipelines/silver_exposure/test_population.py
 git commit -m "feat: register WorldPop population cells"
 ```
 
 ### Công việc 4: Thêm quan hệ basin, giao cắt sông và cổng chất lượng
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/basin_overlay.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/crossings.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/quality.py`
-- Tạo: `tests/unit/silver/exposure/test_basin_overlay.py`
-- Tạo: `tests/unit/silver/exposure/test_crossings.py`
-- Tạo: `tests/unit/silver/exposure/test_quality.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/basin_overlay.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/crossings.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/quality.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_basin_overlay.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_crossings.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_quality.py`
 
 **Giao diện:**
 - Đầu ra: `assign_facilities_to_basins`, `overlay_roads_with_basins`, `detect_river_crossings`.
@@ -256,7 +265,7 @@ def test_untagged_intersection_remains_unknown():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/exposure/test_basin_overlay.py tests/unit/silver/exposure/test_crossings.py tests/unit/silver/exposure/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_basin_overlay.py tests/unit/pipelines/silver_exposure/test_crossings.py tests/unit/pipelines/silver_exposure/test_quality.py -q`
 Mong đợi: FAIL vì spatial modules are absent.
 
 - [ ] **Bước 3: Triển khai phép join có index và DQ rõ ràng**
@@ -265,23 +274,23 @@ Dùng spatial index và tọa độ chiếu. Gán facility xử lý point/centro
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/exposure/test_basin_overlay.py tests/unit/silver/exposure/test_crossings.py tests/unit/silver/exposure/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_basin_overlay.py tests/unit/pipelines/silver_exposure/test_crossings.py tests/unit/pipelines/silver_exposure/test_quality.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit relations và DQ**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure/basin_overlay.py src/flashflood_data/orchestration/silver/exposure/crossings.py src/flashflood_data/orchestration/silver/exposure/quality.py tests/unit/silver/exposure/test_basin_overlay.py tests/unit/silver/exposure/test_crossings.py tests/unit/silver/exposure/test_quality.py
+git add src/flashflood_data/pipelines/silver_exposure/basin_overlay.py src/flashflood_data/pipelines/silver_exposure/crossings.py src/flashflood_data/pipelines/silver_exposure/quality.py tests/unit/pipelines/silver_exposure/test_basin_overlay.py tests/unit/pipelines/silver_exposure/test_crossings.py tests/unit/pipelines/silver_exposure/test_quality.py
 git commit -m "feat: relate exposure assets to basins and rivers"
 ```
 
 ### Công việc 5: Thêm service, DAG, kiểm thử tích hợp và tài liệu
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/service.py`
-- Tạo: `src/flashflood_data/orchestration/silver/exposure/factory.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/pipeline.py`
+- Tạo: `src/flashflood_data/pipelines/silver_exposure/runtime.py`
 - Tạo: `airflow/dags/silver_exposure_network.py`
-- Tạo: `tests/unit/silver/exposure/test_service.py`
+- Tạo: `tests/unit/pipelines/silver_exposure/test_pipeline.py`
 - Tạo: `tests/integration/silver/test_exposure_pipeline.py`
 - Sửa: `tests/contract/infra/test_silver_dags.py`
 - Sửa: `README.md`
@@ -308,7 +317,7 @@ def test_exposure_dag_declares_bounded_compute_groups(dag_bag):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/exposure/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: FAIL vì service/DAG are absent.
 
 - [ ] **Bước 3: Triển khai tính toán theo nhóm output và publish tuần tự**
@@ -317,16 +326,26 @@ Tìm đúng snapshot OSM, WorldPop, basin và river. Stage riêng từng nhóm o
 
 - [ ] **Bước 4: Chạy kiểm thử domain và hồi quy weather**
 
-Chạy: `pytest tests/unit/silver/exposure tests/integration/silver/test_exposure_pipeline.py tests/unit/weather/test_grids.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_exposure tests/integration/silver/test_exposure_pipeline.py tests/unit/pipelines/weather_ingest/test_grids.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/exposure src/flashflood_data/orchestration/spatial_grid.py src/flashflood_data/orchestration/weather/grids.py airflow/dags/silver_exposure_network.py tests/unit/silver/exposure tests/integration/silver/test_exposure_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_exposure src/flashflood_data/shared/spatial_grid.py src/flashflood_data/pipelines/weather_ingest/grids.py airflow/dags/silver_exposure_network.py tests/unit/pipelines/silver_exposure tests/integration/silver/test_exposure_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver exposure network DAG"
 ```
 
 ## Điểm kiểm tra
 
 Chạy fixture OSM/WorldPop nhỏ và kiểm tra từng nhóm bảng trong Trino. Xác nhận cách chọn tag facility, tính liên thông graph, identity grid WorldPop, quan hệ basin và phân loại crossing bridge/unknown trước khi xử lý toàn bộ exposure AOI.
+
+## Bổ sung DQ domain (11/10/2026)
+
+- Fatal: khóa trùng, endpoint graph thiếu, geometry không hợp lệ, ratio ngoài miền, basin/river ID
+  mồ côi và population âm.
+- Reject row: OSM feature/facility không có stable ID hoặc geometry không thể repair.
+- Warning: facility/crossing mơ hồ ở biên, tag hỗ trợ thiếu, population coverage thấp.
+
+DQ chạy riêng trên từng output nhưng terminal run chỉ thành công sau khi đủ snapshot và lineage của
+toàn bộ output bắt buộc.

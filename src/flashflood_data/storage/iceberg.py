@@ -9,7 +9,7 @@ from pyiceberg.exceptions import CommitFailedException
 from pyiceberg.expressions import And, EqualTo, In
 
 from flashflood_data.core.lakehouse import LakehouseSettings
-from flashflood_data.orchestration.landing.models import RegisteredBatch, SourceObjectRow
+from flashflood_data.shared.contracts import RegisteredBatch, SourceObjectRow
 
 DEFAULT_TABLE_IDENTIFIER = ("meta", "source_objects")
 _IDENTITY_FIELDS = ("object_id", "checksum", "object_uri", "manifest_uri")

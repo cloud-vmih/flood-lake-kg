@@ -1,10 +1,5 @@
-"""GSMaP Gauge Standard restart-safe Raw-to-Bronze pipeline."""
+"""Airflow entrypoint for GSMaP Gauge Standard ingestion."""
 
-from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.orchestration.weather.airflow_factory import build_weather_dag
+from flashflood_data.pipelines.weather_ingest.airflow import build_project_weather_dag
 
-CONFIG_PATH = (
-    ProjectPaths.discover().root / "config" / "dynamic" / "gsmap_standard.yaml"
-)
-
-gsmap_standard_ingest = build_weather_dag("gsmap_standard_ingest", CONFIG_PATH)
+gsmap_standard_ingest = build_project_weather_dag("gsmap_standard_ingest", "gsmap_standard.yaml")

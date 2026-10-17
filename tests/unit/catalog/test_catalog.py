@@ -69,9 +69,7 @@ def test_has_verified_content_detects_missing_or_changed_payload(catalog, raw_as
     assert not catalog.has_verified_content(raw_asset)
 
 
-def test_catalog_rebases_missing_dataset_storage_path_to_current_mount(
-    catalog, raw_asset
-) -> None:
+def test_catalog_rebases_missing_dataset_storage_path_to_current_mount(catalog, raw_asset) -> None:
     payload = catalog.paths.dataset / "raw" / "soilgrids" / "2.0" / "clay.tif"
     payload.parent.mkdir(parents=True)
     payload.write_bytes(b"fixture")

@@ -1,0 +1,7 @@
+policy_name: gold_defaults
+policy_version: v1
+layer: gold
+defaults:
+  published_quality_status: [passed, warning]
+  require_domain_rules: true
+rules: []

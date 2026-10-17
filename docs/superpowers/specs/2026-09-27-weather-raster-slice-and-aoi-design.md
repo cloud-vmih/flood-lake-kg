@@ -1,7 +1,9 @@
 # Weather Raster Slice and AOI Design
 
-**Date:** 2026-09-27  
-**Status:** Approved design, awaiting implementation plan  
+> **Tài liệu lịch sử:** Kế hoạch này ghi lại cấu trúc tại thời điểm triển khai. Đường dẫn runtime hiện hành nằm trong `flashflood_data.pipelines`; xem `docs/superpowers/specs/2026-10-09-vertical-slice-pipeline-architecture.vi.md` và README của từng pipeline trước khi sửa code.
+
+**Date:** 2026-09-27
+**Status:** Approved design, awaiting implementation plan
 **Scope:** Restructure static vector landing scope and dynamic weather Raw-to-Bronze ingestion. Weather aggregation from Bronze to Silver is intentionally excluded.
 
 ## 1. Goals
@@ -247,7 +249,7 @@ airflow/dags/
   era5_land_ingest.py
   ifs_ingest.py
 
-config/dynamic/
+config/pipelines/weather/
   gsmap_now.yaml
   gsmap_standard.yaml
   era5_land.yaml

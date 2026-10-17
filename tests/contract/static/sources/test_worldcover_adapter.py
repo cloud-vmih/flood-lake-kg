@@ -16,8 +16,8 @@ from flashflood_data.catalog import AssetCatalog, sha256_file
 from flashflood_data.catalog.models import AssetKind, AssetRecord, AssetStatus, SourceSpec
 from flashflood_data.core.config import EnvironmentSettings, StudyAreaConfig
 from flashflood_data.core.paths import ProjectPaths
-from flashflood_data.static.sources.base import SourceContext
-from flashflood_data.static.sources.worldcover import (
+from flashflood_data.pipelines.static_landing.adapters.base import SourceContext
+from flashflood_data.pipelines.static_landing.adapters.worldcover import (
     WorldCoverAdapter,
     select_worldcover_tiles,
 )
@@ -55,9 +55,9 @@ def context(tmp_path: Path, environmental_aoi) -> SourceContext:
     paths.ensure_output_dirs()
     aoi_dir = paths.harmonized / "aoi"
     aoi_dir.mkdir(parents=True)
-    gpd.GeoDataFrame({"aoi": ["environmental"]}, geometry=[environmental_aoi], crs="EPSG:4326").to_parquet(
-        aoi_dir / "environmental_aoi.geoparquet", index=False
-    )
+    gpd.GeoDataFrame(
+        {"aoi": ["environmental"]}, geometry=[environmental_aoi], crs="EPSG:4326"
+    ).to_parquet(aoi_dir / "environmental_aoi.geoparquet", index=False)
     return SourceContext(
         paths=paths,
         catalog=AssetCatalog(paths),
@@ -93,14 +93,18 @@ def test_only_intersecting_worldcover_tiles_are_resolved(
     assert [tile.tile_id for tile in tiles] == ["N18E102", "N21E102"]
 
 
-def test_resolve_preserves_grid_before_selecting_tiles(context: SourceContext, spec: SourceSpec) -> None:
+def test_resolve_preserves_grid_before_selecting_tiles(
+    context: SourceContext, spec: SourceSpec
+) -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(200, headers={"Content-Length": "4096"})
 
-    remotes = WorldCoverAdapter(spec, client=httpx.Client(transport=httpx.MockTransport(handler))).resolve(context, [])
+    remotes = WorldCoverAdapter(
+        spec, client=httpx.Client(transport=httpx.MockTransport(handler))
+    ).resolve(context, [])
 
     assert [remote.asset_id for remote in remotes] == ["worldcover-2021-v200-grid"]
     assert remotes[0].target_relative_path == Path("raw/worldcover/2021-v200/grid.geojson")
@@ -123,9 +127,7 @@ def test_resolve_uses_uncatalogued_local_grid_without_head(
     )
     remotes = adapter.resolve(context, [])
 
-    assert remotes[0].target_relative_path == Path(
-        "raw/worldcover/2021-v200/grid.geojson"
-    )
+    assert remotes[0].target_relative_path == Path("raw/worldcover/2021-v200/grid.geojson")
     assert remotes[0].expected_size == grid_path.stat().st_size
 
 
@@ -179,7 +181,9 @@ def test_resolve_uses_uncatalogued_local_tiles_without_head(
     assert [remote.expected_size for remote in remotes] == [7, 7]
 
 
-def test_select_worldcover_tiles_rejects_missing_tile_identifier(tmp_path: Path, environmental_aoi) -> None:
+def test_select_worldcover_tiles_rejects_missing_tile_identifier(
+    tmp_path: Path, environmental_aoi
+) -> None:
     grid = tmp_path / "grid.geojson"
     grid.write_text(json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8")
 

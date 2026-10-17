@@ -105,9 +105,14 @@ Nguồn: [JAXA NOW, 16/04/2026](https://sharaku.eorc.jaxa.jp/GSMaP/document/new/
 
 ### 3.4. Kiến trúc và routing
 
-Luồng mục tiêu: Python micro-batch + một scheduler → raw/MinIO + Iceberg/Polaris → state/threat → PostGIS exposure → durable change log/worker → Neo4j/accessibility → routing + FastAPI/Streamlit.
+Luồng mục tiêu: Airflow điều phối ingest Python và Spark/Sedona Bronze → Silver → MinIO +
+Iceberg/Polaris → state/threat → PostGIS exposure → durable change log/worker →
+Neo4j/accessibility → routing + FastAPI/Streamlit.
 
-Lakehouse là system of record; PostGIS/Neo4j là processing/serving có thể dựng lại. Tái sử dụng Airflow đã cài; chốt một client ghi bảng sau kiểm thử (PyIceberg là ứng viên). Không bắt buộc Kafka/Flink/Spark/OpenMetadata/Great Expectations cho luồng nền.
+Lakehouse là system of record; PostGIS/Neo4j là processing/serving có thể dựng lại. Airflow tiếp tục
+điều phối. Raw/Bronze hiện tại giữ Python/PyIceberg; Spark/Sedona đã được chốt làm compute/publish
+runtime mặc định cho toàn bộ Bronze → Silver. Kafka, Flink, OpenMetadata và Great Expectations chưa
+bắt buộc. Chi tiết tại [spark_bronze_to_silver_architecture.md](spark_bronze_to_silver_architecture.md).
 
 Routing **giữ trong phạm vi phải làm**: baseline theo thời gian đi lại và phương án có hazard/uncertainty penalty, trên khu vực/mạng đủ kiểm chứng. Chốt phương tiện, đơn vị cost, evidence đóng đường và xử lý UNKNOWN. Kết quả là lower-risk route theo chỉ số đã chọn, không phải tuyến an toàn. Thư viện routing chưa chốt; không cài đồng thời nhiều giải pháp chỉ để thử công nghệ.
 
@@ -148,7 +153,9 @@ Task lớn chỉ tick khi đủ đầu ra/tiêu chí. Thành phần đã xong đ
 
 ### Tuần 03 — Lakehouse và data contracts
 
-- [ ] **03.1 — Một phần:** Compose/runtime và Spark roundtrip đã có; còn kiểm tra môi trường sạch, chốt client ghi P0, thử PyIceberg write/upsert. **Đầu ra:** setup/smoke; một đường ghi–đọc tương thích, version ghim.
+- [ ] **03.1 — Một phần:** Compose/runtime và Spark roundtrip đã có; còn chốt compatibility matrix
+  Spark/Scala/Iceberg/Sedona/Java, kiểm tra môi trường sạch và smoke snapshot/MERGE/quarantine.
+  **Đầu ra:** Spark Silver runtime ghim version; Raw/Bronze tiếp tục dùng writer hiện tại.
 - [ ] **03.2 — Chưa làm:** Schema/key cho source_object, basin_feature, observation, forecast_snapshot, basin_state, threat_state, exposure, evidence, change_event, run_manifest. **Nghiệm thu:** tách object/version, model run/lần tải, issued/ingested time.
 - [ ] **03.3 — Một phần:** Raw file-first/checksum có trước; thêm object-storage loader và metadata/canonical Iceberg. **Nghiệm thu:** truy ngược URI/checksum/CRS/extent/interval, không ghi đè raw cũ.
 - [ ] **03.4 — Chưa làm:** Append/upsert, snapshot cũ, rerun, quarantine, manifest snapshot map của mọi bảng. **Đầu ra:** integration tests/snapshot demo; idempotent, run lỗi không công bố hoàn tất.

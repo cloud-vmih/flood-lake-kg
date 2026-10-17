@@ -1,5 +1,7 @@
 # National AOI and Static Vector Subset Implementation Plan
 
+> **Tài liệu lịch sử:** Kế hoạch này ghi lại cấu trúc tại thời điểm triển khai. Đường dẫn runtime hiện hành nằm trong `flashflood_data.pipelines`; xem `docs/superpowers/specs/2026-10-09-vertical-slice-pipeline-architecture.vi.md` và README của từng pipeline trước khi sửa code.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a Vietnam L12-plus-one-upstream AOI and publish only its HydroBASINS, BasinATLAS, and HydroRIVERS subsets to static Raw and Bronze.
@@ -233,7 +235,7 @@ git commit -m "feat: build curated national hydro subsets"
 **Files:**
 - Modify: `src/flashflood_data/orchestration/landing/sources.py`
 - Modify: `src/flashflood_data/orchestration/landing/models.py`
-- Modify: `config/landing/static.yaml`
+- Modify: `config/pipelines/static_landing.yaml`
 - Modify: `tests/unit/orchestration/landing/test_sources.py`
 - Modify: `tests/unit/orchestration/landing/test_service.py`
 - Modify: `tests/contract/infra/test_static_source_landing_dag.py`
@@ -302,7 +304,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit the landing integration**
 
 ```bash
-git add src/flashflood_data/orchestration/landing/sources.py src/flashflood_data/orchestration/landing/models.py config/landing/static.yaml tests/unit/orchestration/landing/test_sources.py tests/unit/orchestration/landing/test_service.py tests/contract/infra/test_static_source_landing_dag.py
+git add src/flashflood_data/orchestration/landing/sources.py src/flashflood_data/orchestration/landing/models.py config/pipelines/static_landing.yaml tests/unit/orchestration/landing/test_sources.py tests/unit/orchestration/landing/test_service.py tests/contract/infra/test_static_source_landing_dag.py
 git commit -m "feat: land national hydro vector subsets"
 ```
 
@@ -312,7 +314,7 @@ git commit -m "feat: land national hydro vector subsets"
 
 **Files:**
 - Modify: `src/flashflood_data/orchestration/bronze/parsers.py`
-- Modify: `config/bronze/static.yaml`
+- Modify: `config/pipelines/static_bronze.yaml`
 - Modify: `tests/unit/orchestration/bronze/test_parsers.py`
 - Modify: `tests/unit/orchestration/bronze/test_service.py`
 - Modify: `tests/contract/storage/test_meta_bronze_schemas.py`
@@ -359,7 +361,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit the Bronze alignment**
 
 ```bash
-git add src/flashflood_data/orchestration/bronze/parsers.py config/bronze/static.yaml tests/unit/orchestration/bronze/test_parsers.py tests/unit/orchestration/bronze/test_service.py tests/contract/storage/test_meta_bronze_schemas.py
+git add src/flashflood_data/orchestration/bronze/parsers.py config/pipelines/static_bronze.yaml tests/unit/orchestration/bronze/test_parsers.py tests/unit/orchestration/bronze/test_service.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: parse curated Vietnam hydro objects"
 ```
 

@@ -1,0 +1,7 @@
+policy_name: silver_defaults
+policy_version: v1
+layer: silver
+defaults:
+  published_quality_status: [passed, warning]
+  require_domain_rules: true
+rules: []

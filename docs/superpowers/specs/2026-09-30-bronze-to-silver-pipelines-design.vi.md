@@ -6,9 +6,15 @@
 
 **Phân công cho hai người:** [docs/phan_cong_trien_khai_silver_2_nguoi.md](../../phan_cong_trien_khai_silver_2_nguoi.md)
 
-**Ngày:** 2026-09-30  
-**Trạng thái:** Đã duyệt  
+**Ngày:** 2026-09-30
+**Cập nhật kiến trúc:** 2026-10-10
+**Trạng thái:** Đã duyệt về domain/schema; execution runtime đã chuyển sang Spark/Sedona
 **Phạm vi:** Thiết kế các pipeline chuẩn hóa từ Bronze sang Silver theo từng domain, kèm ranh giới file, dependency và thứ tự triển khai.
+
+> **Quyết định mới:** [Kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md)
+> là nguồn chuẩn cho runtime, staging, DQ và Iceberg publish. Các đoạn phía dưới nhắc
+> `PyIceberg`, `SilverPublisher` hoặc Python writer được hiểu là contract nghiệp vụ lịch sử và không
+> còn là hướng triển khai runtime.
 
 ## 1. Mục tiêu
 
@@ -18,10 +24,10 @@ Thiết kế phải giúp người phát triển đọc code theo một đườn
 
 ```text
 Airflow DAG
-  -> domain factory
-  -> domain service
-  -> reader / transform / quality của domain
-  -> shared Silver publisher + Meta audit
+  -> domain planner / spark-submit
+  -> Spark/Sedona transform
+  -> Python specialized job nếu cần
+  -> Spark DQ + Iceberg publish + Meta audit
   -> Iceberg Silver tables
 ```
 
@@ -133,17 +139,19 @@ Static features, weather và river có thể triển khai độc lập sau basin
 ### 5.1 Luật dependency
 
 - File DAG chỉ định schedule, task dependency, pool và retry; không chứa thuật toán GIS hay SQL nghiệp vụ.
-- `factory.py` chỉ khởi tạo dependency production và trả về service; không xử lý dữ liệu.
-- `service.py` điều phối một use case hoàn chỉnh; không chứa công thức địa hình, overlay hoặc mapping field dài.
+- `runtime.py` chỉ khởi tạo dependency production và trả về service; không xử lý dữ liệu.
+- `pipeline.py` điều phối một use case hoàn chỉnh; không chứa công thức địa hình, overlay hoặc mapping field dài.
 - File transform là hàm thuần hoặc class không biết Airflow.
 - `quality.py` của từng domain sở hữu rule nghiệp vụ của domain đó.
 - Package `common` không import ngược bất kỳ package domain nào.
-- Một domain không import `service.py`, `factory.py` hoặc module nội bộ của domain khác. Nó đọc output của domain trước qua Iceberg reader và contract công khai.
+- Một domain không import `pipeline.py`, `runtime.py` hoặc module nội bộ của domain khác. Nó đọc output của domain trước qua Iceberg reader và contract công khai.
 - Không import code từ `airflow/dags/` vào `src/`.
 
 ### 5.2 Fan-out tính toán, fan-in ghi dữ liệu
 
-Các task có thể chia batch để đọc và tính toán song song. Kết quả trung gian được ghi vào staging theo `pipeline_run_id`; sau đó một task writer cho từng bảng sẽ:
+Spark phân phối transform/tabular/spatial workload. Pipeline có hydrology raster, graph hoặc NLP có
+thể fan-out Python batch và ghi Parquet staging theo `pipeline_run_id`; sau đó một Spark publish
+application sẽ:
 
 1. đọc toàn bộ batch đã hoàn tất;
 2. chạy DQ toàn batch;
@@ -152,7 +160,8 @@ Các task có thể chia batch để đọc và tính toán song song. Kết qu�
 5. đánh dấu run thành công;
 6. dọn staging.
 
-Không cho nhiều mapped task commit đồng thời vào cùng một bảng Iceberg. Cách này giảm commit nhỏ, tránh conflict và giúp retry không tạo output nửa vời.
+Không cho mapped Python task hoặc nhiều Spark application commit đồng thời vào cùng một bảng
+Iceberg. Cách này giảm commit nhỏ, tránh conflict và giúp retry không tạo output nửa vời.
 
 ### 5.3 Idempotency và version
 
@@ -179,30 +188,31 @@ Iceberg không có transaction xuyên nhiều bảng. Vì vậy run chỉ có tr
 ### 6.1 File production
 
 ```text
-src/flashflood_data/orchestration/silver/
+src/flashflood_data/shared/spark/
   __init__.py
-  common/
-    __init__.py
-    models.py
-    versioning.py
-    discovery.py
-    staging.py
-    publisher.py
-    audit.py
-    factory.py
+  session.py
+  submit.py
+  snapshots.py
+  staging.py
+  quality.py
+  publish.py
+  audit.py
+  cli.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
 | --- | --- | --- | --- |
-| `common/models.py` | Các model dùng chung: `InputSnapshotRef`, `SilverBuildRequest`, `StagedBatch`, `PublishedOutput`, `SilverRunResult`. | Tất cả Silver service. | Pydantic/dataclass chuẩn; không gọi storage. |
-| `common/versioning.py` | Canonical JSON và hash deterministic cho build/version/business key. | Planner và transform của các domain. | Chỉ thư viện chuẩn. |
-| `common/discovery.py` | Đọc snapshot hiện tại, Meta refs và run cũ; trả về input snapshot set và quyết định build/skip/repair. | Domain service. | `IcebergTableStore` và Meta read API. |
-| `common/staging.py` | Tạo run directory, ghi/đọc batch Parquet, marker hoàn tất và cleanup an toàn. | Mapped compute tasks và publish task. | `ProjectPaths`, PyArrow, filesystem. |
-| `common/publisher.py` | Validate batch schema, replace/upsert theo business key, commit một writer cho mỗi table. | Domain service publish phase. | `IcebergTableStore`; không ghi Meta trực tiếp. |
-| `common/audit.py` | Ghi `pipeline_runs`, `quality_results`, `table_snapshot_ref`, `lineage_edges` theo batch. | Domain service finalize phase. | `MetaRecorder`. |
-| `common/factory.py` | Khởi tạo catalog, table store, Meta recorder và staging store dùng chung. | Mỗi domain `factory.py`. | `LakehouseSettings`, `ProjectPaths`, storage hiện có. |
+| `session.py` | Tạo Spark/Sedona session và cấu hình Polaris/MinIO. | Mọi Spark job Silver. | Spark, Sedona, Iceberg runtime. |
+| `submit.py` | Tạo request/command `spark-submit`, theo dõi application status. | Airflow/domain runtime. | Không chứa logic domain. |
+| `snapshots.py` | Pin snapshot, canonical hash và quyết định build/skip/repair. | Planner các domain. | Spark Iceberg catalog + Meta. |
+| `staging.py` | Manifest, Parquet, `_SUCCESS`, schema hash và cleanup an toàn. | Spark/Python specialized jobs. | MinIO staging. |
+| `quality.py` | Chia valid/reject/warning và tạo quality evidence. | Spark job domain. | DQ policy đã version. |
+| `publish.py` | Append/MERGE/overwrite-by-filter và trả output snapshot. | Spark publish phase. | Iceberg Spark extensions. |
+| `audit.py` | Ghi `pipeline_runs`, `quality_results`, snapshot refs và lineage. | Finalize phase. | Meta tables. |
+| `cli.py` | Entrypoint dùng chung cho `spark-submit`. | Compose/Airflow. | Module domain được chọn rõ ràng. |
 
-`src/flashflood_data/orchestration/quality.py` tiếp tục giữ `QualityResult` và `fatal_failures`; không tạo contract DQ thứ hai trong package Silver.
+`src/flashflood_data/shared/quality/` giữ public DQ contract, policy, quarantine và coordinator;
+không tạo contract DQ thứ hai trong package Silver.
 
 ### 6.2 Test
 
@@ -233,7 +243,7 @@ HydroBASINS là nguồn geometry/topology chính. BasinATLAS chỉ bổ sung all
 ```text
 config/silver/basin_topology.yaml
 airflow/dags/silver_basin_topology.py
-src/flashflood_data/orchestration/silver/basin/
+src/flashflood_data/pipelines/silver_basin/
   __init__.py
   config.py
   models.py
@@ -241,21 +251,21 @@ src/flashflood_data/orchestration/silver/basin/
   normalize.py
   topology.py
   quality.py
-  service.py
-  factory.py
+  pipeline.py
+  runtime.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
 | --- | --- | --- | --- |
-| `config.py` | Parse level 12, AOI/scope, field mapping và version rule. | `factory.py`, DAG parse-time validation. | YAML + Pydantic. |
+| `config.py` | Parse level 12, AOI/scope, field mapping và version rule. | `runtime.py`, DAG parse-time validation. | YAML + Pydantic. |
 | `models.py` | Row model cho basin, edge và topology report. | Reader, transform, quality, service. | Common models. |
-| `reader.py` | Đọc đúng Bronze snapshots và tách HydroBASINS/BasinATLAS rows. | `service.py`. | Iceberg table store. |
-| `normalize.py` | Chuẩn geometry EPSG:4326, ID/string type, area và field allowlist. | `service.py`. | Hàm geometry thuần; có thể tái dùng kernel trong `static/harmonize/hydro.py` nếu không phụ thuộc file path. |
-| `topology.py` | Tạo `basin_edge`, phân loại internal/exits_AOI/terminal và topological sort. | `service.py`. | `models.py`; không biết storage. |
-| `quality.py` | Unique key, geometry validity, area, dangling downstream, cycle, một sink hợp lệ. | `service.py`. | Shared `QualityResult`. |
-| `service.py` | Discover → read → normalize → topology → stage → publish → audit. | DAG task callable. | Common Silver modules và các file domain trên. |
-| `factory.py` | Tạo `BasinSilverService`. | DAG. | `common.factory`, config. |
-| DAG | Khai báo task graph và một writer/table. | Airflow scheduler. | Chỉ `factory.py` và DTO serializable. |
+| `reader.py` | Đọc đúng Bronze snapshots và tách HydroBASINS/BasinATLAS rows. | `pipeline.py`. | Iceberg table store. |
+| `normalize.py` | Chuẩn geometry EPSG:4326, ID/string type, area và field allowlist. | `pipeline.py`. | Hàm geometry thuần; có thể tái dùng primitive trong `shared/geospatial` và triển khai topology riêng trong pipeline Silver. |
+| `topology.py` | Tạo `basin_edge`, phân loại internal/exits_AOI/terminal và topological sort. | `pipeline.py`. | `models.py`; không biết storage. |
+| `quality.py` | Unique key, geometry validity, area, dangling downstream, cycle, một sink hợp lệ. | `pipeline.py`. | Shared `QualityResult`. |
+| `pipeline.py` | Discover → read → normalize → topology → stage → publish → audit. | DAG task callable. | Common Silver modules và các file domain trên. |
+| `runtime.py` | Tạo `BasinSilverService`. | DAG. | `common.runtime`, config. |
+| DAG | Khai báo task graph và một writer/table. | Airflow scheduler. | Chỉ `runtime.py` và DTO serializable. |
 
 ### 7.3 Test
 
@@ -265,7 +275,7 @@ tests/unit/silver/basin/
   test_normalize.py
   test_topology.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_basin_pipeline.py
 ```
 
@@ -286,7 +296,7 @@ Pipeline chỉ tính các field đã chốt trong contract. DEM là terrain chí
 ```text
 config/silver/basin_static_features.yaml
 airflow/dags/silver_basin_static_features.py
-src/flashflood_data/orchestration/silver/static_features/
+src/flashflood_data/pipelines/silver_static_features/
   __init__.py
   config.py
   models.py
@@ -300,28 +310,28 @@ src/flashflood_data/orchestration/silver/static_features/
   assemble.py
   lineage.py
   quality.py
-  service.py
-  factory.py
+  pipeline.py
+  runtime.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
 | --- | --- | --- | --- |
 | `config.py` | Depth weights, units, stream threshold, Tc method, beta scenarios, raster resampling và batch size. | Factory/service và transform modules. | YAML + Pydantic. |
 | `models.py` | Partial feature models, final feature row và contribution record. | Toàn domain. | Common models. |
-| `reader.py` | Đọc basin, raster coverage, Atlas rows và object URI từ Meta. | `service.py`. | Iceberg/object store readers. |
+| `reader.py` | Đọc basin, raster coverage, Atlas rows và object URI từ Meta. | `pipeline.py`. | Iceberg/object store readers. |
 | `raster_inputs.py` | Mở đúng raster object, kiểm tra CRS/nodata/coverage và cung cấp window theo basin. | Terrain, hydrology, soil, landcover. | Rasterio/Xarray; không commit output. |
-| `terrain.py` | Elevation min/mean/max, relief, slope mean/P90. | `service.py`. | Có thể tái dùng hàm thuần ở `static/features/terrain.py`. |
-| `hydrology.py` | Flow direction/accumulation, outlet, longest path, channel slope, streams, HAND, TWI, Tc/Kb và derived assets. | `service.py`. | Kernel `static/features/hydrology.py`, object publisher qua interface truyền vào. |
-| `soil.py` | Chuyển scale/unit, weighted depth 0–30 cm, AWC và uncertainty. | `service.py`. | Kernel `static/features/soil.py`. |
-| `landcover.py` | Zonal statistics cho forest/cropland/artificial/wetland khi chọn WorldCover làm nguồn. | `service.py`. | Kernel `static/features/landcover.py`. |
-| `atlas.py` | Map allowlist BasinATLAS và các field QA/reference. | `service.py`. | Mapping config. |
-| `assemble.py` | Ghép partial rows theo basin/version thành đúng một feature row/build. | `service.py`. | Domain models. |
-| `lineage.py` | Tạo contribution theo basin/object/role và manifest cho derived raster. | `service.py`. | Common versioning. |
-| `quality.py` | Coverage, unit, range, null bắt buộc, AWC, outlet/path/slope và lineage completeness. | `service.py`. | Shared DQ contract. |
-| `service.py` | Lập batch basin, điều phối compute, stage, publish hai bảng và audit derived assets. | DAG tasks. | Các module domain + common. |
-| `factory.py` | Tạo service và dependency raster/object-store. | DAG. | Common factory. |
+| `terrain.py` | Elevation min/mean/max, relief, slope mean/P90. | `pipeline.py`. | Có thể tái dùng hàm thuần ở `pipelines/silver_static_features/terrain.py`. |
+| `hydrology.py` | Flow direction/accumulation, outlet, longest path, channel slope, streams, HAND, TWI, Tc/Kb và derived assets. | `pipeline.py`. | Kernel `pipelines/silver_static_features/hydrology.py`, object publisher qua interface truyền vào. |
+| `soil.py` | Chuyển scale/unit, weighted depth 0–30 cm, AWC và uncertainty. | `pipeline.py`. | Kernel `pipelines/silver_static_features/soil.py`. |
+| `landcover.py` | Zonal statistics cho forest/cropland/artificial/wetland khi chọn WorldCover làm nguồn. | `pipeline.py`. | Kernel `pipelines/silver_static_features/landcover.py`. |
+| `atlas.py` | Map allowlist BasinATLAS và các field QA/reference. | `pipeline.py`. | Mapping config. |
+| `assemble.py` | Ghép partial rows theo basin/version thành đúng một feature row/build. | `pipeline.py`. | Domain models. |
+| `lineage.py` | Tạo contribution theo basin/object/role và manifest cho derived raster. | `pipeline.py`. | Common versioning. |
+| `quality.py` | Coverage, unit, range, null bắt buộc, AWC, outlet/path/slope và lineage completeness. | `pipeline.py`. | Shared DQ contract. |
+| `pipeline.py` | Lập batch basin, điều phối compute, stage, publish hai bảng và audit derived assets. | DAG tasks. | Các module domain + common. |
+| `runtime.py` | Tạo service và dependency raster/object-store. | DAG. | Common factory. |
 
-Code cũ trong `src/flashflood_data/static/features/` chỉ được tái dùng cho thuật toán thuần đã có test. Không gọi `static/workflow/runner.py`, handler file-first hoặc state local từ DAG Silver.
+Code cũ trong `src/flashflood_data/pipelines/silver_static_features/` chỉ được tái dùng cho thuật toán thuần đã có test. Không gọi workflow file-first đã xóa, handler file-first hoặc state local từ DAG Silver.
 
 ### 8.3 Test
 
@@ -337,7 +347,7 @@ tests/unit/silver/static_features/
   test_assemble.py
   test_lineage.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_static_features_pipeline.py
 ```
 
@@ -358,7 +368,7 @@ tests/integration/silver/test_static_features_pipeline.py
 ```text
 config/silver/weather_aggregation.yaml
 airflow/dags/silver_weather_aggregation.py
-src/flashflood_data/orchestration/silver/weather/
+src/flashflood_data/pipelines/silver_weather/
   __init__.py
   config.py
   models.py
@@ -367,21 +377,21 @@ src/flashflood_data/orchestration/silver/weather/
   aggregate.py
   revisions.py
   quality.py
-  service.py
-  factory.py
+  pipeline.py
+  runtime.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
 | --- | --- | --- | --- |
 | `config.py` | Variable units, aggregation type, coverage threshold, geometry version và batch size. | Factory/service. | YAML + Pydantic. |
 | `models.py` | Weight row, basin value row và aggregation report. | Toàn domain. | Common models. |
-| `reader.py` | Discover slice revisions chưa xử lý; đọc aligned `cell_indices`/`values`, source grid và basin snapshot. | `service.py`. | Iceberg store. |
-| `weights.py` | Overlay grid cell với basin trong equal-area CRS và sinh hai loại weight. | `service.py`. | GeoPandas/Shapely/PyProj; không biết weather value. |
-| `aggregate.py` | Ánh xạ array value theo `cell_index`, bỏ nodata đúng cách, tính weighted value và coverage. | `service.py`. | NumPy/PyArrow + weight rows. |
-| `revisions.py` | Giữ NOW/Standard/ERA5/IFS là observation riêng, tạo business key/revision và quy tắc exact-window preference metadata. | `service.py`. | Common versioning. |
-| `quality.py` | Tổng trọng số, orphan cell, coverage, unit/window, NaN/nodata, uniqueness. | `service.py`. | Shared DQ. |
-| `service.py` | Ensure/reuse weights, aggregate missing slices theo batch, publish và audit. | DAG. | Domain modules + common. |
-| `factory.py` | Tạo weather Silver service. | DAG. | Common factory. |
+| `reader.py` | Discover slice revisions chưa xử lý; đọc aligned `cell_indices`/`values`, source grid và basin snapshot. | `pipeline.py`. | Iceberg store. |
+| `weights.py` | Overlay grid cell với basin trong equal-area CRS và sinh hai loại weight. | `pipeline.py`. | GeoPandas/Shapely/PyProj; không biết weather value. |
+| `aggregate.py` | Ánh xạ array value theo `cell_index`, bỏ nodata đúng cách, tính weighted value và coverage. | `pipeline.py`. | NumPy/PyArrow + weight rows. |
+| `revisions.py` | Giữ NOW/Standard/ERA5/IFS là observation riêng, tạo business key/revision và quy tắc exact-window preference metadata. | `pipeline.py`. | Common versioning. |
+| `quality.py` | Tổng trọng số, orphan cell, coverage, unit/window, NaN/nodata, uniqueness. | `pipeline.py`. | Shared DQ. |
+| `pipeline.py` | Ensure/reuse weights, aggregate missing slices theo batch, publish và audit. | DAG. | Domain modules + common. |
+| `runtime.py` | Tạo weather Silver service. | DAG. | Common factory. |
 
 Đợt Silver này không xóa NOW khi Standard xuất hiện. Hai nguồn/revision cùng tồn tại; selection authoritative được thực hiện ở Gold theo exact window và `available_at`, tránh làm mất cửa sổ NOW lệch 30 phút.
 
@@ -394,7 +404,7 @@ tests/unit/silver/weather/
   test_aggregate.py
   test_revisions.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_weather_aggregation_pipeline.py
 ```
 
@@ -413,7 +423,7 @@ tests/integration/silver/test_weather_aggregation_pipeline.py
 ```text
 config/silver/river_network.yaml
 airflow/dags/silver_river_network.py
-src/flashflood_data/orchestration/silver/river/
+src/flashflood_data/pipelines/silver_river/
   __init__.py
   config.py
   models.py
@@ -422,8 +432,8 @@ src/flashflood_data/orchestration/silver/river/
   topology.py
   basin_overlay.py
   quality.py
-  service.py
-  factory.py
+  pipeline.py
+  runtime.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
@@ -435,8 +445,8 @@ src/flashflood_data/orchestration/silver/river/
 | `topology.py` | Nối reach theo node/hướng, sinh edge và slope nếu đủ elevation. | Service. | Domain models. |
 | `basin_overlay.py` | Cắt/đo length reach trong basin với CRS phù hợp. | Service. | GeoPandas/Shapely/PyProj. |
 | `quality.py` | Geometry, length, cycle, dangling node, direction và intersection ratio. | Service. | Shared DQ. |
-| `service.py` | Điều phối ba output, stage, publish và audit. | DAG. | Domain + common. |
-| `factory.py` | Tạo river service. | DAG. | Common factory. |
+| `pipeline.py` | Điều phối ba output, stage, publish và audit. | DAG. | Domain + common. |
+| `runtime.py` | Tạo river service. | DAG. | Common factory. |
 
 ### 10.3 Test
 
@@ -446,7 +456,7 @@ tests/unit/silver/river/
   test_topology.py
   test_basin_overlay.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_river_pipeline.py
 ```
 
@@ -466,7 +476,7 @@ tests/integration/silver/test_river_pipeline.py
 ```text
 config/silver/exposure_network.yaml
 airflow/dags/silver_exposure_network.py
-src/flashflood_data/orchestration/silver/exposure/
+src/flashflood_data/pipelines/silver_exposure/
   __init__.py
   config.py
   models.py
@@ -478,8 +488,8 @@ src/flashflood_data/orchestration/silver/exposure/
   basin_overlay.py
   crossings.py
   quality.py
-  service.py
-  factory.py
+  pipeline.py
+  runtime.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
@@ -494,8 +504,8 @@ src/flashflood_data/orchestration/silver/exposure/
 | `basin_overlay.py` | Gán facility/road/population grid với basin. | Service. | Basin rows + spatial index. |
 | `crossings.py` | Phát hiện road-river intersection và phân biệt bridge/ford/unknown. | Service. | Road + river outputs. |
 | `quality.py` | Stable key, graph endpoint, geometry, tag allowlist, basin assignment và false crossing checks. | Service. | Shared DQ. |
-| `service.py` | Điều phối compute batches và publish từng bảng qua một writer/table. | DAG. | Domain + common. |
-| `factory.py` | Tạo exposure service. | DAG. | Common factory. |
+| `pipeline.py` | Điều phối compute batches và publish từng bảng qua một writer/table. | DAG. | Domain + common. |
+| `runtime.py` | Tạo exposure service. | DAG. | Common factory. |
 
 Không tạo một service duy nhất chứa toàn bộ OSM. Facility, road và crossing giữ module riêng nhưng chung một DAG vì cùng snapshot OSM và cùng version graph. Nếu runtime thực tế quá lớn, DAG có thể tách task group/publish phase mà không đổi package hay contract.
 
@@ -510,7 +520,7 @@ tests/unit/silver/exposure/
   test_basin_overlay.py
   test_crossings.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_exposure_pipeline.py
 ```
 
@@ -530,7 +540,7 @@ Không có `source_document`, `document_chunk`, `event_evidence`, embedding ho�
 ```text
 config/silver/flood_events.yaml
 airflow/dags/silver_flood_events.py
-src/flashflood_data/orchestration/silver/events/
+src/flashflood_data/pipelines/flood_events/
   __init__.py
   config.py
   models.py
@@ -538,8 +548,8 @@ src/flashflood_data/orchestration/silver/events/
   normalize.py
   basin_link.py
   quality.py
-  service.py
-  factory.py
+  pipeline.py
+  runtime.py
 ```
 
 | File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
@@ -550,8 +560,8 @@ src/flashflood_data/orchestration/silver/events/
 | `normalize.py` | Chuẩn timestamp, place, severity, geometry kind, confidence và stable revision. | Service. | Config + domain models. |
 | `basin_link.py` | Spatial join; tính affected area chỉ khi geometry kind là verified flood footprint. | Service. | Equal-area projection + basin rows. |
 | `quality.py` | Time order, revision uniqueness, confidence, geometry kind, affected fraction và null-area rule. | Service. | Shared DQ. |
-| `service.py` | Discover → normalize → basin link → stage → publish hai bảng → audit. | DAG. | Domain + common. |
-| `factory.py` | Tạo flood event Silver service. | DAG. | Common factory. |
+| `pipeline.py` | Discover → normalize → basin link → stage → publish hai bảng → audit. | DAG. | Domain + common. |
+| `runtime.py` | Tạo flood event Silver service. | DAG. | Common factory. |
 
 Nếu event chỉ có địa danh hoặc điểm báo cáo, pipeline vẫn tạo `event_basin.spatial_relation` nhưng để `affected_area_km2` và `affected_fraction_of_basin` là `null`. Không dùng diện tích hành chính làm diện tích ngập.
 
@@ -562,7 +572,7 @@ tests/unit/silver/events/
   test_normalize.py
   test_basin_link.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_event_pipeline.py
 ```
 
@@ -575,9 +585,11 @@ flowchart LR
   A["validate_config"] --> B["discover_input_snapshots"]
   B --> C{"plan_build"}
   C -->|skip| Z["record_skipped_run"]
-  C -->|build/repair| D["compute batches - mapped"]
-  D --> E["validate staged batches"]
-  E --> F["publish table outputs - one writer/table"]
+  C -->|build/repair| D["submit Spark transform"]
+  D --> P["Python specialized batches - optional"]
+  P --> E["Spark assemble + DQ"]
+  D --> E
+  E --> F["Spark Iceberg publish"]
   F --> G["record DQ + snapshots + lineage"]
   G --> H["finalize run"]
   H --> I["cleanup staging"]
@@ -631,6 +643,19 @@ Mỗi plan phải có:
 - Rerun cùng snapshot/config không tạo row hoặc snapshot output thừa.
 - Input snapshot mới chỉ rebuild domain bị ảnh hưởng.
 - Mỗi output truy ngược được đến input snapshot qua Meta.
-- Không có mapped task ghi đồng thời vào cùng bảng Iceberg.
+- Không có mapped Python task hoặc nhiều Spark application ghi đồng thời vào cùng bảng Iceberg.
 - Không có code Qdrant, embedding hay document chunk trong runtime Silver.
 - Test unit cho logic thuần và ít nhất một integration test cho mỗi pipeline đều pass.
+
+## Bổ sung contract DQ đa tầng (11/10/2026)
+
+Mọi domain Silver dùng public contract trong `src/flashflood_data/shared/quality/`. File
+`quality.py` của domain chỉ tạo `QualityFinding` và `QualityEvaluation`; nó không ghi Iceberg,
+Meta hay quarantine. Shared publisher/coordinator nhận evaluation, policy đã version và input
+snapshot đã pin, rồi thực hiện theo thứ tự repairable: quarantine → output → Meta quality/snapshot/
+lineage → terminal run. Fatal chặn publish, reject loại đúng row, warning vẫn publish với
+`quality_status=warning`. Không tạo framework DQ riêng trong `shared/silver`.
+
+Gold sau này phải khai báo policy ID và tối thiểu kiểm tra input completeness, freshness, source
+priority, cân bằng nước và tính hợp lệ của output model. `NO_DATA` là trạng thái thiếu bằng chứng,
+không được đổi thành mức rủi ro `LOW`.

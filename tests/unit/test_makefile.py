@@ -8,9 +8,9 @@ def test_makefile_exposes_reproducible_pipeline_commands() -> None:
     assert "$(VENV_PYTHON) -m pip install -r requirements.lock" in makefile
     assert ".venv/bin/pytest -q" in makefile
     assert ".venv/bin/ruff check src tests" in makefile
-    assert ".venv/bin/flashflood-data run-static --profile smoke --root ." in makefile
-    assert "run-static --profile live --root . --stop-after aoi" in makefile
-    assert "fetch --profile live --root . --resolve-only" in makefile
+    assert ".venv/bin/flashflood-data build-aoi --root . --json-summary" in makefile
+    assert "run-static" not in makefile
+    assert "--resolve-only" not in makefile
 
 
 def test_makefile_bootstrap_is_machine_independent() -> None:

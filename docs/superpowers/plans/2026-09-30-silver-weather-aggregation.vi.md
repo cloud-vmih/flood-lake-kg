@@ -1,5 +1,14 @@
 # Kế hoạch triển khai tổng hợp dữ liệu thời tiết theo lưu vực ở Silver
 
+> **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
+> Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
+> Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job
+> chuyên dụng và ghi Parquet staging. Mọi bước `PyIceberg`/Python writer hoặc mapped worker commit
+> trong bản plan cũ đã bị thay thế bởi Spark publish application.
+> Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
+> Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
+
+
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-weather-aggregation.md`
 
@@ -11,7 +20,7 @@
 
 **Kiến trúc:** Chỉ tạo trọng số cho tổ hợp grid/basin/geometry version chưa có, ánh xạ mảng raster slice bằng `cell_index` ổn định, tổng hợp các cell hợp lệ theo diện tích giao và append idempotent bằng hash business key xác định. NOW, Standard, ERA5-Land và IFS vẫn là các quan sát riêng trong Silver.
 
-**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, NumPy, PyArrow, Shapely, PyProj, PyIceberg, pytest.
+**Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, NumPy, PyArrow, Shapely, PyProj, PySpark, Apache Spark, Apache Sedona, Apache Iceberg, pytest.
 
 **Tài liệu thiết kế:** `docs/superpowers/specs/2026-09-30-bronze-to-silver-pipelines-design.vi.md`
 
@@ -24,16 +33,16 @@
 - Các cửa sổ NOW lệch nhau 30 phút vẫn là quan sát riêng; Standard không xóa hoặc overwrite NOW.
 - IFS và ERA5-Land vẫn là nguồn riêng dù có biến trùng nhau.
 - Identity để rebuild trọng số gồm source grid version, basin version và geometry processing version.
-- Tính toán fan-out theo batch slice; mỗi bảng output chỉ có một writer task.
+- Tính toán fan-out theo batch slice; mỗi bảng output chỉ có một Spark publish application.
 
 ---
 
 ## Cấu trúc file
 
 ```text
-config/silver/weather_aggregation.yaml
+config/pipelines/silver/weather_aggregation.yaml
 airflow/dags/silver_weather_aggregation.py
-src/flashflood_data/orchestration/silver/weather/
+src/flashflood_data/pipelines/silver_weather/
   __init__.py
   config.py
   models.py
@@ -42,15 +51,15 @@ src/flashflood_data/orchestration/silver/weather/
   aggregate.py
   revisions.py
   quality.py
-  service.py
-  factory.py
-tests/unit/silver/weather/
+  pipeline.py
+  runtime.py
+tests/unit/pipelines/silver_weather/
   test_config.py
   test_weights.py
   test_aggregate.py
   test_revisions.py
   test_quality.py
-  test_service.py
+  test_pipeline.py
 tests/integration/silver/test_weather_aggregation_pipeline.py
 ```
 
@@ -59,14 +68,14 @@ Service đọc ba table contract, chỉ gọi `weights.py` cho tổ hợp còn t
 ### Công việc 1: Thêm schema, cấu hình và contract dòng dữ liệu
 
 **Các file:**
-- Tạo: `config/silver/weather_aggregation.yaml`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/__init__.py`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/config.py`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/models.py`
+- Tạo: `config/pipelines/silver/weather_aggregation.yaml`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/__init__.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/config.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/models.py`
 - Sửa: `src/flashflood_data/storage/iceberg_schemas.py`
-- Sửa: `config/meta/static.yaml`
+- Sửa: `config/shared/metadata.yaml`
 - Sửa: `tests/contract/storage/test_meta_bronze_schemas.py`
-- Tạo: `tests/unit/silver/weather/test_config.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_config.py`
 
 **Giao diện:**
 - Đầu ra: physical `silver.grid_basin_weight` và `silver.basin_weather_value`.
@@ -90,7 +99,7 @@ def test_basin_weather_schema_keeps_source_and_revision():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: FAIL vì config/models/schemas are absent.
 
 - [ ] **Bước 3: Triển khai chính sách đã validate và contract vật lý**
@@ -101,22 +110,22 @@ Thêm toàn bộ cột đã duyệt từ `docs/schema_contract/data.md`. Đăng 
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit contracts**
 
 ```bash
-git add config/silver/weather_aggregation.yaml config/meta/static.yaml src/flashflood_data/orchestration/silver/weather src/flashflood_data/storage/iceberg_schemas.py tests/unit/silver/weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
+git add config/pipelines/silver/weather_aggregation.yaml config/shared/metadata.yaml src/flashflood_data/pipelines/silver_weather src/flashflood_data/storage/iceberg_schemas.py tests/unit/pipelines/silver_weather/test_config.py tests/contract/storage/test_meta_bronze_schemas.py
 git commit -m "feat: define Silver weather contracts"
 ```
 
 ### Công việc 2: Xây dựng trọng số grid–basin có thể tái sử dụng
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/weather/reader.py`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/weights.py`
-- Tạo: `tests/unit/silver/weather/test_weights.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/reader.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/weights.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_weights.py`
 
 **Giao diện:**
 - Đầu vào: các dòng từ `silver.source_grid`, `silver.dim_basin`, và hiện có weights.
@@ -138,7 +147,7 @@ def test_partial_cell_uses_intersection_area():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/weather/test_weights.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_weights.py -q`
 Mong đợi: FAIL vì reader/weights chưa tồn tại.
 
 - [ ] **Bước 3: Triển khai chồng lớp có index trong CRS bảo toàn diện tích**
@@ -155,25 +164,25 @@ Bỏ qua tiếp xúc có diện tích 0. Tạo `geometry_processing_version` t�
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/weather/test_weights.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_weights.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit weights**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/weather/reader.py src/flashflood_data/orchestration/silver/weather/weights.py tests/unit/silver/weather/test_weights.py
+git add src/flashflood_data/pipelines/silver_weather/reader.py src/flashflood_data/pipelines/silver_weather/weights.py tests/unit/pipelines/silver_weather/test_weights.py
 git commit -m "feat: build source-grid basin weights"
 ```
 
 ### Công việc 3: Tổng hợp slice và giữ đúng ngữ nghĩa revision
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/weather/aggregate.py`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/revisions.py`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/quality.py`
-- Tạo: `tests/unit/silver/weather/test_aggregate.py`
-- Tạo: `tests/unit/silver/weather/test_revisions.py`
-- Tạo: `tests/unit/silver/weather/test_quality.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/aggregate.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/revisions.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/quality.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_aggregate.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_revisions.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_quality.py`
 
 **Giao diện:**
 - Đầu vào: one `weather_raster_slice`, cell-index lookup, relevant weights, basin/version, variable policy.
@@ -198,7 +207,7 @@ def test_shifted_now_windows_are_both_retained():
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/weather/test_aggregate.py tests/unit/silver/weather/test_revisions.py tests/unit/silver/weather/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_aggregate.py tests/unit/pipelines/silver_weather/test_revisions.py tests/unit/pipelines/silver_weather/test_quality.py -q`
 Mong đợi: FAIL vì aggregation/revision/DQ code is absent.
 
 - [ ] **Bước 3: Triển khai tổng hợp mảng đã căn chỉnh và identity nghiệp vụ đầy đủ**
@@ -217,23 +226,23 @@ DQ nghiêm trọng gồm mảng lệch vị trí, cell không tồn tại, busin
 
 - [ ] **Bước 4: Chạy kiểm thử trọng tâm**
 
-Chạy: `pytest tests/unit/silver/weather/test_aggregate.py tests/unit/silver/weather/test_revisions.py tests/unit/silver/weather/test_quality.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_aggregate.py tests/unit/pipelines/silver_weather/test_revisions.py tests/unit/pipelines/silver_weather/test_quality.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit tổng hợp**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/weather/aggregate.py src/flashflood_data/orchestration/silver/weather/revisions.py src/flashflood_data/orchestration/silver/weather/quality.py tests/unit/silver/weather/test_aggregate.py tests/unit/silver/weather/test_revisions.py tests/unit/silver/weather/test_quality.py
+git add src/flashflood_data/pipelines/silver_weather/aggregate.py src/flashflood_data/pipelines/silver_weather/revisions.py src/flashflood_data/pipelines/silver_weather/quality.py tests/unit/pipelines/silver_weather/test_aggregate.py tests/unit/pipelines/silver_weather/test_revisions.py tests/unit/pipelines/silver_weather/test_quality.py
 git commit -m "feat: aggregate weather slices by basin"
 ```
 
 ### Công việc 4: Thêm service tăng dần, DAG và kiểm thử tích hợp
 
 **Các file:**
-- Tạo: `src/flashflood_data/orchestration/silver/weather/service.py`
-- Tạo: `src/flashflood_data/orchestration/silver/weather/factory.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/pipeline.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/runtime.py`
 - Tạo: `airflow/dags/silver_weather_aggregation.py`
-- Tạo: `tests/unit/silver/weather/test_service.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_pipeline.py`
 - Tạo: `tests/integration/silver/test_weather_aggregation_pipeline.py`
 - Sửa: `tests/contract/infra/test_silver_dags.py`
 - Sửa: `README.md`
@@ -263,7 +272,7 @@ def test_weather_dag_has_one_publish_task(dag_bag):
 
 - [ ] **Bước 2: Chạy kiểm thử và xác nhận đang fail**
 
-Chạy: `pytest tests/unit/silver/weather/test_service.py tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather/test_pipeline.py tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: FAIL vì service/DAG are absent.
 
 - [ ] **Bước 3: Triển khai lập kế hoạch tăng dần và TaskFlow graph**
@@ -288,16 +297,26 @@ Integration test tạo grid hai cell, hai basin, slice NOW/Standard, một cell 
 
 - [ ] **Bước 4: Chạy kiểm thử domain và hồi quy weather hiện có**
 
-Chạy: `pytest tests/unit/silver/weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/unit/weather tests/contract/infra/test_silver_dags.py -q`  
+Chạy: `pytest tests/unit/pipelines/silver_weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/unit/pipelines/weather_ingest tests/contract/infra/test_silver_dags.py -q`
 Mong đợi: PASS.
 
 - [ ] **Bước 5: Commit weather Silver pipeline**
 
 ```bash
-git add src/flashflood_data/orchestration/silver/weather airflow/dags/silver_weather_aggregation.py tests/unit/silver/weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
+git add src/flashflood_data/pipelines/silver_weather airflow/dags/silver_weather_aggregation.py tests/unit/pipelines/silver_weather tests/integration/silver/test_weather_aggregation_pipeline.py tests/contract/infra/test_silver_dags.py README.md docs/pipeline_architecture_and_roadmap.md
 git commit -m "feat: add Silver weather aggregation DAG"
 ```
 
 ## Điểm kiểm tra
 
 Dừng sau khi chạy fixture GSMaP NOW, GSMaP Standard và ERA5 nhỏ. Query hai bảng Silver bằng Trino, kiểm tra coverage, window, revision, `available_at` và hành vi chạy lại trước khi aggregate toàn bộ backfill.
+
+## Bổ sung DQ domain (11/10/2026)
+
+- Fatal: mảng cell/value lệch, source-grid ID không tồn tại, business key trùng, unit/value-kind
+  không tương thích, window kết thúc trước bắt đầu.
+- Reject row: giá trị vật lý ngoài miền sau khi đã áp dụng tolerance và conversion có version.
+- Warning: spatial/temporal coverage thấp, late data, hoặc chỉ có nguồn provisional.
+
+Revision selector chạy trước aggregate. GSMaP Standard có thể ưu tiên hơn NOW ở window khớp, nhưng
+window NOW không có bản Standard tương ứng vẫn được giữ; `NO_DATA` không đổi thành 0 mm.

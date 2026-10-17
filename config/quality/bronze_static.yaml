@@ -1,0 +1,36 @@
+policy_name: bronze_static
+policy_version: v1
+layer: bronze
+defaults:
+  published_quality_status: [passed, warning]
+rules:
+  - rule_id: object_checksum
+    rule_version: v1
+    severity: fatal
+  - rule_id: object_readable
+    rule_version: v1
+    severity: fatal
+  - rule_id: crs_usable
+    rule_version: v1
+    severity: fatal
+  - rule_id: nonempty_parse
+    rule_version: v1
+    severity: fatal
+  - rule_id: business_key_unique
+    rule_version: v1
+    severity: reject
+  - rule_id: bbox_valid
+    rule_version: v1
+    severity: reject
+  - rule_id: geometry_valid
+    rule_version: v1
+    severity: reject
+  - rule_id: geometry_repaired
+    rule_version: v1
+    severity: warning
+  - rule_id: bbox_clamped
+    rule_version: v1
+    severity: warning
+  - rule_id: optional_source_field_missing
+    rule_version: v1
+    severity: warning
