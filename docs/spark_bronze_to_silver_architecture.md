@@ -154,13 +154,13 @@ Cấu trúc mục tiêu:
 ```text
 infra/docker/spark/
   Dockerfile
-  spark-defaults.conf
 
 config/spark/
   local.yaml
 
 src/flashflood_data/shared/spark/
   __init__.py
+  models.py           # DTO qua biên Airflow/Spark và build signature
   session.py          # Spark/Sedona session + Polaris/MinIO catalog
   submit.py           # DTO/command builder cho spark-submit
   snapshots.py        # pin/read snapshot và build identity
@@ -168,6 +168,7 @@ src/flashflood_data/shared/spark/
   quality.py          # valid/reject/warning split
   publish.py          # append/MERGE/overwrite-by-filter Iceberg
   audit.py            # output snapshot, DQ, lineage payload
+  runtime.py          # ghép dependency dùng chung cho domain job
   cli.py              # entrypoint spark-submit dùng chung
 ```
 
@@ -233,7 +234,8 @@ mọi output snapshot, quarantine, DQ và lineage đã đầy đủ. Retry kiể
 
 - Fatal object-level được phát hiện trước hoặc khi đọc input: chặn logical group phụ thuộc object.
 - Row-level rejectable: Spark tách row lỗi vào `quarantine.*`, row hợp lệ vẫn publish.
-- Warning: row vẫn publish với `quality_status=warning` và có `meta.quality_results`.
+- Warning: row vẫn publish; trạng thái warning được ghi ở `meta.quality_results`,
+  `meta.table_snapshot_ref` và trạng thái run, không tự thêm cột ngoài schema Silver.
 - Specialized Python job phải trả structured error/evidence; không chỉ throw một exception chung cho
   toàn batch nếu lỗi chỉ thuộc một basin/document.
 
@@ -246,13 +248,17 @@ hoặc local mode để giảm tài nguyên; không nhúng driver vào Airflow s
 Mỗi Spark job phải đặt rõ executor memory, driver memory, shuffle partitions và max parallelism trong
 profile local. Không dùng mặc định cluster lớn trên máy teammate. Smoke test phải chứng minh đọc một
 snapshot Bronze và ghi/xóa một bảng Iceberg qua Polaris/MinIO trước khi chạy pipeline domain.
+Image Spark hiện dùng Python 3.10 của image Apache chính thức; các module được import trong driver
+phải giữ tương thích 3.10 dù runtime host/Airflow của repository dùng Python 3.11.
 
 ## 12. Lộ trình triển khai
 
 1. Chốt compatibility matrix Spark, Scala, Iceberg runtime, Sedona, Hadoop AWS và Java.
 2. Hoàn thiện Spark image/profile Compose và smoke read/write Iceberg.
-3. Xây shared Spark foundation: session, submit, snapshot, staging, DQ, publish và audit.
-4. Chuyển basin topology thành vertical slice đầu tiên để kiểm chứng Sedona + Iceberg.
+3. Shared Spark foundation đã có session, submit contract, snapshot discovery/pinning,
+   staging, DQ/quarantine projection, publisher, audit và dependency factory.
+4. Chuyển basin topology thành vertical slice đầu tiên để kiểm chứng Sedona + Iceberg;
+   normalize đã dùng Spark/Sedona, còn `spark_job.py`, topology, DAG và integration test.
 5. Xây weather aggregation bằng Spark và benchmark backfill đại diện.
 6. Xây static features theo mô hình Spark planner/publisher + Python hydrology.
 7. Xây river network và exposure bằng Spark/Sedona, Python graph khi cần.

@@ -1,10 +1,12 @@
 """Versioned source and dataset registry rows for the static landing pipeline."""
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+
+_UTC = timezone.utc  # noqa: UP017 - shared code also runs in the Python 3.10 Spark image
 
 from flashflood_data.catalog.models import SourceSpec
 
@@ -20,7 +22,7 @@ def load_static_registry(
     source_config = document["sources"]
     if set(source_config) != set(specifications):
         raise ValueError("Meta registry source IDs do not match source specifications")
-    valid_from = datetime.fromisoformat(str(document["valid_from"])).astimezone(UTC)
+    valid_from = datetime.fromisoformat(str(document["valid_from"])).astimezone(_UTC)
     sources = [
         {
             "source_id": source_id,

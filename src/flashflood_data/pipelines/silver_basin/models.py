@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -13,6 +13,7 @@ from flashflood_data.catalog.models import ImmutableModel
 EdgeStatus = Literal["internal", "exits_AOI", "terminal"]
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_UTC = timezone.utc  # noqa: UP017 - Spark image currently uses Python 3.10
 
 
 class BasinRow(ImmutableModel):
@@ -75,7 +76,7 @@ class BasinRow(ImmutableModel):
     def require_utc_timestamp(cls, value: datetime | None) -> datetime | None:
         if value is None:
             return None
-        if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+        if value.tzinfo is None or value.utcoffset() != _UTC.utcoffset(value):
             raise ValueError("basin validity timestamps must use timezone-aware UTC")
         return value
 

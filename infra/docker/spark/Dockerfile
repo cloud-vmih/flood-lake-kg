@@ -13,6 +13,12 @@ ARG GEOTOOLS_SHA512=64d3c4b73e2ddf700efec6d11f08a94fa546c5f88556d7bb76f92f1c5ea1
 
 USER root
 
+# Domain configs are validated inside the Spark driver. Keep this runtime
+# deliberately smaller than the Airflow ingest image.
+RUN python3 -m pip install --no-cache-dir \
+      pydantic==2.13.4 \
+      PyYAML==6.0.3
+
 RUN ICEBERG_VERSION="${ICEBERG_VERSION}" \
     ICEBERG_SPARK_SHA512="${ICEBERG_SPARK_SHA512}" \
     ICEBERG_AWS_SHA512="${ICEBERG_AWS_SHA512}" \

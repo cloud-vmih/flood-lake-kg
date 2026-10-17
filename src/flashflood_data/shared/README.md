@@ -12,7 +12,7 @@
 | `metadata/` | Registry, run, quality, snapshot và lineage dùng chung. |
 | `batching.py` | Chia batch xác định cho mapped task. |
 | `quality/` | Finding/disposition, policy hash, quarantine repository, Meta audit và coordinator publish dùng chung. |
-| `spark/` | Compatibility matrix DTO, build signature và session Spark/Sedona/Iceberg dùng cho Silver. |
+| [`spark/`](spark/README.md) | Lifecycle Spark/Sedona/Iceberg dùng chung: submit, snapshot, staging, DQ, publish và audit Silver. |
 | `storage_budget.py` | Kiểm tra dung lượng trước khi tải/publish. |
 
 `storage/` là lớp hạ tầng kế bên: HTTP, atomic local file, MinIO và Iceberg. Nó có thể import

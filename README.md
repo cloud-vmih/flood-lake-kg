@@ -40,7 +40,7 @@ Cập nhật ngày **11/10/2026**:
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
 | Spark/Sedona/Iceberg | Runtime local đã pin Spark 4.1.3, Scala 2.13, Java 17, Iceberg 1.11.0 và Sedona 1.9.1; smoke spatial SQL + ghi/đọc/xóa Iceberg đã chạy thành công |
 | DQ/quarantine | Contract/policy/quarantine đã tích hợp vào Landing, static Bronze và weather Bronze; có lifecycle guard, DAG migration Bronze cũ và smoke cô lập; Silver/Gold sẽ dùng cùng contract |
-| Silver L12 | Chưa triển khai; sẽ dùng Spark/Sedona, với Python chuyên dụng cho hydrology raster và NLP |
+| Silver L12 | Shared Spark foundation và normalize basin đã có; domain job/DAG Silver chưa triển khai |
 | GSMaP, ERA5-Land và IFS | Bốn DAG scoped Raw → Meta → Bronze đã hoàn tất; GSMaP Standard và ERA5-Land đã tối ưu giới hạn backfill, resume theo object thiếu và bốn fetch task song song; các DAG tạo mới đều pause |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
@@ -593,8 +593,9 @@ make spark-smoke
 make spark-down
 ```
 
-Smoke test gọi hàm spatial SQL của Sedona, tạo một bảng Iceberg tạm qua Polaris/MinIO, đọc lại rồi
-xóa bảng. Spark là compute engine
+Smoke test gọi hàm spatial SQL của Sedona, chạy normalize basin và DQ thật, rồi publish hai lần
+vào một bảng Iceberg tạm qua Polaris/MinIO để xác nhận `MERGE` idempotent trước khi xóa bảng.
+Spark là compute engine
 mặc định cho các pipeline Bronze → Silver sắp triển khai; hai DAG Raw/Bronze hiện tại vẫn chạy bằng
 Python/Airflow. Airflow sẽ gọi `spark-submit`, không tạo Spark driver trong scheduler. Các thuật toán
 hydrology raster và NLP dùng Python job riêng, ghi Parquet staging để Spark DQ/assemble/commit.
@@ -635,7 +636,8 @@ Kiến trúc và lộ trình chi tiết nằm tại
 │   ├── shared/geospatial/             # Raster/vector/zonal/overlay primitive dùng chung
 │   ├── shared/metadata/               # Registry, run, quality, snapshot và lineage
 │   ├── shared/quality/                 # Finding, policy, quarantine và publish coordinator
-│   ├── shared/spark/                   # Runtime config, request/snapshot DTO và Spark session
+│   ├── shared/spark/                   # Submit, snapshot, staging, DQ, publish và audit Spark
+│   ├── pipelines/silver_basin/         # Config/model và normalize basin bằng Spark/Sedona
 │   ├── shared/batching.py             # Batch helper dùng giữa các pipeline
 │   └── storage/                       # MinIO, HTTP, Polaris và Iceberg; không chứa rule nguồn
 ├── infra/docker/spark/                # Image Spark/Sedona/Iceberg cho Silver
@@ -656,9 +658,11 @@ Mỗi file trong `airflow/dags/` chỉ là entrypoint mỏng. Đọc code theo p
 - [Static Raw → Bronze](src/flashflood_data/pipelines/static_bronze/README.md)
 - [Dynamic weather ingest](src/flashflood_data/pipelines/weather_ingest/README.md)
 - [Study area L12](src/flashflood_data/pipelines/study_area/README.md)
+- [Silver basin topology và normalize](src/flashflood_data/pipelines/silver_basin/README.md)
 - [Silver static feature kernels](src/flashflood_data/pipelines/silver_static_features/README.md)
 - [Flood events](src/flashflood_data/pipelines/flood_events/README.md)
 - [Shared và storage](src/flashflood_data/shared/README.md)
+- [Shared Spark foundation](src/flashflood_data/shared/spark/README.md)
 
 Trong mỗi package, đọc `README.md`, rồi đến `airflow.py`, `runtime.py`, file pipeline/service và
 parser hoặc adapter. Cấu trúc vertical slice gom flow nghiệp vụ dưới một thư mục pipeline;
@@ -678,8 +682,9 @@ không cần ingest lại Raw/Bronze; DAG ID, task ID, schema, object key và co
 Thứ tự triển khai dự kiến:
 
 1. Chạy `bronze_quality_backfill` ở `mode=audit` theo từng bảng, review reject/fatal rồi mới apply.
-2. Bổ sung Spark submit lifecycle, pinned-snapshot read, staging và Iceberg publish dùng chung.
-3. Xây `silver_basin_topology` làm vertical slice đầu tiên và dùng DQ contract hiện có.
+2. Nối submit contract Spark đã có vào Airflow mà không chạy driver trong scheduler.
+3. Hoàn thiện `silver_basin_topology` (`spark_job.py`, topology, DAG và integration test); phần
+   normalize HydroBASINS/BasinATLAS đã chạy theo DataFrame Spark/Sedona.
 4. Xây `silver_weather_aggregation` bằng Spark để kiểm chứng workload lớn và incremental load.
 5. Xây static features theo Spark planner/publisher + Python hydrology raster.
 6. Xây river network, exposure và flood event theo các Spark domain job riêng.
@@ -702,6 +707,5 @@ make lint
 docker compose config --quiet
 ```
 
-Bộ test gần nhất: **594 passed**. Số test giảm vì test của workflow file-first đã xóa cùng code;
-test thuật toán và các pipeline hiện hành đã được chuyển sang đúng package. Trước khi push, không commit `.env`, volume dưới
+Bộ test gần nhất: **676 passed, 1 skipped**. Trước khi push, không commit `.env`, volume dưới
 `dataset/lakehouse/` hoặc credential cá nhân.

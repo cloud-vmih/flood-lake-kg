@@ -25,11 +25,24 @@ smoke = load_module("smoke_iceberg", JOBS / "smoke_iceberg.py")
 
 
 class FakeResult:
-    def __init__(self, rows: list[tuple[int, str]]) -> None:
+    def __init__(self, rows) -> None:
         self.rows = rows
 
-    def collect(self) -> list[tuple[int, str]]:
+    def collect(self):
         return self.rows
+
+
+class FakeFrame:
+    columns = ("id", "name")
+    schema = ("long", "string")
+
+    def createOrReplaceTempView(self, _name: str) -> None:
+        return None
+
+
+class FakeCatalog:
+    def dropTempView(self, _name: str) -> bool:
+        return True
 
 
 class FakeSpark:
@@ -41,11 +54,34 @@ class FakeSpark:
         self.rows = rows or []
         self.read_error = read_error
         self.statements: list[str] = []
+        self.catalog = FakeCatalog()
+        self.merge_count = 0
+
+    def createDataFrame(self, _rows, _columns) -> FakeFrame:
+        return FakeFrame()
+
+    def table(self, _name: str) -> FakeFrame:
+        return FakeFrame()
 
     def sql(self, statement: str) -> FakeResult:
         self.statements.append(statement)
         if "ST_AsText" in statement:
             return FakeResult([("POINT (102 21)",)])
+        if "AS total_count" in statement:
+            return FakeResult(
+                [{"total_count": 3, "distinct_count": 3, "null_count": 0}]
+            )
+        if "AS change_count" in statement:
+            return FakeResult([{"change_count": 0 if self.merge_count else 3}])
+        if statement.startswith("MERGE INTO"):
+            self.merge_count += 1
+            return FakeResult([])
+        if ".snapshots" in statement:
+            return FakeResult([{"snapshot_id": 91}])
+        if ".files" in statement:
+            return FakeResult([{"file_count": 1}])
+        if "AS row_count" in statement:
+            return FakeResult([{"row_count": 3}])
         if statement.startswith("SELECT"):
             if self.read_error:
                 raise self.read_error

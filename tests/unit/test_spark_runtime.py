@@ -95,6 +95,7 @@ def test_spark_submit_is_one_shot_and_receives_runtime_secrets() -> None:
         "AWS_SECRET_ACCESS_KEY"
     ]
     assert submit["environment"]["PYTHONPATH"] == "/opt/flashflood/src:/opt/spark/jobs"
+    assert "./config:/opt/flashflood/config:ro,Z" in submit["volumes"]
     assert "./src:/opt/flashflood/src:ro,Z" in submit["volumes"]
 
 

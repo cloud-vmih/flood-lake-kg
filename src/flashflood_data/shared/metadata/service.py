@@ -166,8 +166,6 @@ class MetaRecorder:
         quality_status: str,
         created_at: datetime,
     ) -> int:
-        if role not in {"input", "output"}:
-            raise ValueError("snapshot role must be input or output")
         row = {
             "pipeline_run_id": pipeline_run_id,
             "table_name": table_name,
@@ -176,10 +174,24 @@ class MetaRecorder:
             "created_at": created_at,
             "quality_status": quality_status,
         }
-        return self.store.upsert_meta_row(
+        return self.record_snapshot_refs((row,))
+
+    def record_snapshot_refs(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist all input/output snapshot refs for a run in one commit."""
+        requested = [dict(row) for row in rows]
+        if not requested:
+            raise ValueError("snapshot reference batch cannot be empty")
+        for row in requested:
+            if row["role"] not in {"input", "output"}:
+                raise ValueError("snapshot role must be input or output")
+            if row["quality_status"] not in {"passed", "warning", "failed"}:
+                raise ValueError("unsupported snapshot quality status")
+            if int(row["iceberg_snapshot_id"]) < 1:
+                raise ValueError("snapshot reference ID must be positive")
+        return self.store.upsert_meta_rows(
             (self.meta_namespace, "table_snapshot_ref"),
             ("pipeline_run_id", "table_name", "iceberg_snapshot_id", "role"),
-            row,
+            requested,
         )
 
     def record_lineage(

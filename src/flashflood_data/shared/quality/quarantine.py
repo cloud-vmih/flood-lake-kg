@@ -6,13 +6,14 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 from urllib.parse import parse_qsl, urlsplit
 
 from flashflood_data.shared.quality.models import QualityFinding
 
 Layer = Literal["raw", "bronze", "silver", "gold"]
+_UTC = timezone.utc  # noqa: UP017 - imported by the Python 3.10 Spark driver
 
 
 class QuarantineStore(Protocol):
@@ -69,7 +70,7 @@ class ObjectRejection:
     input_table: str | None = None
     input_snapshot_id: int | None = None
     evidence_uri: str | None = None
-    rejected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    rejected_at: datetime = field(default_factory=lambda: datetime.now(_UTC))
 
     def __post_init__(self) -> None:
         _validate_input_identity(self.object_id, self.input_table, self.input_snapshot_id)
@@ -90,7 +91,7 @@ class RowRejection:
     record: Mapping[str, object] | None = None
     record_uri: str | None = None
     parser_version: str | None = None
-    rejected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    rejected_at: datetime = field(default_factory=lambda: datetime.now(_UTC))
 
     def __post_init__(self) -> None:
         _validate_input_identity(self.object_id, self.input_table, self.input_snapshot_id)

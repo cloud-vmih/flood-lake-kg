@@ -11,9 +11,12 @@ trả output snapshot manifest. Meta finalize chỉ đánh dấu success sau khi
 **Tài liệu quyết định:**
 [docs/spark_bronze_to_silver_architecture.md](../../spark_bronze_to_silver_architecture.md)
 
-**Trạng thái 11/10/2026:** compatibility matrix, image Compose, shared session/models và smoke
-Sedona + Iceberg qua Polaris/MinIO đã hoàn tất. Snapshot pinning, Airflow submit lifecycle, staging,
-Spark DQ/publisher và vertical slice basin topology vẫn chưa triển khai.
+**Trạng thái 17/10/2026:** compatibility matrix, image Compose, session/models, submit contract,
+snapshot discovery/pinning, staging manifest, Spark DQ/quarantine projection, single-table publisher,
+Meta audit và dependency factory đã hoàn tất ở shared foundation. Fake domain đã chạy qua
+`discover → stage → publish → audit → skip`. Normalize basin đã chuyển sang Spark/Sedona. Phần còn
+lại là nối Airflow với runtime submit và hoàn thiện vertical slice basin bằng `spark_job.py`, topology,
+DAG cùng integration test trên Polaris/MinIO thật.
 
 ## Ràng buộc
 
@@ -30,7 +33,6 @@ Spark DQ/publisher và vertical slice basin topology vẫn chưa triển khai.
 ```text
 infra/docker/spark/
   Dockerfile
-  spark-defaults.conf
 
 config/spark/
   local.yaml
@@ -46,6 +48,7 @@ src/flashflood_data/shared/spark/
   publish.py
   audit.py
   cli.py
+  runtime.py
 
 tests/unit/shared/spark/
   test_models.py
@@ -55,6 +58,8 @@ tests/unit/shared/spark/
   test_quality.py
   test_publish.py
   test_audit.py
+  test_lifecycle.py
+  test_runtime.py
 
 tests/integration/spark/
   test_catalog_roundtrip.py
@@ -92,7 +97,8 @@ PublishedSnapshot
 
 **File:**
 
-- Tạo/sửa `infra/docker/spark/Dockerfile` và `infra/docker/spark/spark-defaults.conf`.
+- Tạo/sửa `infra/docker/spark/Dockerfile`; session options được cấu hình tập trung bằng
+  `shared/spark/session.py` thay cho file `spark-defaults.conf` riêng.
 - Sửa `compose.yaml`.
 - Sửa `Makefile` cho `spark-build`, `spark-up`, `spark-status`, `spark-smoke`, `spark-down`.
 - Tạo/sửa `tools/smoke/spark_iceberg.sh`.

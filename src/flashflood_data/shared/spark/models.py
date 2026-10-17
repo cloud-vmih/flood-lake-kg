@@ -12,6 +12,8 @@ from typing import Literal
 
 _SUPPORTED_MATRIX = ("4.1.3", "2.13", "17", "1.11.0", "1.9.1", "1.9.1-33.5")
 _MEMORY = re.compile(r"^[1-9][0-9]*[mg]$", re.IGNORECASE)
+_APPLICATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ENTRYPOINT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,12 @@ class PublishedSnapshot:
     row_count: int
     file_count: int
 
+    def __post_init__(self) -> None:
+        if self.table.count(".") not in {1, 2} or self.snapshot_id < 1:
+            raise ValueError("published snapshot requires a qualified table and positive snapshot")
+        if self.row_count < 0 or self.file_count < 0:
+            raise ValueError("published snapshot counts cannot be negative")
+
 
 @dataclass(frozen=True)
 class SparkApplicationRequest:
@@ -118,8 +126,29 @@ class SparkApplicationRequest:
     output_manifest_uri: str
     arguments: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if _APPLICATION_ID.fullmatch(self.application_id) is None:
+            raise ValueError("application_id contains unsafe characters")
+        if not self.pipeline_run_id or not self.pipeline or not self.build_signature:
+            raise ValueError("pipeline run, pipeline, and build signature are required")
+        if _ENTRYPOINT.fullmatch(self.entrypoint) is None:
+            raise ValueError("entrypoint must be a Python module path")
+        if not self.output_manifest_uri.startswith("s3://"):
+            raise ValueError("output manifest must use an s3 URI")
+        if not self.snapshots:
+            raise ValueError("Spark application requires at least one pinned snapshot")
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_json(cls, payload: str) -> SparkApplicationRequest:
+        raw = json.loads(payload)
+        if not isinstance(raw, dict):
+            raise TypeError("Spark application request must be a JSON object")
+        raw["snapshots"] = tuple(PinnedSnapshot(**row) for row in raw.get("snapshots", ()))
+        raw["arguments"] = tuple(raw.get("arguments", ()))
+        return cls(**raw)
 
 
 @dataclass(frozen=True)
@@ -129,6 +158,30 @@ class SparkApplicationResult:
     output_manifest_uri: str | None
     published_snapshots: tuple[PublishedSnapshot, ...] = ()
     error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if _APPLICATION_ID.fullmatch(self.application_id) is None:
+            raise ValueError("result application_id contains unsafe characters")
+        if self.status == "succeeded" and self.output_manifest_uri is None:
+            raise ValueError("successful Spark result requires an output manifest")
+        if (
+            self.status not in {"failed", "timed_out"}
+            and self.error_code is not None
+        ):
+            raise ValueError("only failed or timed-out results may contain an error code")
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_json(cls, payload: str) -> SparkApplicationResult:
+        raw = json.loads(payload)
+        if not isinstance(raw, dict):
+            raise TypeError("Spark application result must be a JSON object")
+        raw["published_snapshots"] = tuple(
+            PublishedSnapshot(**row) for row in raw.get("published_snapshots", ())
+        )
+        return cls(**raw)
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:

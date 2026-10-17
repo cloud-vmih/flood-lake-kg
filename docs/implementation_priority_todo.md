@@ -1,6 +1,6 @@
 # TODO ưu tiên triển khai FloodLakeKG
 
-**Cập nhật:** 11/10/2026
+**Cập nhật:** 17/10/2026
 
 **Mục tiêu:** sắp xếp các plan hiện có theo dependency thực tế, tránh triển khai Silver rồi phải sửa lại toàn bộ vì DQ, revision hoặc idempotency chưa được chốt.
 
@@ -43,7 +43,7 @@ flowchart TD
 | P0 | Ổn định Raw → Bronze | Audit và sửa khoảng trống | Chưa nghiệm thu |
 | P1 | DQ framework + quarantine | Đã tích hợp Landing/Bronze, migration và runbook; chờ rollout audit dữ liệu thật | Sẵn sàng rollout |
 | P2 | Flood Event Sources Landing → Bronze | Đã có spec và plan cho news; historical cần plan riêng | Chưa có DAG |
-| P3 | Spark runtime + revision contract + Silver common | Runtime Spark/Sedona/Iceberg đã smoke; revision/common còn thiếu | Đang triển khai |
+| P3 | Spark runtime + revision contract + Silver common | Shared foundation đã xong; còn revision contract và Airflow submit | Đang triển khai |
 | P4 | Silver Basin Topology | Triển khai plan đã có | Chưa triển khai |
 | P5A | Silver Static Basin Features | Triển khai plan đã có | Chưa triển khai |
 | P5B | Silver Weather Aggregation | Triển khai plan đã có | Chưa triển khai |
@@ -203,15 +203,15 @@ tạo stable ID, DQ, commit và repair. Kiến trúc chuẩn nằm tại
 ### P3.2. Triển khai Silver common
 
 - [ ] Canonical hash và stable business ID.
-- [ ] Input snapshot discovery và snapshot pinning.
-- [ ] Incremental build identity theo input snapshot + config/policy version.
-- [ ] Staging manifest + Parquet trên MinIO theo run/batch, có `_SUCCESS` và schema hash.
-- [ ] Shared Spark session, submit, snapshot reader, DQ, publish và audit.
-- [ ] Một Spark publish application cho mỗi bảng/nhóm bảng theo dependency; không để mapped worker commit.
-- [ ] Idempotent publish và crash repair.
-- [ ] DQ/quarantine integration từ P1.
-- [ ] Ghi pipeline run, quality, snapshot reference và Bronze → Silver lineage.
-- [ ] Factory/dependency container dùng chung, không chứa rule nghiệp vụ domain.
+- [x] Input snapshot discovery và snapshot pinning.
+- [x] Incremental build identity theo input snapshot + config/policy version.
+- [x] Staging manifest trên MinIO theo run/batch, có `_SUCCESS`, checksum và schema hash.
+- [x] Shared Spark session, submit contract, snapshot reader, DQ, publish và audit.
+- [x] Một publisher chỉ sở hữu một commit cho một bảng; mapped worker chỉ ghi staging.
+- [x] Idempotent MERGE, build `skip/repair` và fake-domain crash-repair gate.
+- [x] DQ split và projection đúng schema `quarantine.rejected_rows`.
+- [x] Ghi pipeline run, quality, snapshot reference theo batch và Bronze → Silver lineage.
+- [x] Factory/dependency container dùng chung, không chứa rule nghiệp vụ domain.
 
 **Plan runtime hiện hành:** [2026-10-10-spark-silver-foundation.vi.md](superpowers/plans/2026-10-10-spark-silver-foundation.vi.md)
 
@@ -234,8 +234,9 @@ tạo stable ID, DQ, commit và repair. Kiến trúc chuẩn nằm tại
 
 - [ ] Chọn revision HydroBASINS và BasinATLAS authoritative bằng P3.
 - [ ] Dùng Spark/Sedona đọc pinned Bronze snapshot, normalize geometry và join allowlist Atlas.
-- [ ] Dùng HydroBASINS làm nguồn geometry/topology chính.
-- [ ] Join allowlist BasinATLAS bằng `HYBAS_ID`.
+- [x] Normalize bằng Spark/Sedona, không collect row về Python/Shapely driver.
+- [x] Dùng HydroBASINS làm nguồn geometry/topology chính.
+- [x] Join allowlist BasinATLAS bằng `HYBAS_ID` trong normalization plan.
 - [ ] Tạo stable `basin_id` và `basin_version`.
 - [ ] Publish `silver.dim_basin`.
 - [ ] Tạo directed edge theo `NEXT_DOWN`.

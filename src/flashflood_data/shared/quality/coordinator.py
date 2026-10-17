@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Literal, Protocol
 
 from flashflood_data.shared.quality.audit import QualityAuditContext, quality_rows
@@ -18,6 +18,7 @@ from flashflood_data.shared.quality.quarantine import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_UTC = timezone.utc  # noqa: UP017 - imported by the Python 3.10 Spark driver
 
 
 class TargetWriter(Protocol):
@@ -80,7 +81,7 @@ class DqPublishCoordinator:
         self.target_writer = target_writer
         self.quarantine = quarantine
         self.meta = meta
-        self.now = now or (lambda: datetime.now(UTC))
+        self.now = now or (lambda: datetime.now(_UTC))
 
     def _run_row(
         self,
