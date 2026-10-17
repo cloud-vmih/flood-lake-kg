@@ -1,235 +1,265 @@
 # Phân công triển khai Bronze → Silver cho hai người
 
-> **Cập nhật 10/10/2026:** Spark/Sedona là runtime mặc định của Bronze → Silver theo
-> [spark_bronze_to_silver_architecture.md](spark_bronze_to_silver_architecture.md). Người 1 sở hữu
-> shared Spark runtime và integration; Người 2 sở hữu các Python specialized jobs cho
-> raster/hydrology/graph cùng Spark transform của domain được giao.
+> **Cập nhật 17/10/2026:** Phân công này chỉ bao gồm bốn pipeline Silver chuẩn bị triển khai.
+> Shared Spark foundation và basin topology không tính vào khối lượng bên dưới. Exposure network,
+> Gold, Knowledge Graph và các pipeline khác sẽ được phân công sau.
 
-## 1. Mục tiêu
+## 1. Phạm vi và prerequisite
 
-Tài liệu này chia toàn bộ phần triển khai Bronze → Silver cho hai người. Mỗi pipeline chỉ có một người sở hữu chính để tránh logic nghiệp vụ bị tách giữa nhiều branch.
+Hai người dùng chung runtime tại `src/flashflood_data/shared/spark/`, gồm snapshot pinning,
+build signature, staging, DQ/quarantine, Iceberg publisher và Meta audit. Không pipeline nào được
+tạo lại một framework publish hoặc audit riêng.
 
-Các implementation plan chi tiết vẫn là nguồn hướng dẫn chính. Tài liệu này chỉ xác định:
+Các prerequisite ngoài phạm vi phân công:
 
-- người phụ trách từng plan;
-- dependency và thời điểm được bắt đầu;
-- phạm vi file của mỗi người;
-- thứ tự merge;
-- cách xử lý các file dùng chung;
-- điều kiện bàn giao và review chéo.
+| Prerequisite | Trạng thái sử dụng |
+| --- | --- |
+| Shared Spark foundation | Đã có thể dùng để phát triển domain job và chạy smoke. |
+| `silver.dim_basin` và `silver.basin_edge` | Cần có trước khi integration test bằng dữ liệu thật và trước khi publish production. |
+| Flood-event Landing/Bronze | Cần có trước khi chạy production Silver Flood Events; trong lúc chờ dùng fixture cho unit/integration test cô lập. |
+
+Cả hai người có thể bắt đầu config, model, transform, DQ và fixture ngay. Nếu basin topology chưa
+publish, không ghi dữ liệu giả vào bảng Silver production để thay prerequisite.
 
 ## 2. Phân công tổng thể
 
-| Người | Pipeline phụ trách | Số công việc trong plan | Trọng tâm |
-| --- | --- | ---: | --- |
-| **Người 1** | Spark common foundation, Basin topology, Weather aggregation, Flood events | 18 | Spark runtime, orchestration, dữ liệu động, tích hợp chung |
-| **Người 2** | Basin static features, River network, Exposure network | 14 | Spark/Sedona domain job, raster hydrology, graph sông/đường và exposure |
-
-Số công việc không phản ánh hoàn toàn độ khó. Ba pipeline của Người 2 ít công việc hơn nhưng có nhiều phép xử lý raster, geometry và network nặng.
+| Người | Pipeline phụ trách | Trọng tâm |
+| --- | --- | --- |
+| **Người 1** | Weather aggregation; River network | Dữ liệu động theo cửa sổ thời gian, grid–basin weights, geometry sông và directed river graph |
+| **Người 2** | Basin static features; Flood events | Raster/hydrology theo basin, SoilGrids/land cover và chuẩn hóa evidence thành event |
 
 ```mermaid
 flowchart TB
-  C["Người 1: Spark common foundation"] --> B["Người 1: Basin topology"]
-  B --> W["Người 1: Weather aggregation"]
-  B --> E["Người 1: Flood events"]
-  B --> S["Người 2: Static features"]
-  B --> R["Người 2: River network"]
-  R --> X["Người 2: Exposure network"]
-  C --> S
-  C --> R
-  C --> W
-  C --> E
+    B["Prerequisite: silver.dim_basin"] --> W["Người 1: Weather aggregation"]
+    B --> R["Người 1: River network"]
+    B --> S["Người 2: Basin static features"]
+    B --> E["Người 2: Flood events"]
+    F["Prerequisite: Flood Event Bronze"] --> E
+    R -. "để dành" .-> X["Exposure network: làm sau"]
 ```
 
-## 3. Phần việc của Người 1
+Mỗi pipeline có một owner chính. Người còn lại review contract và cách sử dụng shared Spark,
+không cùng sửa logic nghiệp vụ trên hai branch khác nhau.
 
-Người 1 là **integration owner** và chịu trách nhiệm giữ cho các contract chung, Meta audit và DAG hoạt động thống nhất.
+## 3. Người 1
 
-### 3.1 Nền tảng dùng chung cho Silver
-
-- Plan: [Nền tảng dùng chung Silver](superpowers/plans/2026-09-30-silver-common-foundation.vi.md)
-- Branch: `feat/silver-common-foundation`
-- Có thể bắt đầu ngay.
-- Package sở hữu: `src/flashflood_data/shared/silver/`.
-- Đầu ra bàn giao:
-  - Spark/Sedona image và compatibility matrix;
-  - Spark session kết nối Polaris/MinIO;
-  - Airflow submit/monitor contract;
-  - build signature xác định;
-  - snapshot discovery;
-  - Parquet/manifest staging theo run;
-  - Spark DQ/publish cho mỗi bảng;
-  - Meta audit, snapshot ref và lineage;
-  - factory dependency dùng chung.
-- Gate hoàn tất: một domain giả lập chạy được chuỗi discover → stage → publish → audit và chạy lại trả về `skip`.
-
-### 3.2 Basin topology
-
-- Plan: [Topology lưu vực](superpowers/plans/2026-09-30-silver-basin-topology.vi.md)
-- Branch: `feat/silver-basin-topology`
-- Chỉ bắt đầu sau khi common foundation đã merge.
-- Package sở hữu: `src/flashflood_data/pipelines/silver_basin/`.
-- DAG sở hữu: `airflow/dags/silver_basin_topology.py`.
-- Đầu ra bàn giao:
-  - `silver.dim_basin`;
-  - `silver.basin_edge`;
-  - kiểm tra cycle, downstream target và basin L12;
-  - rerun cùng snapshot không tạo output thừa.
-- Gate hoàn tất: Người 2 xác nhận có thể dùng model và table contract của `dim_basin` mà không import module nội bộ của basin pipeline.
-
-### 3.3 Weather basin aggregation
+### 3.1 Weather basin aggregation
 
 - Plan: [Tổng hợp thời tiết theo lưu vực](superpowers/plans/2026-09-30-silver-weather-aggregation.vi.md)
 - Branch: `feat/silver-weather-aggregation`
-- Bắt đầu sau khi basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/pipelines/silver_weather/`.
-- DAG sở hữu: `airflow/dags/silver_weather_aggregation.py`.
-- Đầu ra bàn giao:
+- Package: `src/flashflood_data/pipelines/silver_weather/`
+- DAG: `airflow/dags/silver_weather_aggregation.py`
+- Input chính:
+  - `bronze.weather_raster_slice`;
+  - `bronze.source_grid`;
+  - `silver.dim_basin`.
+- Output:
   - `silver.grid_basin_weight`;
-  - `silver.basin_weather_value`;
-  - tổng hợp đúng `cell_index`, nodata và coverage;
-  - giữ riêng NOW, Standard, ERA5-Land và IFS;
-  - xử lý incremental theo slice/business key.
-- Gate hoàn tất: fixture hai cell/hai basin cho ra value và `valid_coverage_fraction` đúng, đồng thời rerun không ghi trùng.
+  - `silver.basin_weather_value`.
 
-### 3.4 Flood events
+Phạm vi thực hiện:
 
-- Plan: [Sự kiện lũ](superpowers/plans/2026-09-30-silver-flood-events.vi.md)
-- Branch: `feat/silver-flood-events`
-- Bắt đầu sau khi basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/pipelines/flood_events/`.
-- DAG sở hữu: `airflow/dags/silver_flood_events.py`.
-- Đầu ra bàn giao:
-  - `silver.observed_flood_event`;
-  - `silver.event_basin`;
-  - stable event ID và revision;
-  - diện tích ảnh hưởng chỉ dành cho footprint đã xác minh;
-  - không có `document_chunk`, embedding hoặc Qdrant.
-- Lưu ý vận hành: chỉ chạy end-to-end khi pipeline flood-event landing/Bronze đã tạo `bronze.historical_event_raw`. Trong lúc chờ, vẫn có thể hoàn thành unit test và integration test bằng fixture.
+1. Tạo config/model và version cho source grid, basin geometry và weight algorithm.
+2. Pin snapshot Bronze weather, source grid và Silver basin.
+3. Dùng Spark/Sedona tính phần diện tích cell giao với từng basin.
+4. Cache weight theo `source_grid_version + basin_version + geometry_processing_version`.
+5. Ánh xạ đúng `cell_indices` với source grid; không dựa vào vị trí array ngầm định.
+6. Aggregate từng raster slice theo trọng số diện tích.
+7. Không đổi missing/nodata thành `0`; ghi `valid_coverage_fraction`.
+8. Giữ NOW, Standard, ERA5-Land và IFS thành các observation có provenance riêng.
+9. Chọn revision trong cùng product/cycle/window; không xóa NOW window lệch 30 phút.
+10. Incremental theo logical weather slice và chỉ rebuild window bị dirty.
+11. Áp dụng DQ, quarantine, publish, audit và lineage bằng shared Spark.
+12. Tạo DAG submit/monitor; XCom chỉ chứa ID, URI, count và status.
 
-## 4. Phần việc của Người 2
+Gate bàn giao:
 
-Người 2 sở hữu Spark/Sedona transform và logic raster/GIS/network của các domain được giao, nhưng
-dùng session, submit, DQ, publisher và audit Spark của Người 1.
+- fixture hai cell/hai basin cho kết quả weighted value đúng;
+- nodata làm giảm coverage thay vì trở thành lượng mưa bằng `0`;
+- rerun cùng snapshot/config không tạo row hoặc snapshot thừa;
+- late/revised slice chỉ cập nhật logical window liên quan.
+
+### 3.2 River network
+
+- Plan: [Mạng sông](superpowers/plans/2026-09-30-silver-river-network.vi.md)
+- Branch: `feat/silver-river-network`
+- Package: `src/flashflood_data/pipelines/silver_river/`
+- DAG: `airflow/dags/silver_river_network.py`
+- Input chính:
+  - `bronze.river_reach_raw`;
+  - `silver.dim_basin`.
+- Output:
+  - `silver.dim_river_reach`;
+  - `silver.river_reach_edge`;
+  - `silver.river_basin`.
+
+Phạm vi thực hiện:
+
+1. Chọn HydroRIVERS revision authoritative từ pinned Bronze snapshot.
+2. Chuẩn hóa geometry/CRS và tạo stable `reach_id`, `reach_version`.
+3. Dùng Spark/Sedona tính intersection và chiều dài reach trong basin bằng metric CRS.
+4. Xây directed river topology từ downstream relation của nguồn.
+5. Kiểm tra duplicate reach, self-loop, cycle, dangling downstream target và geometry lỗi.
+6. Phân biệt reach nội bộ, reach ra ngoài AOI và terminal reach.
+7. Liên kết mọi row với đúng `basin_version`.
+8. Incremental theo river snapshot, basin version và processing version.
+9. Áp dụng DQ/quarantine, single-writer publish, audit và lineage bằng shared Spark.
+10. Tạo DAG submit/monitor và truy vấn nghiệm thu bằng Trino.
+
+Gate bàn giao:
+
+- graph có hướng và không có cycle ngoài trường hợp policy cho phép rõ ràng;
+- mỗi reach có identity/version xác định và provenance;
+- tổng chiều dài intersection không vượt chiều dài reach ngoài tolerance đã cấu hình;
+- rerun không tạo edge hoặc relation trùng.
+
+## 4. Người 2
 
 ### 4.1 Basin static features
 
 - Plan: [Đặc trưng tĩnh theo lưu vực](superpowers/plans/2026-09-30-silver-basin-static-features.vi.md)
 - Branch: `feat/silver-static-features`
-- Bắt đầu sau khi common foundation và basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/pipelines/silver_static_features/`.
-- DAG sở hữu: `airflow/dags/silver_basin_static_features.py`.
-- Đầu ra bàn giao:
+- Package: `src/flashflood_data/pipelines/silver_static_features/`
+- DAG: `airflow/dags/silver_basin_static_features.py`
+- Input chính:
+  - các bảng raster/static Bronze;
+  - `silver.dim_basin`.
+- Output:
   - `silver.basin_static_feature`;
   - `silver.basin_feature_lineage`;
   - `meta.derived_objects`;
-  - raster flow direction/flow accumulation trong MinIO;
-  - terrain, hydrology, SoilGrids 0–30 cm, land cover và Atlas reference.
-- Gate hoàn tất: chạy fixture hai basin, kiểm tra công thức/unit, derived object, lineage và rerun skip trước khi chạy toàn AOI.
+  - derived raster/object trên MinIO khi có.
 
-### 4.2 River network
+Phạm vi thực hiện:
 
-- Plan: [Mạng sông](superpowers/plans/2026-09-30-silver-river-network.vi.md)
-- Branch: `feat/silver-river-network`
-- Có thể triển khai song song với static features sau khi basin topology đã merge.
-- Package sở hữu: `src/flashflood_data/pipelines/silver_river/`.
-- DAG sở hữu: `airflow/dags/silver_river_network.py`.
-- Đầu ra bàn giao:
-  - `silver.dim_river_reach`;
-  - `silver.river_reach_edge`;
-  - `silver.river_basin`;
-  - kiểm tra cycle, dangling endpoint và intersection ratio.
-- Gate hoàn tất: network version được duyệt trước khi exposure dùng để tìm road-river crossing.
+1. Dùng Spark lập dirty-basin plan, spatial/tabular transform, DQ và Iceberg publish.
+2. Aggregate elevation mean/min/max, relief và terrain slope từ DEM.
+3. Dùng Python/Rasterio cho flow direction, flow accumulation và hydrology raster chưa phù hợp Sedona.
+4. Tính outlet, longest flow path, source/outlet elevation và main-channel slope.
+5. Tính `tc_hours`, `kb_fast_hours`, `kb_central_hours` và `kb_slow_hours`.
+6. Chuyển đổi SoilGrids theo divisor của từng property và aggregate theo depth band.
+7. Tạo feature 0–30 cm và 30–100 cm; tính field capacity, wilting point, AWC và uncertainty.
+8. Aggregate WorldCover, population và field BasinATLAS allowlist theo basin.
+9. Python specialized worker chỉ ghi Parquet staging; Spark là writer duy nhất của bảng Silver.
+10. Đăng ký derived object và lineage riêng, không giả derived raster thành Raw source object.
+11. Recompute chỉ basin/source group bị dirty khi một revision thay đổi.
+12. Tạo DAG submit/monitor và truy vấn nghiệm thu bằng Trino.
 
-### 4.3 Exposure network
+Gate bàn giao:
 
-- Plan: [Mạng lưới phơi nhiễm](superpowers/plans/2026-09-30-silver-exposure-network.vi.md)
-- Branch: `feat/silver-exposure-network`
-- Chỉ bắt đầu sau khi river network đã merge; basin topology cũng phải có sẵn.
-- Package sở hữu: `src/flashflood_data/pipelines/silver_exposure/`.
-- Module dùng chung sở hữu: `src/flashflood_data/shared/spatial_grid.py`.
-- DAG sở hữu: `airflow/dags/silver_exposure_network.py`.
-- Đầu ra bàn giao:
-  - facility và quan hệ facility-basin;
-  - population grid và đăng ký source grid WorldPop;
-  - road node/edge và road-basin;
-  - river crossing;
-  - giữ tương thích với weather grid registrar hiện tại.
-- Gate hoàn tất: Người 1 chạy lại toàn bộ test weather grid sau khi merge phần tách `spatial_grid.py`.
+- fixture hai basin cho kết quả công thức, unit và coverage đúng;
+- nodata hoặc coverage thấp đi qua DQ, không tự điền `0`;
+- mỗi feature có source/version/lineage rõ ràng;
+- rerun cùng input trả `skip` và không nhân derived object.
 
-## 5. Trình tự làm việc khuyến nghị
+### 4.2 Flood events
 
-### Giai đoạn 1 — Mở critical path
+- Plan: [Sự kiện lũ Silver](superpowers/plans/2026-10-09-flood-event-silver.vi.md)
+- Branch: `feat/silver-flood-events`
+- Package: `src/flashflood_data/pipelines/flood_events/`
+- DAG: `airflow/dags/silver_flood_events.py`
+- Input chính:
+  - `bronze.historical_event_raw`;
+  - `bronze.news_article_raw`;
+  - `silver.dim_basin`.
+- Output chính:
+  - `silver.source_document`;
+  - `silver.flood_event_mention`;
+  - `silver.observed_flood_event`;
+  - `silver.event_evidence`;
+  - `silver.event_basin`.
 
-| Người 1 | Người 2 |
-| --- | --- |
-| Triển khai Spark common foundation và smoke Polaris/MinIO. | Đọc ba plan được giao; rà fixture DEM, SoilGrids, HydroRIVERS, OSM và WorldPop hiện có. Không viết production code phụ thuộc common khi interface chưa merge. |
+Phạm vi thực hiện:
 
-Kết thúc giai đoạn khi branch `feat/silver-common-foundation` đã pass test và merge.
+1. Chọn current Bronze revision và tạo versioned `source_document`.
+2. Chạy rule/NLP extractor bằng Python, ghi mention evidence qua staging.
+3. Lưu evidence span/hash; không tạo document chunk, embedding hoặc Qdrant.
+4. Cho phép một document sinh nhiều mention và nhiều document cùng dẫn tới một event.
+5. Chuẩn hóa stable `flood_event_id` và tăng `event_revision` khi nội dung chuẩn hóa đổi.
+6. Duy trì lịch sử revision và `is_current` xác định.
+7. Liên kết event với đúng một hoặc nhiều `basin_version`.
+8. Chỉ ghi affected area khi có footprint đã xác minh.
+9. Point hoặc administrative reference chỉ tạo quan hệ event–basin, không tự suy ra diện tích.
+10. Quarantine mention/event không đạt policy và giữ evidence để reprocess.
+11. Ghi lineage từ Bronze document/record đến mention, event và event–basin.
+12. Tạo DAG submit/monitor; cho phép chạy test bằng fixture trước khi upstream Bronze sẵn sàng.
 
-### Giai đoạn 2 — Chốt contract basin
+Gate bàn giao:
 
-| Người 1 | Người 2 |
-| --- | --- |
-| Triển khai basin topology. | Chuẩn bị fixture/test thuần cho static features và river network trên branch riêng; rebase sau khi basin merge. |
+- rerun cùng evidence không tăng revision;
+- extractor version mới có thể chạy lại từ `source_document` mà không crawl lại;
+- nội dung chuẩn hóa thay đổi tăng đúng một revision;
+- event–basin không trùng và không dùng basin version mơ hồ;
+- affected area chỉ xuất hiện khi có footprint evidence.
 
-Kết thúc giai đoạn khi `silver.dim_basin` và `silver.basin_edge` đã được chấp nhận.
+## 5. Trình tự triển khai
 
-### Giai đoạn 3 — Chạy song song lần một
-
-| Người 1 | Người 2 |
-| --- | --- |
-| Triển khai weather aggregation. | Triển khai basin static features. |
-
-Hai người không được dùng service nội bộ của nhau. Cả hai chỉ đọc `silver.dim_basin` qua Iceberg contract.
-
-### Giai đoạn 4 — Chạy song song lần hai
-
-| Người 1 | Người 2 |
-| --- | --- |
-| Triển khai flood events bằng fixture; chạy production khi Bronze event có dữ liệu. | Triển khai river network. |
-
-Kết thúc khi river network được duyệt và đủ điều kiện làm input cho exposure.
-
-### Giai đoạn 5 — Exposure và tích hợp cuối
+### Giai đoạn 1 — Hai pipeline đầu tiên
 
 | Người 1 | Người 2 |
 | --- | --- |
-| Review code exposure, xử lý merge file chung, chạy contract/full test và cập nhật tài liệu vận hành. | Triển khai exposure network và sửa lỗi do review. |
+| Weather aggregation | Basin static features |
 
-## 6. Quy tắc branch và merge
+Hai pipeline chỉ giao tiếp qua contract Iceberg và shared Spark. Không import service nội bộ của
+pipeline còn lại.
 
-Không tạo một branch lớn cho mỗi người. Mỗi pipeline dùng branch riêng như danh sách ở trên để có thể review và rollback độc lập.
+### Giai đoạn 2 — Hai pipeline tiếp theo
 
-Thứ tự merge bắt buộc:
+| Người 1 | Người 2 |
+| --- | --- |
+| River network | Flood events |
 
-1. `feat/silver-common-foundation`
-2. `feat/silver-basin-topology`
-3. `feat/silver-static-features`
-4. `feat/silver-weather-aggregation`
-5. `feat/silver-river-network`
-6. `feat/silver-flood-events`
-7. `feat/silver-exposure-network`
+Flood Events có thể hoàn thành code và test bằng fixture trong khi chờ Landing/Bronze event.
+River Network có thể hoàn thành fixture trước khi `silver.dim_basin` được publish, nhưng integration
+test dữ liệu thật phải pin đúng basin snapshot.
 
-Static features và weather có thể được viết song song, nhưng branch merge sau phải rebase lên branch đã merge trước. River và flood events cũng áp dụng quy tắc tương tự.
+### Giai đoạn 3 — Review chéo và tích hợp
 
-Trước khi giao review, mỗi branch phải:
+| Người 1 review | Người 2 review |
+| --- | --- |
+| Static feature units, staging/derived-object ownership và flood-event revision/evidence semantics | Weather window/coverage/revision và river graph/basin relation |
+
+Sau bốn pipeline, team mới phân công Exposure Network và các pipeline tiếp theo.
+
+## 6. Branch và thứ tự merge
+
+Mỗi pipeline dùng một branch riêng:
+
+```text
+feat/silver-weather-aggregation
+feat/silver-static-features
+feat/silver-river-network
+feat/silver-flood-events
+```
+
+Weather và Static Features có thể phát triển song song. River và Flood Events bắt đầu sau khi owner
+hoàn thành hoặc tạo checkpoint ổn định cho pipeline đầu tiên của mình.
+
+Thứ tự merge khuyến nghị:
+
+1. `feat/silver-weather-aggregation`
+2. `feat/silver-static-features`
+3. `feat/silver-river-network`
+4. `feat/silver-flood-events`
+
+Nếu một pipeline hoàn thành sớm hơn và không phụ thuộc branch đang chờ, có thể đổi thứ tự merge.
+Branch merge sau phải rebase lên branch tích hợp mới nhất và chạy lại contract/full test.
+
+Trước khi giao review:
 
 ```bash
 git fetch origin
 git rebase origin/<nhanh-tich-hop>
 pytest <cac-test-cua-domain> -q
-ruff check src tests
+ruff check src tests airflow spark/jobs
+docker compose config --quiet
 ```
 
-`<nhanh-tich-hop>` là branch chung mà team đang dùng. Không copy nguyên commit từ branch khác bằng cách chép file thủ công.
-
-## 7. Các file dùng chung dễ conflict
-
-Các file sau có thể được nhiều pipeline sửa:
+## 7. File dùng chung dễ conflict
 
 ```text
 src/flashflood_data/storage/iceberg_schemas.py
+src/flashflood_data/shared/spark/
 config/shared/metadata.yaml
 tests/contract/storage/test_meta_bronze_schemas.py
 tests/contract/infra/test_silver_dags.py
@@ -238,66 +268,62 @@ docs/pipeline_architecture_and_roadmap.md
 docs/schema_contract/data.md
 ```
 
-Quy tắc xử lý:
+Quy tắc:
 
-1. Người phụ trách domain vẫn thêm schema/registry/test cần thiết trong branch của domain để branch tự kiểm thử được.
-2. Branch merge sau phải rebase và giữ cả contract đã merge lẫn contract mới của mình.
-3. Người 1 là người giải quyết cuối cùng nếu có conflict về schema, registry, DAG contract hoặc tài liệu.
-4. Không overwrite toàn bộ `_DEFINITIONS`, registry YAML hoặc file test bằng bản trên branch cá nhân.
-5. Mỗi lần giải quyết conflict phải chạy lại toàn bộ contract test, không chỉ test của domain vừa merge.
+1. Domain branch được thêm schema, registry và test cần thiết để tự kiểm thử.
+2. Không sửa shared Spark chỉ để nhúng rule riêng của domain. Nếu thật sự thiếu primitive chung,
+   hai người thống nhất interface trước khi sửa.
+3. Không overwrite toàn bộ schema registry hoặc contract test bằng bản từ branch cá nhân.
+4. Người merge sau rebase và giữ cả contract đã có lẫn contract mới.
+5. Sau khi giải quyết conflict, chạy lại toàn bộ contract test và smoke nếu shared runtime thay đổi.
 
-Lệnh kiểm tra sau mỗi lần merge domain:
+## 8. Review và bàn giao
 
-```bash
-pytest tests/contract/storage/test_meta_bronze_schemas.py tests/contract/infra/test_silver_dags.py tests/contract/test_architecture.py -q
-```
+Thứ tự đọc một pipeline khi review:
 
-## 8. Quy tắc review chéo
-
-| Code do | Người review | Nội dung review bắt buộc |
-| --- | --- | --- |
-| Người 1 | Người 2 | Interface common có dùng được từ domain khác; basin geometry/topology; weather coverage/window; event area semantics |
-| Người 2 | Người 1 | Không bypass Spark common publish/audit; đúng table key/version; không concurrent commit; Meta lineage đầy đủ |
-
-Reviewer không cần đọc toàn bộ repository. Thứ tự đọc cho mỗi branch:
-
-1. plan tiếng Việt của pipeline;
-2. file `config.py` và YAML;
-3. `models.py`;
-4. transform thuần;
-5. `quality.py`;
-6. `pipeline.py`;
-7. `runtime.py`;
+1. plan tiếng Việt;
+2. README của package;
+3. config model và YAML;
+4. data model/schema;
+5. transform và rule DQ;
+6. Spark/Python job;
+7. runtime/factory;
 8. DAG;
-9. test và thay đổi schema/registry.
+9. test, registry và documentation.
 
-## 9. Mẫu bàn giao cho mỗi pipeline
-
-Người phụ trách ghi phần sau trong PR hoặc tin nhắn bàn giao:
+Mẫu bàn giao:
 
 ```text
 Pipeline:
-Input tables và snapshot dùng để test:
-Output tables:
+Branch/commit:
+Input table và pinned snapshot dùng để test:
+Output table và snapshot:
 Build signature/version:
-Số dòng output:
-DQ fatal/warning:
+Số row accepted/rejected/warning:
 Test đã chạy:
 Lệnh trigger DAG:
 Truy vấn Trino để kiểm tra:
-Rủi ro hoặc phần chưa chạy được trên dữ liệu thật:
+Prerequisite hoặc rủi ro còn lại:
 ```
 
-Không đánh dấu hoàn tất nếu mới pass unit test nhưng chưa có integration test theo plan. Nếu chưa thể chạy dữ liệu thật vì thiếu upstream pipeline, ghi rõ prerequisite còn thiếu thay vì tạo dữ liệu giả trong production table.
+Một pipeline chỉ được đánh dấu hoàn tất khi:
 
-## 10. Điều kiện hoàn tất chung
+- output truy vấn được bằng Trino;
+- cùng input/config chạy lại không tạo dữ liệu hoặc snapshot thừa;
+- input snapshot mới chỉ rebuild logical group bị ảnh hưởng;
+- không có nhiều mapped task commit đồng thời vào cùng bảng;
+- output snapshot có DQ, input snapshot ref và lineage trong Meta;
+- unit, contract, integration test và Ruff đều pass.
 
-- Hai người đều có thể giải thích flow `DAG → factory → service → transform/quality → publisher/audit` của phần mình.
-- Tất cả output truy vấn được bằng Trino.
-- Chạy lại cùng input/config không tạo dữ liệu trùng.
-- Input snapshot mới chỉ rebuild domain bị ảnh hưởng.
-- Không có nhiều mapped task ghi đồng thời vào cùng bảng Iceberg.
-- Mọi output snapshot có input snapshot ref, DQ và lineage trong Meta.
-- Test của weather vẫn pass sau khi tách shared grid registrar cho exposure.
-- Flood-event runtime không chứa document chunk, embedding hoặc Qdrant.
-- Toàn bộ test suite và `ruff check src tests` pass sau lần merge cuối.
+## 9. Công việc để sau
+
+Không nằm trong đợt phân công này:
+
+- Exposure network;
+- Gold feature/threat/routing;
+- Knowledge Graph và PostGIS serving;
+- API, dashboard và bản đồ;
+- embedding, vector database hoặc Qdrant.
+
+Exposure Network chỉ bắt đầu sau khi River Network ổn định vì nó cần river crossing và network
+version. Khi đó team sẽ lập phân công mới dựa trên tiến độ thực tế của bốn pipeline trên.
