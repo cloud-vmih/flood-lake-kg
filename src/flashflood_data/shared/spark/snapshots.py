@@ -130,7 +130,7 @@ class SparkSnapshotManager:
 
     def read(self, spark: Any, snapshot: PinnedSnapshot) -> Any:
         qualified = self.qualify(snapshot.table)
-        return spark.read.option("snapshot-id", str(snapshot.snapshot_id)).table(qualified)
+        return spark.read.option("versionAsOf", str(snapshot.snapshot_id)).table(qualified)
 
     def history(self, spark: Any, job_name: str) -> tuple[BuildRecord, ...]:
         """Load prior build signatures and durable output refs from Meta."""

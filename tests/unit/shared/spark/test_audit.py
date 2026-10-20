@@ -36,6 +36,7 @@ def _request():
         policy_id="policy-1",
         algorithm_version="topology-v1",
         input_snapshots=(PinnedSnapshot("bronze.basin_polygon_raw", 17),),
+        input_object_ids=("hydro-object", "atlas-object"),
         required_outputs=("silver.dim_basin", "silver.basin_edge"),
         started_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
@@ -60,6 +61,11 @@ def test_audit_finalizes_success_only_after_refs_quality_and_lineage() -> None:
     assert len(snapshot_events) == 1
     assert len(snapshot_events[0][1]) == 3
     assert sum(event[0] == "lineage" for event in meta.events) == 1
+    lineage_rows = next(event[1] for event in meta.events if event[0] == "lineage")
+    assert {row["input_object_id"] for row in lineage_rows} >= {
+        "hydro-object",
+        "atlas-object",
+    }
 
 
 def test_audit_refuses_success_when_a_required_output_is_missing() -> None:
@@ -88,3 +94,31 @@ def test_audit_refuses_success_without_durable_quality_results() -> None:
         SparkAudit(meta).finalize_success(_request(), outputs)
 
     assert meta.events == []
+
+
+def test_audit_records_quarantine_snapshot_as_auxiliary_lineage() -> None:
+    from flashflood_data.shared.spark.audit import SparkAudit
+
+    meta = _Meta()
+    outputs = (
+        PublishedSnapshot("silver.dim_basin", 91, 2, 1),
+        PublishedSnapshot("silver.basin_edge", 92, 2, 1),
+    )
+    quarantine = PublishedSnapshot("quarantine.rejected_rows", 93, 1, 1)
+
+    SparkAudit(meta, now=lambda: datetime(2026, 1, 2, tzinfo=UTC)).finalize_success(
+        _request(),
+        outputs,
+        auxiliary_outputs=(quarantine,),
+        quality_rows=({"rule_id": "atlas_join", "severity": "reject"},),
+    )
+
+    snapshot_rows = next(rows for kind, rows in meta.events if kind == "snapshots")
+    assert {row["table_name"] for row in snapshot_rows} == {
+        "bronze.basin_polygon_raw",
+        "silver.dim_basin",
+        "silver.basin_edge",
+        "quarantine.rejected_rows",
+    }
+    final_run = [row for kind, row in meta.events if kind == "run"][-1]
+    assert final_run["output_row_count"] == 4

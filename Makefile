@@ -105,11 +105,11 @@ spark-build: lakehouse-init
 
 spark-up: lakehouse-up
 	tools/bootstrap/check_docker_access.sh
-	docker compose --profile spark up -d --wait spark-master spark-worker
+	docker compose --profile spark up -d --wait spark-master spark-worker spark-submit-gateway
 
 spark-status:
 	tools/bootstrap/check_docker_access.sh
-	docker compose --profile spark ps spark-master spark-worker
+	docker compose --profile spark ps spark-master spark-worker spark-submit-gateway
 
 spark-smoke: spark-up
 	tools/bootstrap/check_docker_access.sh
@@ -117,8 +117,8 @@ spark-smoke: spark-up
 
 spark-down:
 	tools/bootstrap/check_docker_access.sh
-	docker compose --profile spark stop spark-worker spark-master
-	docker compose --profile spark rm -f spark-worker spark-master
+	docker compose --profile spark stop spark-submit-gateway spark-worker spark-master
+	docker compose --profile spark rm -f spark-submit-gateway spark-worker spark-master
 
 dq-audit-plan:
 	test -n "$(DATASET)" || (echo "DATASET is required, for example DATASET=bronze.weather_raster_slice" >&2; exit 2)

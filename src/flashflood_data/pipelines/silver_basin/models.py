@@ -6,14 +6,20 @@ import re
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
-
-from flashflood_data.catalog.models import ImmutableModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 EdgeStatus = Literal["internal", "exits_AOI", "terminal"]
+TerminalType = Literal["non_terminal", "sink", "coastal", "endorheic", "self_reference"]
+PublishedQualityStatus = Literal["passed", "warning"]
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UTC = timezone.utc  # noqa: UP017 - Spark image currently uses Python 3.10
+
+
+class ImmutableModel(BaseModel):
+    """Spark-safe immutable base without importing the Python 3.11 catalog package."""
+
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
 
 
 class BasinRow(ImmutableModel):
@@ -25,12 +31,16 @@ class BasinRow(ImmutableModel):
     basin_version: str
     hydrobasins_level: Literal[12]
     geometry_wkb: bytes
+    bbox_wgs84: tuple[float, float, float, float]
     crs: Literal["EPSG:4326"]
     geometry_hash: str
     next_down_id: str | None = None
     main_basin_id: str | None = None
     pfaf_id: str | None = None
     topology_sort_hint: int | None = None
+    hydro_order: int | None = Field(default=None, ge=0)
+    is_coastal: bool | None = None
+    is_endorheic: bool | None = None
     basin_area_km2: float = Field(gt=0)
     upstream_area_km2: float = Field(gt=0)
     distance_to_main_sink_km: float | None = Field(default=None, ge=0)
@@ -38,9 +48,16 @@ class BasinRow(ImmutableModel):
     distance_to_sink_km: float | None = Field(default=None, ge=0)
     valid_from: datetime
     valid_to: datetime | None = None
-    source_object_id: str
+    hydrobasins_object_id: str
+    basinatlas_object_id: str
+    quality_status: PublishedQualityStatus
 
-    @field_validator("basin_id", "basin_version", "source_object_id")
+    @field_validator(
+        "basin_id",
+        "basin_version",
+        "hydrobasins_object_id",
+        "basinatlas_object_id",
+    )
     @classmethod
     def require_identity(cls, value: str) -> str:
         normalized = value.strip()
@@ -61,6 +78,16 @@ class BasinRow(ImmutableModel):
     def require_geometry_bytes(cls, value: bytes) -> bytes:
         if not value:
             raise ValueError("geometry_wkb must not be empty")
+        return value
+
+    @field_validator("bbox_wgs84")
+    @classmethod
+    def require_valid_bbox(
+        cls, value: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
+        min_x, min_y, max_x, max_y = value
+        if not (-180 <= min_x <= max_x <= 180 and -90 <= min_y <= max_y <= 90):
+            raise ValueError("bbox_wgs84 must be an ordered WGS84 bounding box")
         return value
 
     @field_validator("geometry_hash")
@@ -92,19 +119,22 @@ class BasinEdgeRow(ImmutableModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
+    basin_edge_id: str
     topology_version: str
     basin_version: str
     upstream_basin_id: str
     downstream_basin_id: str | None = None
+    source_downstream_id: str | None = None
     edge_status: EdgeStatus
-    river_length_km: float | None = Field(default=None, ge=0)
-    elevation_drop_m: float | None = Field(default=None, ge=0)
-    channel_slope_m_m: float | None = Field(default=None, ge=0)
+    topological_rank_upstream_first: int = Field(ge=0)
+    terminal_type: TerminalType
     cycle_check: str
     outlet_check: str
+    quality_status: PublishedQualityStatus
     source_object_id: str
 
     @field_validator(
+        "basin_edge_id",
         "topology_version",
         "basin_version",
         "upstream_basin_id",
@@ -119,13 +149,21 @@ class BasinEdgeRow(ImmutableModel):
             raise ValueError("basin edge identity and check fields must not be empty")
         return normalized
 
-    @field_validator("downstream_basin_id")
+    @field_validator("downstream_basin_id", "source_downstream_id")
     @classmethod
     def normalize_downstream_identifier(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
         return normalized or None
+
+    @field_validator("basin_edge_id")
+    @classmethod
+    def require_sha256_edge_id(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not _SHA256.fullmatch(normalized):
+            raise ValueError("basin_edge_id must be a lowercase SHA-256 hex digest")
+        return normalized
 
     @model_validator(mode="after")
     def require_status_consistent_downstream(self) -> BasinEdgeRow:
@@ -136,6 +174,10 @@ class BasinEdgeRow(ImmutableModel):
                 raise ValueError("internal edge cannot point to itself")
         elif self.downstream_basin_id is not None:
             raise ValueError("exits_AOI and terminal edges keep downstream_basin_id null")
+        if self.edge_status == "terminal" and self.terminal_type == "non_terminal":
+            raise ValueError("terminal edge requires a terminal_type")
+        if self.edge_status != "terminal" and self.terminal_type != "non_terminal":
+            raise ValueError("non-terminal edge must use terminal_type=non_terminal")
         return self
 
 

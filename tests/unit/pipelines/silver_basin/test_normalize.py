@@ -24,6 +24,15 @@ def test_basin_normalization_plan_uses_sedona_and_explicit_source_authority() ->
     assert "ST_Normalize" in hydro_sql
     assert "NEXT_DOWN" in output_sql
     assert "atlas_basin_area_km2" in output_sql
+    assert "AS bbox_wgs84" in output_sql
+    assert "hydro_ORDER AS hydro_order" in output_sql
+    assert "hydro_COAST AS is_coastal" in output_sql
+    assert "hydro_ENDO AS is_endorheic" in output_sql
+    assert "hydrobasins_object_id" in output_sql
+    assert "basinatlas_object_id" in output_sql
+    assert "AS quality_status" in output_sql
+    assert "AS _geometry_was_repaired" in output_sql
+    assert "object_id AS basinatlas_object_id" in " ".join(plan.atlas_projection)
     assert plan.join_key == "basin_id"
 
 
@@ -84,6 +93,7 @@ def test_normalize_basins_builds_a_lazy_left_join_without_collecting_rows() -> N
         config,
         basin_version="bv1",
         valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+        basin_ids=("101", "102"),
     )
 
     join = next(call for call in calls if call[1] == "join")
@@ -91,3 +101,5 @@ def test_normalize_basins_builds_a_lazy_left_join_without_collecting_rows() -> N
     assert join[-2] == "h.basin_id = a.basin_id"
     assert result.label == "joined"
     assert not any(call[1] == "collect" for call in calls)
+    scoped_filters = [str(call[2]) for call in calls if call[1] == "filter"]
+    assert scoped_filters.count("basin_id IN ('101','102')") == 2

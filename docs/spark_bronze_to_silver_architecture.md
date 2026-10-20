@@ -1,6 +1,6 @@
 # Kiến trúc Spark cho toàn bộ Bronze → Silver
 
-**Ngày chốt:** 10/10/2026
+**Ngày cập nhật:** 20/10/2026
 
 **Trạng thái:** Quyết định kiến trúc hiện hành
 
@@ -36,7 +36,8 @@ path, HAND/TWI và NLP model vẫn được giữ trong job chuyên dụng vì t
 
 ```mermaid
 flowchart LR
-  AF["Airflow DAG"] --> SUBMIT["spark-submit"]
+  AF["Airflow DAG"] --> GW["spark-submit gateway nội bộ"]
+  GW --> SUBMIT["spark-submit client mode"]
   SUBMIT --> SP["Spark + Sedona application"]
   POL["Polaris REST catalog"] --> SP
   MIN["MinIO"] --> SP
@@ -56,9 +57,12 @@ Các service Spark chạy trong Docker network của lakehouse và dùng endpoin
 ```text
 Polaris: http://polaris:8181/api/catalog
 MinIO:   http://minio:9000
+Gateway: http://spark-submit-gateway:8090
 ```
 
 Endpoint và secret vẫn đến từ environment/runtime settings, không ghi vào YAML pipeline.
+Gateway không expose port ra host, chỉ nhận request DTO đã validate, tuần tự hóa application bằng
+writer pool/lock và giữ log subprocess trong file tạm; chỉ phần tail giới hạn được đưa về bộ nhớ.
 
 ## 4. Contract thực thi chung của một DAG Silver
 
@@ -102,10 +106,11 @@ Task không trao đổi DataFrame, GeoDataFrame, byte raster hoặc full row lis
 
 ### 6.1 Basin topology
 
-Spark/Sedona đọc snapshot `bronze.basin_polygon_raw`, chọn revision HydroBASINS/BasinATLAS, chuẩn
-hóa geometry EPSG:4326, join allowlist theo `HYBAS_ID`, tạo `silver.dim_basin` và
-`silver.basin_edge`. Cycle/topological QA có thể dùng Python/NetworkX nếu tập graph nhỏ, sau đó trả
-Parquet evidence để Spark publish.
+Pipeline này đã triển khai. Spark/Sedona đọc snapshot `bronze.basin_polygon_raw`, chọn revision
+HydroBASINS/BasinATLAS, chuẩn hóa geometry EPSG:4326, join allowlist theo `HYBAS_ID`, tạo
+`silver.dim_basin` và `silver.basin_edge`. Kahn diagnostics chỉ collect các cột identity/topology
+nhỏ về driver; geometry và metric Atlas vẫn nằm trong distributed DataFrame. DQ, quarantine,
+MERGE, manifest, Meta audit và lineage đã nối thành một flow `build/repair/skip`.
 
 ### 6.2 Basin static features
 
@@ -257,8 +262,8 @@ phải giữ tương thích 3.10 dù runtime host/Airflow của repository dùng
 2. Hoàn thiện Spark image/profile Compose và smoke read/write Iceberg.
 3. Shared Spark foundation đã có session, submit contract, snapshot discovery/pinning,
    staging, DQ/quarantine projection, publisher, audit và dependency factory.
-4. Chuyển basin topology thành vertical slice đầu tiên để kiểm chứng Sedona + Iceberg;
-   normalize đã dùng Spark/Sedona, còn `spark_job.py`, topology, DAG và integration test.
+4. Basin topology đã hoàn thiện thành vertical slice đầu tiên gồm planner, gateway, Spark job,
+   topology, DQ/quarantine, DAG, audit/lineage và integration smoke.
 5. Xây weather aggregation bằng Spark và benchmark backfill đại diện.
 6. Xây static features theo mô hình Spark planner/publisher + Python hydrology.
 7. Xây river network và exposure bằng Spark/Sedona, Python graph khi cần.

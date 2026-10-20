@@ -121,3 +121,37 @@ def test_merge_publisher_skips_commit_when_source_matches_target() -> None:
 
     assert output.snapshot_id == 91
     assert not any(statement.startswith("MERGE INTO") for statement in spark.statements)
+
+
+def test_publisher_compares_spark_types_without_requiring_equal_nullability() -> None:
+    from flashflood_data.shared.spark.publish import SparkTablePublisher
+
+    class Field:
+        def __init__(self, name, data_type, nullable):
+            self.name = name
+            self.dataType = data_type
+            self.nullable = nullable
+
+    class Source(_Frame):
+        schema = (
+            Field("basin_id", "string", True),
+            Field("basin_version", "string", True),
+            Field("value", "double", True),
+        )
+
+    class RequiredTarget(_Target):
+        schema = (
+            Field("basin_id", "string", False),
+            Field("basin_version", "string", False),
+            Field("value", "double", False),
+        )
+
+    class RequiredSpark(_Spark):
+        def table(self, name):
+            return RequiredTarget()
+
+    output = SparkTablePublisher(
+        RequiredSpark(), "flood_lakehouse.silver.dim_basin"
+    ).publish(Source(), key_fields=("basin_id", "basin_version"), mode="merge")
+
+    assert output.snapshot_id == 91

@@ -548,12 +548,16 @@ Các bảng Silver dưới đây là **đích**. Khóa ghép ghi đầy đủ �
 | `basin_version` | string ! PK | Phiên bản geometry/boundary. |
 | `hydrobasins_level` | int ! = 12 | Level đã chọn tại nguồn. |
 | `geometry_wkb` | binary ! | Polygon basin. |
+| `bbox_wgs84` | bbox ! | `[min_lon, min_lat, max_lon, max_lat]` tính từ geometry canonical. |
 | `crs` | string ! | CRS của polygon; chuẩn EPSG:4326. |
 | `geometry_hash` | string ! | Hash hình học sau chuẩn hóa. |
 | `next_down_id` | string ? | `NEXT_DOWN` gốc; FK cùng version nếu còn trong AOI, giữ ID ngoài AOI để QA. |
 | `main_basin_id` | string ? | `MAIN_BAS` gốc. |
 | `pfaf_id` | string ? | `PFAF_ID` dạng chuỗi. |
 | `topology_sort_hint` | long ? | `SORT` gốc để QA, không thay topological sort tự tính. |
+| `hydro_order` | int ? | `ORDER` gốc của HydroBASINS để đối chiếu cấp mạng thủy văn. |
+| `is_coastal` | boolean ? | Cờ `COAST`; null nếu giá trị nguồn không hợp lệ để DQ xử lý. |
+| `is_endorheic` | boolean ? | Cờ `ENDO`; nhận diện basin nội lưu. |
 | `basin_area_km2` | double ! | `SUB_AREA`, diện tích riêng basin. |
 | `upstream_area_km2` | double ! | `UP_AREA`, diện tích góp tại outlet. |
 | `distance_to_main_sink_km` | double ? | `DIST_MAIN`. |
@@ -561,7 +565,9 @@ Các bảng Silver dưới đây là **đích**. Khóa ghép ghi đầy đủ �
 | `distance_to_sink_km` | double ? | `DIST_SINK` phục vụ QA. |
 | `valid_from` | timestamp ! | Bắt đầu hiệu lực boundary version. |
 | `valid_to` | timestamp ? | Kết thúc hiệu lực. |
-| `source_object_id` | string ! FK | Object polygon/Atlas gốc được chọn. |
+| `hydrobasins_object_id` | string ! FK | Object HydroBASINS cung cấp geometry/topology. |
+| `basinatlas_object_id` | string ! FK | Object BasinATLAS cung cấp metric area/distance. |
+| `quality_status` | string ! | `passed` hoặc `warning` sau DQ; `pending` chỉ tồn tại trong staging. |
 
 ### `silver.basin_edge` — `(topology_version, basin_version, upstream_basin_id)`
 
@@ -569,16 +575,18 @@ Các bảng Silver dưới đây là **đích**. Khóa ghép ghi đầy đủ �
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
+| `basin_edge_id` | string ! UK | SHA-256 ổn định từ topology version, basin version và upstream basin ID. |
 | `topology_version` | string ! PK | Bản đồ liên kết basin bất biến. |
 | `basin_version` | string ! PK/FK | Cùng version cho hai đầu cạnh. |
 | `upstream_basin_id` | string ! PK/FK | Basin nguồn cạnh. |
 | `downstream_basin_id` | string ? FK | Basin nhận; null khi ra ngoài AOI. |
+| `source_downstream_id` | string ? | `NEXT_DOWN` gốc; vẫn giữ khi basin hạ nguồn nằm ngoài AOI. |
 | `edge_status` | string ! | `internal`, `exits_AOI`, `terminal`. |
-| `river_length_km` | double ? | Chiều dài kênh dùng QA/ước lượng, không phải thời gian truyền. |
-| `elevation_drop_m` | double ? | Chênh cao theo kênh. |
-| `channel_slope_m_m` | double ? | Slope cạnh nếu có. |
+| `topological_rank_upstream_first` | long ! | Thứ tự Kahn từ thượng nguồn xuống hạ nguồn, dùng cho routing. |
+| `terminal_type` | string ! | `non_terminal`, `sink`, `coastal`, `endorheic` hoặc `self_reference`. |
 | `cycle_check` | string ! | Kết quả kiểm tra chu trình. |
 | `outlet_check` | string ! | Kết quả kiểm tra outlet/hạ nguồn. |
+| `quality_status` | string ! | `passed` hoặc `warning` sau DQ. |
 | `source_object_id` | string ! FK | Object chứa `NEXT_DOWN`. |
 
 ### `silver.basin_static_feature` — `(basin_id, basin_version, feature_build_version)`

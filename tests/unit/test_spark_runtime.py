@@ -115,9 +115,18 @@ def test_base_lakehouse_up_does_not_start_spark() -> None:
 
 def test_make_exposes_isolated_spark_lifecycle() -> None:
     expected = {
-        "spark-up": "docker compose --profile spark up -d --wait spark-master spark-worker",
-        "spark-status": "docker compose --profile spark ps spark-master spark-worker",
-        "spark-down": "docker compose --profile spark stop spark-worker spark-master",
+        "spark-up": (
+            "docker compose --profile spark up -d --wait "
+            "spark-master spark-worker spark-submit-gateway"
+        ),
+        "spark-status": (
+            "docker compose --profile spark ps "
+            "spark-master spark-worker spark-submit-gateway"
+        ),
+        "spark-down": (
+            "docker compose --profile spark stop "
+            "spark-submit-gateway spark-worker spark-master"
+        ),
     }
 
     for target, command in expected.items():
@@ -140,7 +149,10 @@ def test_make_exposes_isolated_spark_lifecycle() -> None:
     ).stdout
     assert "docker compose down" not in down
     assert "--volumes" not in down
-    assert "docker compose --profile spark rm -f spark-worker spark-master" in down
+    assert (
+        "docker compose --profile spark rm -f "
+        "spark-submit-gateway spark-worker spark-master"
+    ) in down
 
 
 def test_spark_smoke_checks_one_worker_then_submits_one_shot(tmp_path: Path) -> None:

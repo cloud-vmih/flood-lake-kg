@@ -3,8 +3,8 @@
 Repository xây dựng Lakehouse địa không gian để tích hợp dữ liệu theo phiên bản, tạo feature theo
 lưu vực nhỏ và chuẩn bị dữ liệu cho threat B0–B3, Knowledge Graph và routing lũ quét tại Sơn La.
 
-Luồng vận hành hiện tại dùng **HydroBASINS level 12 (L12)**, hai DAG static và bốn DAG
-weather động:
+Luồng vận hành hiện tại dùng **HydroBASINS level 12 (L12)**, hai DAG static, bốn DAG
+weather động và DAG Silver basin đầu tiên:
 
 ```mermaid
 flowchart LR
@@ -16,7 +16,8 @@ flowchart LR
     E --> F
     F --> G[Iceberg bronze]
     F --> H[Quality và lineage trong meta]
-    G --> I[Silver L12 qua Spark/Sedona - runtime đã sẵn sàng]
+    G --> I[silver_basin_topology qua Spark/Sedona]
+    I --> J[silver.dim_basin + silver.basin_edge]
     B --> W[GSMaP NOW / Standard<br/>ERA5-Land / IFS ingest]
     W --> D
     W --> E
@@ -29,7 +30,7 @@ hướng dẫn chạy lại pipeline đó.
 
 ## Trạng thái hiện tại
 
-Cập nhật ngày **11/10/2026**:
+Cập nhật ngày **20/10/2026**:
 
 | Hạng mục | Trạng thái |
 | --- | --- |
@@ -38,9 +39,9 @@ Cập nhật ngày **11/10/2026**:
 | Static Source Landing | 10 nguồn đang hoạt động; source flood-event legacy đã gỡ khỏi DAG nhưng dữ liệu cũ vẫn được giữ |
 | Static Bronze | Sáu bảng Bronze đã có dữ liệu; parser chạy idempotent theo `object_id` |
 | Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
-| Spark/Sedona/Iceberg | Runtime local đã pin Spark 4.1.3, Scala 2.13, Java 17, Iceberg 1.11.0 và Sedona 1.9.1; smoke spatial SQL + ghi/đọc/xóa Iceberg đã chạy thành công |
-| DQ/quarantine | Contract/policy/quarantine đã tích hợp vào Landing, static Bronze và weather Bronze; có lifecycle guard, DAG migration Bronze cũ và smoke cô lập; Silver/Gold sẽ dùng cùng contract |
-| Silver L12 | Shared Spark foundation và normalize basin đã có; domain job/DAG Silver chưa triển khai |
+| Spark/Sedona/Iceberg | Runtime local đã pin Spark 4.1.3, Scala 2.13, Java 17, Iceberg 1.11.0 và Sedona 1.9.1; Airflow submit qua gateway nội bộ và không chạy driver trong scheduler |
+| DQ/quarantine | Contract/policy/quarantine đã tích hợp vào Landing, Bronze và Silver basin; fatal chặn build, row reject vào quarantine và warning vẫn được publish có trạng thái |
+| Silver L12 | `silver_basin_topology` đã ghi `dim_basin` và `basin_edge` cho 179 basin thuộc AOI thủy văn Sơn La; Bronze vẫn giữ subset Việt Nam rộng hơn. Pipeline chọn revision, lọc AOI, normalize, dựng topology, DQ, MERGE và audit/lineage. |
 | GSMaP, ERA5-Land và IFS | Bốn DAG scoped Raw → Meta → Bronze đã hoàn tất; GSMaP Standard và ERA5-Land đã tối ưu giới hạn backfill, resume theo object thiếu và bốn fetch task song song; các DAG tạo mới đều pause |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
@@ -593,12 +594,23 @@ make spark-smoke
 make spark-down
 ```
 
-Smoke test gọi hàm spatial SQL của Sedona, chạy normalize basin và DQ thật, rồi publish hai lần
-vào một bảng Iceberg tạm qua Polaris/MinIO để xác nhận `MERGE` idempotent trước khi xóa bảng.
-Spark là compute engine
-mặc định cho các pipeline Bronze → Silver sắp triển khai; hai DAG Raw/Bronze hiện tại vẫn chạy bằng
-Python/Airflow. Airflow sẽ gọi `spark-submit`, không tạo Spark driver trong scheduler. Các thuật toán
+Smoke test gọi spatial SQL của Sedona, chạy normalize, DQ và topology thật, rồi MERGE
+`dim_basin`/`basin_edge` vào namespace Iceberg tạm qua Polaris/MinIO trước khi dọn dữ liệu.
+Spark là compute engine mặc định cho Bronze → Silver; hai DAG Raw/Bronze vẫn chạy bằng
+Python/Airflow. Airflow gọi gateway nội bộ để thực thi `spark-submit`, không tạo Spark driver trong
+scheduler. Các thuật toán
 hydrology raster và NLP dùng Python job riêng, ghi Parquet staging để Spark DQ/assemble/commit.
+
+Chạy pipeline basin sau khi Bronze đã có HydroBASINS và BasinATLAS L12:
+
+```bash
+make spark-up
+docker compose exec -T airflow-api-server airflow dags unpause silver_basin_topology
+docker compose exec -T airflow-api-server airflow dags trigger silver_basin_topology
+```
+
+DAG manual này pin một Bronze snapshot, chọn đúng hai source revision, rồi build/repair/skip theo
+build signature. Dataset registry, output snapshots, DQ và lineage được ghi vào Meta trong cùng flow.
 
 Kiến trúc và lộ trình chi tiết nằm tại
 [docs/spark_bronze_to_silver_architecture.md](docs/spark_bronze_to_silver_architecture.md).
@@ -613,7 +625,8 @@ Kiến trúc và lộ trình chi tiết nằm tại
 │   ├── gsmap_now_ingest.py            # GSMaP NOW scoped Raw → Bronze
 │   ├── gsmap_standard_ingest.py       # GSMaP Standard scoped Raw → Bronze
 │   ├── era5_land_ingest.py            # ERA5-Land Raw → Bronze
-│   └── ifs_ingest.py                  # IFS/Open-Meteo Raw → Bronze
+│   ├── ifs_ingest.py                  # IFS/Open-Meteo Raw → Bronze
+│   └── silver_basin_topology.py       # Bronze basin → Silver dimension + graph
 ├── config/
 │   ├── study_area.yaml                # L12, upstream hops, buffer và CRS
 │   ├── sources/*.yaml                 # Adapter, version và policy của nguồn
@@ -621,6 +634,7 @@ Kiến trúc và lộ trình chi tiết nằm tại
 │   ├── pipelines/static_bronze.yaml   # source → parser/table/version
 │   ├── pipelines/static_bronze_osm.yaml # Allowlist OSM phục vụ lũ
 │   ├── pipelines/weather/*.yaml       # Product, schedule, biến, overlap và chunk
+│   ├── pipelines/silver/basin_topology.yaml # Source authority, mapping và version basin
 │   ├── spark/local.yaml               # Resource/profile Spark Silver trên máy local
 │   ├── quality/*.yaml                 # Policy DQ có version cho Bronze/Silver/Gold
 │   └── shared/metadata.yaml           # Registry nguồn/dataset dùng chung
@@ -637,7 +651,7 @@ Kiến trúc và lộ trình chi tiết nằm tại
 │   ├── shared/metadata/               # Registry, run, quality, snapshot và lineage
 │   ├── shared/quality/                 # Finding, policy, quarantine và publish coordinator
 │   ├── shared/spark/                   # Submit, snapshot, staging, DQ, publish và audit Spark
-│   ├── pipelines/silver_basin/         # Config/model và normalize basin bằng Spark/Sedona
+│   ├── pipelines/silver_basin/         # Planner, Spark job, DQ, topology, runtime và DAG basin
 │   ├── shared/batching.py             # Batch helper dùng giữa các pipeline
 │   └── storage/                       # MinIO, HTTP, Polaris và Iceberg; không chứa rule nguồn
 ├── infra/docker/spark/                # Image Spark/Sedona/Iceberg cho Silver
@@ -681,14 +695,12 @@ không cần ingest lại Raw/Bronze; DAG ID, task ID, schema, object key và co
 
 Thứ tự triển khai dự kiến:
 
-1. Chạy `bronze_quality_backfill` ở `mode=audit` theo từng bảng, review reject/fatal rồi mới apply.
-2. Nối submit contract Spark đã có vào Airflow mà không chạy driver trong scheduler.
-3. Hoàn thiện `silver_basin_topology` (`spark_job.py`, topology, DAG và integration test); phần
-   normalize HydroBASINS/BasinATLAS đã chạy theo DataFrame Spark/Sedona.
-4. Xây `silver_weather_aggregation` bằng Spark để kiểm chứng workload lớn và incremental load.
-5. Xây static features theo Spark planner/publisher + Python hydrology raster.
-6. Xây river network, exposure và flood event theo các Spark domain job riêng.
-7. Xây Gold, threat B0–B3, Knowledge Graph, routing, API và dashboard.
+1. Đối chiếu `silver_basin_topology` sau mỗi revision/AOI mới; build lại image Airflow trước khi trigger sau khi đổi code Python.
+2. Chạy `bronze_quality_backfill` ở `mode=audit` theo từng bảng, review reject/fatal rồi mới apply.
+3. Xây `silver_weather_aggregation` bằng Spark để kiểm chứng workload lớn và incremental load.
+4. Xây static features theo Spark planner/publisher + Python hydrology raster.
+5. Xây river network và flood event theo các Spark domain job riêng.
+6. Xây exposure, Gold, threat B0–B3, Knowledge Graph, routing, API và dashboard.
 
 Runbook kiểm tra/reprocess nằm tại
 [`docs/runbooks/data_quality_and_quarantine.md`](docs/runbooks/data_quality_and_quarantine.md).
@@ -707,5 +719,5 @@ make lint
 docker compose config --quiet
 ```
 
-Bộ test gần nhất: **676 passed, 1 skipped**. Trước khi push, không commit `.env`, volume dưới
+Bộ test gần nhất: **703 passed, 1 skipped**. Trước khi push, không commit `.env`, volume dưới
 `dataset/lakehouse/` hoặc credential cá nhân.

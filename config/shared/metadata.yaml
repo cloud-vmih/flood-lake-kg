@@ -34,3 +34,12 @@ datasets:
   bronze.osm_feature_raw: "OSM node, way and relation features"
   bronze.raster_coverage: "Raster band and spatial coverage metadata"
   bronze.historical_event_raw: "Original structured historical flood evidence"
+  silver.dim_basin:
+    description: "Canonical versioned L12 basin geometry, identity and Atlas metrics"
+    quality_policy_id: silver_basin_topology-v1
+  silver.basin_edge:
+    description: "Directed downstream relationship and routing order for each basin version"
+    quality_policy_id: silver_basin_topology-v1
+  quarantine.rejected_rows:
+    description: "Row-level rejects retained with rule evidence for repair and replay"
+    quality_policy_id: quarantine-row-rejection-v1

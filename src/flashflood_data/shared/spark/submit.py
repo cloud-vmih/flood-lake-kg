@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Sequence
 from typing import Any
+from urllib.parse import urlsplit
 
 from flashflood_data.shared.spark.models import (
     SparkApplicationRequest,
@@ -69,13 +72,6 @@ class SparkSubmitter:
                 output_manifest_uri=None,
                 error_code="spark_submit_timeout",
             )
-        if completed.returncode != 0:
-            return SparkApplicationResult(
-                application_id=request.application_id,
-                status="failed",
-                output_manifest_uri=None,
-                error_code=f"spark_submit_exit_{completed.returncode}",
-            )
         marker = next(
             (
                 line.removeprefix(RESULT_PREFIX)
@@ -84,6 +80,23 @@ class SparkSubmitter:
             ),
             None,
         )
+        if marker is not None:
+            result = SparkApplicationResult.from_json(marker)
+            if result.application_id != request.application_id:
+                return SparkApplicationResult(
+                    application_id=request.application_id,
+                    status="failed",
+                    output_manifest_uri=None,
+                    error_code="application_identity_mismatch",
+                )
+            return result
+        if completed.returncode != 0:
+            return SparkApplicationResult(
+                application_id=request.application_id,
+                status="failed",
+                output_manifest_uri=None,
+                error_code=f"spark_submit_exit_{completed.returncode}",
+            )
         if marker is None:
             return SparkApplicationResult(
                 application_id=request.application_id,
@@ -91,7 +104,53 @@ class SparkSubmitter:
                 output_manifest_uri=None,
                 error_code="missing_result_marker",
             )
-        result = SparkApplicationResult.from_json(marker)
+        raise AssertionError("unreachable Spark result parsing branch")
+
+
+class SparkGatewaySubmitter:
+    """Submit a validated request to the isolated local Spark driver gateway."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        timeout_seconds: int = 3600,
+        opener: Callable[..., Any] = urllib.request.urlopen,
+    ) -> None:
+        parsed = urlsplit(endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Spark gateway endpoint must be absolute HTTP(S)")
+        if timeout_seconds < 1:
+            raise ValueError("Spark gateway timeout must be positive")
+        self.endpoint = endpoint.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.opener = opener
+
+    def submit(self, request: SparkApplicationRequest) -> SparkApplicationResult:
+        http_request = urllib.request.Request(
+            f"{self.endpoint}/submit",
+            data=request.to_json().encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with self.opener(http_request, timeout=self.timeout_seconds) as response:
+                payload = response.read().decode("utf-8")
+        except urllib.error.HTTPError as error:
+            return SparkApplicationResult(
+                application_id=request.application_id,
+                status="failed",
+                output_manifest_uri=None,
+                error_code=f"spark_gateway_http_{error.code}",
+            )
+        except (urllib.error.URLError, TimeoutError):
+            return SparkApplicationResult(
+                application_id=request.application_id,
+                status="failed",
+                output_manifest_uri=None,
+                error_code="spark_gateway_unreachable",
+            )
+        result = SparkApplicationResult.from_json(payload)
         if result.application_id != request.application_id:
             return SparkApplicationResult(
                 application_id=request.application_id,

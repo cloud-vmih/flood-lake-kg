@@ -49,8 +49,8 @@ Mỗi bảng Bronze có `object_id` để quay về byte raw, `ingest_run_id`, `
 
 | Bảng logic | Grain/khóa | Quy tắc |
 | --- | --- | --- |
-| `silver.dim_basin` | `(basin_id, basin_version)` | Geometry L12, `next_down_id`, `main_basin_id`, `pfaf_id`, `basin_area_km2`, `upstream_area_km2`; area/topology lấy HydroBASINS/BasinATLAS. `next_down_id` chỉ tới basin cùng version hoặc được gắn cờ ra ngoài AOI. |
-| `silver.basin_edge` | `(topology_version, upstream_basin_id)` | Cạnh trực tiếp `NEXT_DOWN` tới `downstream_basin_id`, hai đầu cùng `basin_version`, có QA cycle/outlet; không chứa velocity, attenuation hay thời gian truyền theo kịch bản. |
+| `silver.dim_basin` | `(basin_id, basin_version)` | Geometry và bbox L12, topology ID, `ORDER/COAST/ENDO`, area/distance cùng provenance riêng cho HydroBASINS và BasinATLAS. `next_down_id` giữ ID nguồn kể cả khi ra ngoài AOI. |
+| `silver.basin_edge` | `(topology_version, basin_version, upstream_basin_id)` | Cạnh trực tiếp `NEXT_DOWN`, có `basin_edge_id`, downstream nguồn, rank upstream-first, terminal type và QA cycle/outlet; không chứa metric kênh chưa có producer hoặc tham số routing theo kịch bản. |
 | `silver.basin_static_feature` | `(basin_id, basin_version, feature_build_version)` | Một hàng feature/đơn vị lưu vực, theo dictionary dưới đây. DEM là nguồn terrain chính, SoilGrids là nguồn soil chính; Atlas terrain chỉ QA. |
 | `silver.basin_feature_lineage` | `(basin_id, basin_version, feature_build_version, object_id, role)` | Nhiều raw object có thể góp vào một hàng feature; thay cho một `feature_source_manifest_id`. |
 | `silver.source_grid` **đã có contract vật lý** | `(source_id, source_grid_version, source_grid_id)` | Identity ô lưới ổn định, `cell_index`, row/column, geometry, CRS, resolution và `scope_ids`. |

@@ -82,6 +82,28 @@ def test_source_grid_preserves_stable_cell_identity_and_scope_membership() -> No
     assert schema.field("geometry_wkb").nullable is False
 
 
+def test_silver_basin_contract_preserves_provenance_and_routing_order() -> None:
+    basin = table_schema(("silver", "dim_basin"))
+    edge = table_schema(("silver", "basin_edge"))
+
+    assert basin.field("bbox_wgs84").type == pa.list_(pa.float64())
+    assert basin.field("hydro_order").type == pa.int32()
+    assert basin.field("is_coastal").type == pa.bool_()
+    assert basin.field("is_endorheic").type == pa.bool_()
+    assert basin.field("hydrobasins_object_id").nullable is False
+    assert basin.field("basinatlas_object_id").nullable is False
+    assert basin.field("quality_status").nullable is False
+
+    assert edge.field("basin_edge_id").nullable is False
+    assert edge.field("source_downstream_id").nullable is True
+    assert edge.field("topological_rank_upstream_first").type == pa.int64()
+    assert edge.field("terminal_type").nullable is False
+    assert edge.field("quality_status").nullable is False
+    assert "river_length_km" not in edge.names
+    assert "elevation_drop_m" not in edge.names
+    assert "channel_slope_m_m" not in edge.names
+
+
 def test_quarantine_tables_are_in_physical_contract() -> None:
     objects = table_schema(("quarantine", "rejected_objects"))
     rows = table_schema(("quarantine", "rejected_rows"))

@@ -11,6 +11,60 @@ _UTC = timezone.utc  # noqa: UP017 - shared code also runs in the Python 3.10 Sp
 from flashflood_data.catalog.models import SourceSpec
 
 
+def load_dataset_registry(
+    path: Path,
+    *,
+    catalog_name: str,
+) -> list[dict[str, object]]:
+    """Load dataset contracts independently of the static source inventory."""
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    valid_from = datetime.fromisoformat(str(document["valid_from"])).astimezone(_UTC)
+    access_ref = "config/shared/metadata.yaml#policies.access.bootstrap-root-only"
+    retention_ref = "config/shared/metadata.yaml#policies.retention.manual-review"
+    if (
+        not document["policies"]["access"]["bootstrap-root-only"]
+        or not document["policies"]["retention"]["manual-review"]
+    ):
+        raise ValueError("Meta registry policies must be declared")
+
+    datasets: list[dict[str, object]] = []
+    for name, configured in sorted(document["datasets"].items()):
+        if isinstance(configured, str):
+            description = configured
+            quality_policy_id = (
+                "landing-verified-object-v1"
+                if name.startswith("meta.")
+                else "bronze-source-parse-v1"
+            )
+        elif isinstance(configured, dict):
+            description = str(configured.get("description", "")).strip()
+            quality_policy_id = str(configured.get("quality_policy_id", "")).strip()
+            if not description or not quality_policy_id:
+                raise ValueError(f"dataset contract is incomplete: {name}")
+        else:
+            raise TypeError(f"dataset contract must be text or mapping: {name}")
+        datasets.append(
+            {
+                "dataset_id": f"{catalog_name}.{name}",
+                "contract_version": str(document["contract_version"]),
+                "layer": name.split(".", 1)[0],
+                "description": description,
+                "owner": document["owner"],
+                "source_id": None,
+                "schema_ref": f"docs/schema_contract/data.md#{name}",
+                "data_classification": "internal",
+                "license_id": None,
+                "retention_policy_ref": retention_ref,
+                "freshness_sla_minutes": None,
+                "quality_policy_id": quality_policy_id,
+                "access_policy_ref": access_ref,
+                "valid_from": valid_from,
+                "valid_to": None,
+            }
+        )
+    return datasets
+
+
 def load_static_registry(
     path: Path,
     specifications: Mapping[str, SourceSpec],
@@ -37,33 +91,5 @@ def load_static_registry(
         }
         for source_id, spec in sorted(specifications.items())
     ]
-    access_ref = "config/shared/metadata.yaml#policies.access.bootstrap-root-only"
-    retention_ref = "config/shared/metadata.yaml#policies.retention.manual-review"
-    if (
-        not document["policies"]["access"]["bootstrap-root-only"]
-        or not document["policies"]["retention"]["manual-review"]
-    ):
-        raise ValueError("Meta registry policies must be declared")
-    datasets = [
-        {
-            "dataset_id": f"{catalog_name}.{name}",
-            "contract_version": str(document["contract_version"]),
-            "layer": name.split(".", 1)[0],
-            "description": description,
-            "owner": document["owner"],
-            "source_id": None,
-            "schema_ref": f"docs/schema_contract/data.md#{name}",
-            "data_classification": "internal",
-            "license_id": None,
-            "retention_policy_ref": retention_ref,
-            "freshness_sla_minutes": None,
-            "quality_policy_id": "landing-verified-object-v1"
-            if name.startswith("meta.")
-            else "bronze-source-parse-v1",
-            "access_policy_ref": access_ref,
-            "valid_from": valid_from,
-            "valid_to": None,
-        }
-        for name, description in sorted(document["datasets"].items())
-    ]
+    datasets = load_dataset_registry(path, catalog_name=catalog_name)
     return sources, datasets

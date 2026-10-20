@@ -14,6 +14,9 @@ _EXPECTED_FIELD_MAP = {
     "main_basin_id": "MAIN_BAS",
     "pfaf_id": "PFAF_ID",
     "topology_sort_hint": "SORT",
+    "hydro_order": "ORDER",
+    "is_coastal": "COAST",
+    "is_endorheic": "ENDO",
     "basin_area_km2": "SUB_AREA",
     "upstream_area_km2": "UP_AREA",
     "distance_to_main_sink_km": "DIST_MAIN",
@@ -42,6 +45,7 @@ class BasinTopologyConfig(BaseModel):
     hydro_source_id: str
     atlas_source_id: str
     hydrobasins_level: Literal[12]
+    aoi_path: str
     authoritative_geometry_source: str
     authoritative_topology_source: str
     output_tables: BasinOutputTables
@@ -63,6 +67,7 @@ class BasinTopologyConfig(BaseModel):
         "topology_version",
         "revision_policy_version",
         "quality_policy_path",
+        "aoi_path",
     )
     @classmethod
     def require_nonempty_text(cls, value: str) -> str:
@@ -103,6 +108,13 @@ class BasinTopologyConfig(BaseModel):
         policy_path = PurePosixPath(self.quality_policy_path)
         if policy_path.is_absolute() or ".." in policy_path.parts or policy_path.suffix != ".yaml":
             raise ValueError("quality_policy_path must be a repository-relative YAML path")
+        aoi_path = PurePosixPath(self.aoi_path)
+        if (
+            aoi_path.is_absolute()
+            or ".." in aoi_path.parts
+            or aoi_path.suffix != ".geoparquet"
+        ):
+            raise ValueError("aoi_path must be a repository-relative GeoParquet path")
         return self
 
 

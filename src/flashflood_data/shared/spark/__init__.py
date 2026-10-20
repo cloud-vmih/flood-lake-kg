@@ -26,6 +26,7 @@ _PUBLIC = {
     "SparkSnapshotManager": ("snapshots", "SparkSnapshotManager"),
     "SparkStaging": ("staging", "SparkStaging"),
     "SparkSubmitter": ("submit", "SparkSubmitter"),
+    "SparkGatewaySubmitter": ("submit", "SparkGatewaySubmitter"),
     "SparkTablePublisher": ("publish", "SparkTablePublisher"),
     "StagedDataset": ("models", "StagedDataset"),
     "StagingConflict": ("staging", "StagingConflict"),

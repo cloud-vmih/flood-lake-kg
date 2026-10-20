@@ -322,12 +322,16 @@ _DEFINITIONS = {
         basin_version string !
         hydrobasins_level int !
         geometry_wkb binary !
+        bbox_wgs84 bbox !
         crs string !
         geometry_hash string !
         next_down_id string ?
         main_basin_id string ?
         pfaf_id string ?
         topology_sort_hint long ?
+        hydro_order int ?
+        is_coastal boolean ?
+        is_endorheic boolean ?
         basin_area_km2 double !
         upstream_area_km2 double !
         distance_to_main_sink_km double ?
@@ -335,19 +339,23 @@ _DEFINITIONS = {
         distance_to_sink_km double ?
         valid_from timestamp !
         valid_to timestamp ?
-        source_object_id string !
+        hydrobasins_object_id string !
+        basinatlas_object_id string !
+        quality_status string !
     """,
     ("silver", "basin_edge"): """
+        basin_edge_id string !
         topology_version string !
         basin_version string !
         upstream_basin_id string !
         downstream_basin_id string ?
+        source_downstream_id string ?
         edge_status string !
-        river_length_km double ?
-        elevation_drop_m double ?
-        channel_slope_m_m double ?
+        topological_rank_upstream_first long !
+        terminal_type string !
         cycle_check string !
         outlet_check string !
+        quality_status string !
         source_object_id string !
     """,
     ("silver", "source_grid"): """

@@ -8,6 +8,7 @@ input_table: bronze.basin_polygon_raw
 hydro_source_id: hydrobasins_v1c
 atlas_source_id: basinatlas_v10
 hydrobasins_level: 12
+aoi_path: dataset/harmonized/aoi/hydrological_aoi.geoparquet
 authoritative_geometry_source: hydrobasins_v1c
 authoritative_topology_source: hydrobasins_v1c
 
@@ -31,6 +32,9 @@ field_map:
   main_basin_id: MAIN_BAS
   pfaf_id: PFAF_ID
   topology_sort_hint: SORT
+  hydro_order: ORDER
+  is_coastal: COAST
+  is_endorheic: ENDO
   basin_area_km2: SUB_AREA
   upstream_area_km2: UP_AREA
   distance_to_main_sink_km: DIST_MAIN

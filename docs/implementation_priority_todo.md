@@ -1,6 +1,6 @@
 # TODO ưu tiên triển khai FloodLakeKG
 
-**Cập nhật:** 17/10/2026
+**Cập nhật:** 20/10/2026
 
 **Mục tiêu:** sắp xếp các plan hiện có theo dependency thực tế, tránh triển khai Silver rồi phải sửa lại toàn bộ vì DQ, revision hoặc idempotency chưa được chốt.
 
@@ -183,7 +183,7 @@ tạo stable ID, DQ, commit và repair. Kiến trúc chuẩn nằm tại
 - [x] Chốt compatibility matrix Java 17, Spark 4.1.3, Scala 2.13, Iceberg 1.11.0, Sedona 1.9.1 và GeoTools wrapper 1.9.1-33.5.
 - [x] Hoàn thiện Spark image/profile Compose local; image đã build và chạy trên Linux, WSL2 còn cần teammate smoke xác nhận.
 - [x] Cấu hình Polaris REST catalog và MinIO S3 endpoint/path-style trong Spark session dùng chung.
-- [ ] Thêm cơ chế Airflow gọi `spark-submit`; Spark driver không chạy trong scheduler.
+- [x] Thêm gateway nội bộ để Airflow gọi `spark-submit`; Spark driver không chạy trong scheduler.
 - [ ] Smoke đọc Bronze theo snapshot ID, ghi/đọc/xóa bảng Iceberg thử nghiệm bằng Trino.
 - [x] Chốt resource profile local cho driver/executor và không dùng cấu hình cluster lớn mặc định.
 
@@ -223,8 +223,8 @@ tạo stable ID, DQ, commit và repair. Kiến trúc chuẩn nằm tại
 - [ ] Có thể tái hiện Silver theo input snapshot/policy version cũ.
 - [ ] Rerun cùng input không tạo build hoặc row trùng.
 - [ ] Revision mới chỉ làm dirty logical group bị ảnh hưởng.
-- [ ] Mọi Silver domain dùng chung Spark discovery/staging/DQ/publisher/audit contract.
-- [ ] Airflow XCom không chứa DataFrame, GeoDataFrame, raster hoặc full row list.
+- [x] Basin topology dùng chung Spark discovery/DQ/publisher/audit contract; các domain tiếp theo tái sử dụng cùng foundation.
+- [x] Airflow XCom của Silver basin chỉ chứa plan/result DTO, không chứa DataFrame, GeoDataFrame, raster hoặc full row list.
 
 ---
 
@@ -232,26 +232,26 @@ tạo stable ID, DQ, commit và repair. Kiến trúc chuẩn nằm tại
 
 **Lý do:** `silver.dim_basin` và basin version là dependency của static features, weather aggregation, river, event và exposure.
 
-- [ ] Chọn revision HydroBASINS và BasinATLAS authoritative bằng P3.
-- [ ] Dùng Spark/Sedona đọc pinned Bronze snapshot, normalize geometry và join allowlist Atlas.
+- [x] Chọn revision HydroBASINS và BasinATLAS authoritative đã có trong pinned Bronze snapshot.
+- [x] Dùng Spark/Sedona đọc pinned Bronze snapshot, normalize geometry và join allowlist Atlas.
 - [x] Normalize bằng Spark/Sedona, không collect row về Python/Shapely driver.
 - [x] Dùng HydroBASINS làm nguồn geometry/topology chính.
 - [x] Join allowlist BasinATLAS bằng `HYBAS_ID` trong normalization plan.
-- [ ] Tạo stable `basin_id` và `basin_version`.
-- [ ] Publish `silver.dim_basin`.
-- [ ] Tạo directed edge theo `NEXT_DOWN`.
-- [ ] Kiểm tra duplicate, missing internal target và cycle.
-- [ ] Ghi lineage đến cả HydroBASINS và BasinATLAS object/snapshot.
-- [ ] Skip build khi input snapshot, mapping version và policy version không đổi.
+- [x] Tạo stable `basin_id` và `basin_version`.
+- [x] Publish idempotent `silver.dim_basin` bằng Spark MERGE.
+- [x] Tạo directed edge theo `NEXT_DOWN` và publish `silver.basin_edge`.
+- [x] Kiểm tra duplicate, missing internal target và cycle bằng domain DQ.
+- [x] Ghi lineage đến Bronze snapshot và cả HydroBASINS/BasinATLAS object.
+- [x] Skip build khi input snapshot, mapping version và policy version không đổi; repair output thiếu.
 
 **Plan:** [2026-09-30-silver-basin-topology.vi.md](superpowers/plans/2026-09-30-silver-basin-topology.vi.md)
 
 ### Tiêu chí nghiệm thu P4
 
-- [ ] Mỗi basin L12 current có đúng một dòng trong `silver.dim_basin`.
-- [ ] Topology không cycle và internal downstream target hợp lệ.
-- [ ] Basin version thay đổi xác định khi input/policy thay đổi.
-- [ ] Các pipeline P5–P8 có thể pin đúng basin snapshot/version.
+- [ ] Đối chiếu production: mỗi basin L12 current có đúng một dòng trong `silver.dim_basin`.
+- [x] Integration smoke chứng minh topology không cycle và internal downstream target hợp lệ trên fixture.
+- [x] Basin version thay đổi xác định theo build signature của input/config/policy/algorithm.
+- [ ] Trigger production và xác nhận các pipeline P5–P8 pin đúng basin snapshot/version.
 
 ---
 

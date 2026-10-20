@@ -38,6 +38,13 @@ def _optional_identifier(expression: str) -> str:
     )
 
 
+def _boolean_flag(expression: str) -> str:
+    return (
+        f"CASE WHEN CAST({expression} AS INT) = 1 THEN TRUE "
+        f"WHEN CAST({expression} AS INT) = 0 THEN FALSE ELSE NULL END"
+    )
+
+
 @dataclass(frozen=True)
 class BasinNormalizationPlan:
     """Validated SQL projections used by the lazy basin transform."""
@@ -79,7 +86,7 @@ def basin_normalization_plan(
 
     hydro_source_projection = (
         f"trim({basin_id}) AS basin_id",
-        "object_id AS source_object_id",
+        "object_id AS hydrobasins_object_id",
         "crs AS source_crs",
         "geometry_wkb AS source_geometry_wkb",
         (
@@ -99,23 +106,46 @@ def basin_normalization_plan(
             f"AS hydro_{mapped['topology_sort_hint']}"
         ),
         (
+            f"CAST({_json_field(mapped['hydro_order'])} AS INT) "
+            f"AS hydro_{mapped['hydro_order']}"
+        ),
+        (
+            f"{_boolean_flag(_json_field(mapped['is_coastal']))} "
+            f"AS hydro_{mapped['is_coastal']}"
+        ),
+        (
+            f"{_boolean_flag(_json_field(mapped['is_endorheic']))} "
+            f"AS hydro_{mapped['is_endorheic']}"
+        ),
+        (
             f"{_optional_identifier(_json_field(mapped['next_sink_id']))} "
             f"AS hydro_{mapped['next_sink_id']}"
         ),
     )
     hydro_geometry_projection = (
         "basin_id",
-        "source_object_id",
+        "hydrobasins_object_id",
         f"ST_AsBinary({canonical_geometry}) AS geometry_wkb",
+        f"NOT ST_IsValid({parsed_geometry}) AS _geometry_was_repaired",
+        (
+            f"array(CAST(ST_XMin({canonical_geometry}) AS DOUBLE), "
+            f"CAST(ST_YMin({canonical_geometry}) AS DOUBLE), "
+            f"CAST(ST_XMax({canonical_geometry}) AS DOUBLE), "
+            f"CAST(ST_YMax({canonical_geometry}) AS DOUBLE)) AS bbox_wgs84"
+        ),
         f"{target_crs} AS crs",
         f"hydro_{mapped['next_down_id']}",
         f"hydro_{mapped['main_basin_id']}",
         f"hydro_{mapped['pfaf_id']}",
         f"hydro_{mapped['topology_sort_hint']}",
+        f"hydro_{mapped['hydro_order']}",
+        f"hydro_{mapped['is_coastal']}",
+        f"hydro_{mapped['is_endorheic']}",
         f"hydro_{mapped['next_sink_id']}",
     )
     atlas_projection = (
         f"trim({basin_id}) AS basin_id",
+        "object_id AS basinatlas_object_id",
         (
             f"CAST({_json_field(mapped['basin_area_km2'])} AS DOUBLE) "
             "AS atlas_basin_area_km2"
@@ -138,12 +168,17 @@ def basin_normalization_plan(
         f"{_literal(basin_version.strip())} AS basin_version",
         f"CAST({config.hydrobasins_level} AS INT) AS hydrobasins_level",
         "h.geometry_wkb AS geometry_wkb",
+        "h._geometry_was_repaired AS _geometry_was_repaired",
+        "h.bbox_wgs84 AS bbox_wgs84",
         "h.crs AS crs",
         "sha2(h.geometry_wkb, 256) AS geometry_hash",
         f"h.hydro_{mapped['next_down_id']} AS next_down_id",
         f"h.hydro_{mapped['main_basin_id']} AS main_basin_id",
         f"h.hydro_{mapped['pfaf_id']} AS pfaf_id",
         f"h.hydro_{mapped['topology_sort_hint']} AS topology_sort_hint",
+        f"h.hydro_{mapped['hydro_order']} AS hydro_order",
+        f"h.hydro_{mapped['is_coastal']} AS is_coastal",
+        f"h.hydro_{mapped['is_endorheic']} AS is_endorheic",
         "a.atlas_basin_area_km2 AS basin_area_km2",
         "a.atlas_upstream_area_km2 AS upstream_area_km2",
         "a.atlas_distance_to_main_sink_km AS distance_to_main_sink_km",
@@ -151,7 +186,9 @@ def basin_normalization_plan(
         "a.atlas_distance_to_sink_km AS distance_to_sink_km",
         f"TIMESTAMP {_literal(timestamp)} AS valid_from",
         "CAST(NULL AS TIMESTAMP) AS valid_to",
-        "h.source_object_id AS source_object_id",
+        "h.hydrobasins_object_id AS hydrobasins_object_id",
+        "a.basinatlas_object_id AS basinatlas_object_id",
+        "'pending' AS quality_status",
     )
     return BasinNormalizationPlan(
         hydro_source_filter=f"source_id = {_literal(config.hydro_source_id)}",
@@ -169,6 +206,7 @@ def normalize_basins(
     *,
     basin_version: str,
     valid_from: datetime,
+    basin_ids: tuple[str, ...] | None = None,
 ) -> Any:
     """Return a lazy canonical basin DataFrame without collecting to the driver."""
     plan = basin_normalization_plan(
@@ -176,15 +214,24 @@ def normalize_basins(
         basin_version=basin_version,
         valid_from=valid_from,
     )
+    scope_filter = None
+    if basin_ids is not None:
+        if not basin_ids or any(not value.isdecimal() for value in basin_ids):
+            raise ValueError("Silver basin scope requires numeric basin IDs")
+        scope_filter = "basin_id IN (" + ",".join(_literal(value) for value in basin_ids) + ")"
     hydro_source = bronze_frame.filter(plan.hydro_source_filter).selectExpr(
         *plan.hydro_source_projection
     )
+    if scope_filter is not None:
+        hydro_source = hydro_source.filter(scope_filter)
     hydro = hydro_source.selectExpr(*plan.hydro_geometry_projection).alias("h")
-    atlas = (
+    atlas_source = (
         bronze_frame.filter(plan.atlas_source_filter)
         .selectExpr(*plan.atlas_projection)
-        .alias("a")
     )
+    if scope_filter is not None:
+        atlas_source = atlas_source.filter(scope_filter)
+    atlas = atlas_source.alias("a")
     return hydro.join(
         atlas,
         hydro[plan.join_key] == atlas[plan.join_key],

@@ -74,7 +74,7 @@ def test_snapshot_manager_pins_and_reads_the_exact_snapshot() -> None:
     frame = manager.read(spark, pinned[0])
 
     assert pinned == (PinnedSnapshot("bronze.basin_polygon_raw", 17),)
-    assert spark.read.options == {"snapshot-id": "17"}
+    assert spark.read.options == {"versionAsOf": "17"}
     assert frame[0] == "flood_lakehouse.bronze.basin_polygon_raw"
 
 

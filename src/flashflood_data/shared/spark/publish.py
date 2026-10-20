@@ -41,6 +41,31 @@ def _value(row: object, name: str) -> object:
         return getattr(row, name)
 
 
+def _type_signature(schema: object) -> object:
+    """Compare Spark field names/types while treating nullability as data validation."""
+    try:
+        fields = tuple(schema)  # type: ignore[arg-type]
+    except TypeError:
+        return schema
+    if fields and all(hasattr(field, "name") and hasattr(field, "dataType") for field in fields):
+        return tuple((field.name, field.dataType) for field in fields)
+    return schema
+
+
+def _required_fields(schema: object) -> tuple[str, ...]:
+    try:
+        fields = tuple(schema)  # type: ignore[arg-type]
+    except TypeError:
+        return ()
+    return tuple(
+        str(field.name)
+        for field in fields
+        if hasattr(field, "name")
+        and hasattr(field, "nullable")
+        and not field.nullable
+    )
+
+
 def merge_sql(
     target_table: str,
     source_view: str,
@@ -87,7 +112,10 @@ class SparkTablePublisher:
         columns = tuple(frame.columns)
         target_frame = self.spark.table(self.table)
         target_columns = tuple(target_frame.columns)
-        if columns != target_columns or frame.schema != target_frame.schema:
+        if (
+            columns != target_columns
+            or _type_signature(frame.schema) != _type_signature(target_frame.schema)
+        ):
             raise ValueError(
                 f"publish schema mismatch for {self.table}: "
                 f"{frame.schema!r} != {target_frame.schema!r}"
@@ -95,7 +123,10 @@ class SparkTablePublisher:
         if not key_fields or any(key not in columns for key in key_fields):
             raise ValueError("publish key fields must be present and non-empty")
         keys = ", ".join(_column(name) for name in key_fields)
-        nulls = " OR ".join(f"{_column(name)} IS NULL" for name in key_fields)
+        nonnull_fields = tuple(
+            dict.fromkeys((*key_fields, *_required_fields(target_frame.schema)))
+        )
+        nulls = " OR ".join(f"{_column(name)} IS NULL" for name in nonnull_fields)
         rows = self.spark.sql(
             "SELECT COUNT(*) AS total_count, "
             f"COUNT(DISTINCT struct({keys})) AS distinct_count, "

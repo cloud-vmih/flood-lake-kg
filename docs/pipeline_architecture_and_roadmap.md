@@ -1,7 +1,7 @@
 # Kiến trúc pipeline dữ liệu và kế hoạch triển khai
 
-**Cập nhật:** 10/10/2026
-**Phạm vi:** pipeline Raw/Landing, Meta và Bronze hiện có cho static/weather; kế hoạch tách flood event; kế hoạch Silver/Gold cho GSMaP, ERA5-Land và IFS/Open-Meteo.
+**Cập nhật:** 20/10/2026
+**Phạm vi:** pipeline Raw/Landing, Meta và Bronze hiện có cho static/weather; Silver basin topology đã triển khai; kế hoạch flood event và Silver/Gold còn lại.
 
 Tài liệu này phân biệt rõ:
 
@@ -58,14 +58,32 @@ Không truyền file lớn qua Airflow XCom. Task chỉ truyền `source_id`, `o
 | `gsmap_standard_ingest` | Đã triển khai và tối ưu backfill | Gauge Standard: 90 ngày/run, resume theo object thiếu, một FTP session/ngày, scoped Raw durable → Bronze. |
 | `era5_land_ingest` | Đã chạy provider thật | ERA5-Land 12 tháng/run, bbox phủ đủ cell biên AOI, scoped Raw durable và accumulation gốc trong Bronze. |
 | `ifs_ingest` | Đã triển khai, chưa chạy provider thật | IFS HRES Single Runs theo cycle 6 giờ: request Open-Meteo, commit Raw/Meta và parse forecast grid vào Bronze. |
+| `silver_basin_topology` | Đã ghi 179 basin Sơn La vào hai bảng Silver | Pin Bronze snapshot, chọn revision HydroBASINS/BasinATLAS, lọc ID theo `hydrological_aoi.geoparquet`, normalize L12, dựng topology, DQ/quarantine, MERGE và audit Meta. |
 
 Hai DAG static đều `schedule=None`, `catchup=False` và mặc định pause khi tạo. Bốn DAG weather có
 schedule riêng, `catchup=False`, `max_active_runs=1` và cũng pause khi tạo. Việc chạy lại là
-idempotent theo object và kết quả đã publish, không dựa vào DAG run ID. Runtime Airflow đã import
-được cả bốn DAG weather. Lakehouse local phải reset một lần trước khi chạy contract raster slice;
+idempotent theo object và kết quả đã publish, không dựa vào DAG run ID. DAG Silver basin là manual,
+pause mặc định và dùng build signature để `build/repair/skip`. Runtime Airflow đã import các DAG.
+Lakehouse local phải reset một lần trước khi chạy contract raster slice;
 credential, quota, latency và payload thật của từng provider vẫn phải được xác minh riêng.
 
-### 2.2. Dữ liệu đã có
+### 2.2. Silver basin topology hiện có
+
+`silver_basin_topology` là vertical slice Bronze → Silver đầu tiên. Airflow chỉ lập plan và gọi
+gateway nội bộ; Spark driver chạy ngoài scheduler. Application đọc đúng snapshot
+`bronze.basin_polygon_raw` đã pin, lọc hai source object hiện hành, rồi chạy:
+
+```text
+revision selection → normalize Spark/Sedona → DQ → topology → DQ
+→ MERGE dim_basin/basin_edge → quarantine → result manifest → Meta audit/lineage
+```
+
+Success chỉ được ghi sau khi Airflow đối chiếu application ID, pipeline run ID, build signature và
+toàn bộ output snapshot trong manifest. Lineage giữ cả Bronze snapshot và hai Raw object nguồn.
+Smoke integration đã ghi/đọc/xóa hai bảng Silver tạm qua Polaris/MinIO; lần publish production đầu
+tiên vẫn do người vận hành trigger sau khi bật Spark profile.
+
+### 2.3. Dữ liệu đã có
 
 Snapshot kiểm tra gần nhất của static pipeline có sáu bảng Bronze:
 
@@ -82,7 +100,7 @@ Raw payload tương ứng nằm trong MinIO. `raster_coverage` chỉ lưu metada
 Weather cũ theo từng ô là dữ liệu thử nghiệm không tương thích contract mới. Sau reset và trigger,
 pipeline tạo `silver.source_grid`, `bronze.weather_raster_slice` và `meta.object_lifecycle`.
 
-### 2.3. Nguồn hiện nằm trong static pipeline
+### 2.4. Nguồn hiện nằm trong static pipeline
 
 | Source ID | Đích Bronze |
 | --- | --- |
@@ -979,6 +997,15 @@ docker compose exec -T airflow-scheduler \
 
 # Smoke test Meta/Bronze
 make lakehouse-meta-bronze-smoke
+
+# Khởi động Spark/Sedona và kiểm tra integration
+make spark-smoke
+
+# Bật và trigger Silver basin topology lần đầu
+docker compose exec -T airflow-api-server \
+  airflow dags unpause silver_basin_topology
+docker compose exec -T airflow-api-server \
+  airflow dags trigger silver_basin_topology
 ```
 
 Giao diện weather đã triển khai:

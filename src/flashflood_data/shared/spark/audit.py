@@ -35,6 +35,7 @@ class SparkAuditRequest:
     input_snapshots: tuple[PinnedSnapshot, ...]
     required_outputs: tuple[str, ...]
     started_at: datetime
+    input_object_ids: tuple[str, ...] = ()
     retry_count: int = 0
     code_git_sha: str | None = None
     image_digest: str | None = None
@@ -54,6 +55,11 @@ class SparkAuditRequest:
             raise ValueError("Spark audit requires inputs and outputs")
         if len(set(self.required_outputs)) != len(self.required_outputs):
             raise ValueError("Spark audit required outputs must be unique")
+        if (
+            len(set(self.input_object_ids)) != len(self.input_object_ids)
+            or any(not value for value in self.input_object_ids)
+        ):
+            raise ValueError("Spark audit input object IDs must be unique and non-empty")
         if self.started_at.tzinfo is None or self.started_at.utcoffset() != _UTC.utcoffset(
             self.started_at
         ):
@@ -132,11 +138,14 @@ class SparkAudit:
         request: SparkAuditRequest,
         outputs: Sequence[PublishedSnapshot],
         *,
+        auxiliary_outputs: Sequence[PublishedSnapshot] = (),
         quality_rows: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         published = tuple(outputs)
+        auxiliary = tuple(auxiliary_outputs)
         quality = tuple(quality_rows)
         by_table = {output.table: output for output in published}
+        auxiliary_by_table = {output.table: output for output in auxiliary}
         missing = tuple(
             table for table in request.required_outputs if table not in by_table
         )
@@ -147,6 +156,11 @@ class SparkAudit:
             raise ValueError(f"missing required outputs: {missing}")
         if unexpected or len(by_table) != len(published):
             raise ValueError("published output tables must be unique and declared")
+        if (
+            len(auxiliary_by_table) != len(auxiliary)
+            or set(by_table) & set(auxiliary_by_table)
+        ):
+            raise ValueError("auxiliary output tables must be unique and separate")
         if not quality:
             raise ValueError("Spark audit success requires durable quality results")
 
@@ -175,12 +189,11 @@ class SparkAudit:
                 "quality_status": quality_status,
                 "created_at": finished_at,
             }
-            for output in published
+            for output in (*published, *auxiliary)
         )
         self.meta.record_snapshot_refs(snapshot_refs)
         self.meta.record_qualities(quality)
-        self.meta.record_lineages(
-            tuple(
+        snapshot_lineages = tuple(
                 {
                     "pipeline_run_id": request.pipeline_run_id,
                     "input_object_id": None,
@@ -193,9 +206,24 @@ class SparkAudit:
                     "created_at": finished_at,
                 }
                 for snapshot in request.input_snapshots
-                for output in published
+                for output in (*published, *auxiliary)
             )
+        object_lineages = tuple(
+            {
+                "pipeline_run_id": request.pipeline_run_id,
+                "input_object_id": object_id,
+                "input_table": None,
+                "input_snapshot_id": None,
+                "output_table": output.table,
+                "output_snapshot_id": output.snapshot_id,
+                "transform_role": request.job_name,
+                "mapping_version": request.algorithm_version,
+                "created_at": finished_at,
+            }
+            for object_id in request.input_object_ids
+            for output in (*published, *auxiliary)
         )
+        self.meta.record_lineages(snapshot_lineages + object_lineages)
         self.meta.record_run(
             self._run_row(
                 request,

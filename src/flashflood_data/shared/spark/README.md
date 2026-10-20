@@ -18,20 +18,22 @@ của chính nó.
 - publish Iceberg theo `append`, `merge` hoặc overwrite có giới hạn;
 - chống tạo snapshot thừa khi `MERGE` lại cùng dữ liệu;
 - audit Meta cho run, quality, snapshot reference và lineage;
-- dependency factory dùng chung cho Spark domain job.
+- dependency factory dùng chung cho Spark domain job;
+- gateway nội bộ chạy `spark-submit` ngoài Airflow scheduler, có timeout và log tail giới hạn;
+- domain đầu tiên `silver_basin_topology` đã dùng foundation này và pass integration smoke.
 
-Chưa có:
+Chưa có ở phạm vi dùng chung:
 
-- task Airflow production gọi `spark-submit`;
-- revision policy hoàn chỉnh cho từng loại dữ liệu;
-- `spark_job.py` và DAG hoàn chỉnh của từng Silver domain.
+- revision policy tổng quát cho weather, raster, river và flood event;
+- các domain Silver còn lại ngoài basin topology.
 
 ## Luồng xử lý
 
 ```mermaid
 flowchart TD
-    A[Airflow tạo SparkApplicationRequest] --> B[SparkSubmitter]
-    B --> C[cli.py nạp domain entrypoint]
+    A[Airflow tạo SparkApplicationRequest] --> B[SparkGatewaySubmitter]
+    B --> GW[spark-submit-gateway nội bộ]
+    GW --> C[cli.py nạp domain entrypoint]
     C --> D[Tạo SparkSession]
     D --> E[Pin input Iceberg snapshots]
     E --> F[Tính build signature]
@@ -59,15 +61,16 @@ ghi bền vững. Nếu run dừng sau khi một số bảng đã publish, lần
 | --- | --- |
 | `models.py` | DTO tuần tự hóa qua ranh giới Airflow/Spark: runtime config, pinned snapshot, request, result, staging và published snapshot. |
 | `session.py` | Tạo một `SparkSession` thống nhất với Iceberg REST catalog, Polaris, MinIO, Sedona, UTC, ANSI và AQE. |
-| `submit.py` | Tạo lệnh `spark-submit`, giới hạn timeout và rút kết quả nhỏ từ stdout. Không truyền DataFrame qua Airflow. |
+| `submit.py` | Tạo lệnh `spark-submit`, gọi gateway, giới hạn timeout và rút kết quả nhỏ từ marker stdout. Không truyền DataFrame qua Airflow. |
 | `cli.py` | Entry point chung của `spark-submit`; validate request, import module domain và gọi hàm `run(request)`. |
 | `snapshots.py` | Pin snapshot đầu vào, đọc snapshot cố định, tính build signature và lập plan `build/repair/skip`. |
 | `staging.py` | Quản lý Parquet/manifest/_SUCCESS bất biến theo run và batch cho các job Python chuyên biệt. |
 | `quality.py` | Compile rule Spark SQL, đếm finding trong một aggregate action, tách accepted/rejected và dựng row quarantine. |
 | `publish.py` | Validate schema/business key và sở hữu tối đa một commit cho một bảng Iceberg. |
-| `audit.py` | Ghi trạng thái run, quality, input/output snapshot reference và Bronze → Silver lineage vào Meta. |
+| `audit.py` | Ghi trạng thái run, quality, input/output snapshot reference và lineage từ snapshot/Raw object vào Meta. |
 | `runtime.py` | Ghép snapshot manager, staging, audit và publisher thành dependency graph dùng chung. |
 | `__init__.py` | Public API lazy-import để import model không buộc môi trường Airflow phải khởi tạo PySpark. |
+| `spark/jobs/submit_gateway.py` | HTTP service nội bộ tuần tự hóa `spark-submit`, giữ log dài trên file tạm và trả result DTO. |
 
 ## Identity và incremental build
 
@@ -129,7 +132,8 @@ và tập rule lỗi, nên retry không nhân bản cùng một rejection.
 Mỗi instance `SparkTablePublisher` chỉ publish một lần và chỉ sở hữu một bảng vật lý.
 Trước khi ghi, publisher kiểm tra:
 
-- schema, kiểu dữ liệu và thứ tự cột khớp chính xác với bảng đích;
+- tên, kiểu dữ liệu và thứ tự cột khớp bảng đích; nullability được kiểm tra bằng dữ liệu thực;
+- mọi cột bắt buộc của bảng đích không chứa null;
 - DataFrame không rỗng;
 - business key có mặt, không null và không trùng;
 - identifier/filter không chứa SQL không an toàn.
@@ -205,6 +209,5 @@ make spark-smoke
 make spark-down
 ```
 
-Smoke test thật kiểm tra Sedona, normalize basin, DQ, Iceberg publish qua Polaris/MinIO
-và rerun idempotent. Nó dùng namespace tạm và tự xóa bảng sau khi hoàn tất.
-
+Smoke test thật kiểm tra Sedona, normalize basin, DQ, topology, publish hai frame Silver qua
+Polaris/MinIO và MERGE idempotent. Nó dùng namespace tạm và tự xóa bảng sau khi hoàn tất.

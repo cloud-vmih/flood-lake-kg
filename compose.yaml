@@ -41,6 +41,7 @@ x-airflow-common: &airflow-common
     CDSAPI_URL: ${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
     CDSAPI_KEY: ${CDSAPI_KEY:-}
     OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-}
+    FLASHFLOOD_SPARK_GATEWAY_URL: http://spark-submit-gateway:8090
     FLASHFLOOD_CDSE_USERNAME: ${FLASHFLOOD_CDSE_USERNAME:-}
     FLASHFLOOD_CDSE_PASSWORD: ${FLASHFLOOD_CDSE_PASSWORD:-}
   volumes:
@@ -240,6 +241,7 @@ services:
         airflow pools set weather_fetch 4 "Limits concurrent dynamic provider requests"
         airflow pools set weather_raw_writer 1 "Serializes dynamic Raw and Meta Iceberg writers"
         airflow pools set weather_bronze_writer 1 "Serializes dynamic Bronze Iceberg writers"
+        airflow pools set silver_writer 1 "Serializes Silver Spark applications"
     restart: "no"
 
   airflow-api-server:
@@ -409,6 +411,47 @@ services:
       - ./spark/jobs:/opt/spark/jobs:ro,Z
       - ./src:/opt/flashflood/src:ro,Z
     restart: "no"
+    networks: [lakehouse]
+
+  spark-submit-gateway:
+    <<: *spark-image
+    profiles: [spark]
+    mem_limit: 1536m
+    entrypoint: [python3, /opt/spark/jobs/submit_gateway.py]
+    environment:
+      POLARIS_URI: http://polaris:8181/api/catalog
+      POLARIS_CATALOG: flood_lakehouse
+      POLARIS_CLIENT_ID: ${POLARIS_CLIENT_ID:?run make lakehouse-init}
+      POLARIS_CLIENT_SECRET: ${POLARIS_CLIENT_SECRET:?run make lakehouse-init}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?run make lakehouse-init}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
+      AWS_REGION: us-east-1
+      PYTHONPATH: /opt/flashflood/src:/opt/spark/jobs
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_APPLICATION_TIMEOUT_SECONDS: "3600"
+    volumes:
+      - ./config:/opt/flashflood/config:ro,Z
+      - ./spark/jobs:/opt/spark/jobs:ro,Z
+      - ./src:/opt/flashflood/src:ro,Z
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      spark-worker:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8090/health", timeout=2).close()
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
     networks: [lakehouse]
 
 networks:
