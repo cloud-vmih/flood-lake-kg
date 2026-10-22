@@ -38,7 +38,7 @@ Cập nhật ngày **20/10/2026**:
 | AOI | Đã dựng bốn AOI Sơn La và `vietnam_hydrological_aoi` theo L12 + một hop thượng nguồn |
 | Static Source Landing | 10 nguồn đang hoạt động; source flood-event legacy đã gỡ khỏi DAG nhưng dữ liệu cũ vẫn được giữ |
 | Static Bronze | Sáu bảng Bronze đã có dữ liệu; parser chạy idempotent theo `object_id` |
-| Trino/DBeaver | Đã có profile đọc Iceberg qua Polaris |
+| Trino/CloudBeaver/DBeaver | Đã có profile đọc Iceberg qua Polaris và giao diện web tùy chọn |
 | Spark/Sedona/Iceberg | Runtime local đã pin Spark 4.1.3, Scala 2.13, Java 17, Iceberg 1.11.0 và Sedona 1.9.1; Airflow submit qua gateway nội bộ và không chạy driver trong scheduler |
 | DQ/quarantine | Contract/policy/quarantine đã tích hợp vào Landing, Bronze và Silver basin; fatal chặn build, row reject vào quarantine và warning vẫn được publish có trạng thái |
 | Silver L12 | `silver_basin_topology` đã ghi `dim_basin` và `basin_edge` cho 179 basin thuộc AOI thủy văn Sơn La; Bronze vẫn giữ subset Việt Nam rộng hơn. Pipeline chọn revision, lọc AOI, normalize, dựng topology, DQ, MERGE và audit/lineage. |
@@ -106,10 +106,16 @@ Các lệnh vận hành stack:
 
 ```bash
 make lakehouse-up
+make lakehouse-all-up
 make lakehouse-status
 make lakehouse-smoke
 make lakehouse-down
 ```
+
+`make lakehouse-all-up` bật cùng lúc stack cơ sở, Trino, CloudBeaver và Spark (master,
+worker, submit gateway), đồng thời đăng ký catalog Polaris. Dùng sau khi đã bootstrap trên
+máy mới. Lệnh chỉ khởi động các service chạy lâu dài; `spark-submit` là container chạy theo
+từng job nên không được bật thường trực. `make lakehouse-up` vẫn chỉ bật stack cơ sở.
 
 `make lakehouse-down` chỉ dừng container và network, không xóa state. Dữ liệu persistent nằm tại:
 
@@ -567,8 +573,11 @@ GROUP BY retention_class, storage_status
 ORDER BY retention_class, storage_status;
 ```
 
-Trino Web UI tại <http://127.0.0.1:8083/> chỉ hiển thị trạng thái query. Dùng CLI hoặc DBeaver để
-viết SQL. Hướng dẫn DBeaver và truy vấn mẫu nằm tại
+Trino Web UI tại <http://127.0.0.1:8083/> chỉ hiển thị trạng thái query. Muốn duyệt schema,
+xem dữ liệu bảng và viết SQL ngay trên trình duyệt, chạy `make query-ui-up` rồi mở
+<http://127.0.0.1:8978/>. Lệnh này chỉ bật Trino và CloudBeaver, không build lại Airflow.
+Tắt giao diện bằng `make query-ui-down`; DBeaver desktop vẫn kết nối Trino ở port `8083`.
+Hướng dẫn tạo kết nối và truy vấn mẫu nằm tại
 [docs/query_iceberg_with_trino.md](docs/query_iceberg_with_trino.md).
 
 Các endpoint local:
@@ -580,6 +589,7 @@ Các endpoint local:
 | MinIO S3 API | `127.0.0.1:9000` |
 | Polaris REST API | `127.0.0.1:8181` |
 | Trino | <http://127.0.0.1:8083/> |
+| CloudBeaver (tùy chọn) | <http://127.0.0.1:8978/> |
 | PostgreSQL | Chỉ nội bộ Docker tại `postgres:5432` |
 
 ## Spark cho Bronze → Silver

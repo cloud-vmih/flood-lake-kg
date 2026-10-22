@@ -29,7 +29,7 @@ streams:
     credential_env: [GSMAP_USERNAME, GSMAP_PASSWORD]
     options:
       grid_resolution_degrees: 0.1
-      value_kind: preceding_hour_sum
+      value_kind: rate
       dtype: "<f4"
       grid_height: 1200
       grid_width: 3600

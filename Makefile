@@ -1,4 +1,4 @@
-.PHONY: doctor bootstrap setup test lint lakehouse-aoi lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-dq-smoke lakehouse-init lakehouse-up lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down spark-build spark-up spark-status spark-down spark-smoke dq-audit-plan
+.PHONY: doctor bootstrap setup test lint lakehouse-aoi lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-dq-smoke lakehouse-init lakehouse-up lakehouse-all-up lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down query-ui-up query-ui-status query-ui-down spark-build spark-up spark-status spark-down spark-smoke dq-audit-plan
 MAKEFLAGS += --no-print-directory
 PYTHON ?= python3.11
 VENV_PYTHON := .venv/bin/python
@@ -54,6 +54,11 @@ lakehouse-up: lakehouse-init
 	docker compose up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor
 	docker compose run --no-deps --rm polaris-bootstrap
 
+lakehouse-all-up: lakehouse-init
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query --profile query-ui --profile spark up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor trino cloudbeaver spark-master spark-worker spark-submit-gateway
+	docker compose run --no-deps --rm polaris-bootstrap
+
 lakehouse-status:
 	tools/bootstrap/check_docker_access.sh
 	docker compose ps
@@ -99,6 +104,18 @@ query-down:
 	tools/bootstrap/check_docker_access.sh
 	docker compose --profile query stop trino
 	docker compose --profile query rm -f trino
+
+query-ui-up: lakehouse-init
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query --profile query-ui up -d --wait trino cloudbeaver
+
+query-ui-status:
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query --profile query-ui ps trino cloudbeaver
+
+query-ui-down:
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query --profile query-ui stop cloudbeaver
 
 spark-build: lakehouse-init
 	docker compose --profile spark build spark-master

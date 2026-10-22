@@ -17,6 +17,18 @@ def _utc_text(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def matches_legacy_gsmap_rate_options(
+    stored: Mapping[str, object], current: Mapping[str, object]
+) -> bool:
+    """Recognize the old GSMaP label without changing an immutable Raw request."""
+    if stored.get("value_kind") != "preceding_hour_sum" or current.get("value_kind") != "rate":
+        return False
+    normalized = {**stored, "value_kind": "rate"}
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":")) == json.dumps(
+        current, sort_keys=True, separators=(",", ":")
+    )
+
+
 def batch_documents(
     documents: Sequence[Mapping[str, object]], batch_size: int
 ) -> list[list[dict[str, object]]]:

@@ -16,6 +16,7 @@ from flashflood_data.pipelines.weather_ingest.models import (
     RetentionClass,
     ScopedWeatherObject,
 )
+from flashflood_data.pipelines.weather_ingest.planner import matches_legacy_gsmap_rate_options
 from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
 
 
@@ -179,12 +180,25 @@ class WeatherLandingService:
                 "source_id",
                 "source_version",
                 "product",
-                "request_fingerprint",
                 "object_uri",
                 "size_bytes",
                 "checksum",
             ):
                 if getattr(stored, field) != getattr(expected_manifest, field):
+                    raise ObjectConflict(f"immutable weather manifest conflict: {manifest_key}")
+            if stored.request_fingerprint != expected_manifest.request_fingerprint:
+                legacy_selection = dict(stored.selection)
+                legacy_options = legacy_selection.get("options")
+                if (
+                    planned.source_id != "gsmap"
+                    or not isinstance(legacy_options, dict)
+                    or not matches_legacy_gsmap_rate_options(legacy_options, planned.options)
+                ):
+                    raise ObjectConflict(f"immutable weather manifest conflict: {manifest_key}")
+                legacy_selection["options"] = dict(planned.options)
+                if json.dumps(legacy_selection, sort_keys=True) != json.dumps(
+                    selection, sort_keys=True
+                ):
                     raise ObjectConflict(f"immutable weather manifest conflict: {manifest_key}")
             manifest = stored
             published_manifest = existing
@@ -221,7 +235,7 @@ class WeatherLandingService:
             retrieved_at=manifest.retrieved_at,
             first_seen_at=manifest.retrieved_at,
             ingest_run_id=run_id,
-            selection_json=json.dumps(selection, sort_keys=True, separators=(",", ":")),
+            selection_json=json.dumps(manifest.selection, sort_keys=True, separators=(",", ":")),
             provider_metadata_json=json.dumps(
                 dict(manifest.provider_metadata), sort_keys=True, separators=(",", ":")
             ),

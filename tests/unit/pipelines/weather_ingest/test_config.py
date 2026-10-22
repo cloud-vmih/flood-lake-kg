@@ -65,6 +65,7 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     assert (standard_stream.step_minutes, standard_stream.chunk_minutes) == (60, 60)
     assert (now_stream.step_minutes, now_stream.chunk_minutes) == (30, 60)
     assert all(stream.options["dtype"] == "<f4" for stream in (*standard.streams, *now.streams))
+    assert all(stream.options["value_kind"] == "rate" for stream in (*standard.streams, *now.streams))
     assert all(
         tuple(stream.options["missing_values"]) == (-4.0, -8.0, -99.0)
         for stream in (*standard.streams, *now.streams)

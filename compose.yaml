@@ -326,6 +326,22 @@ services:
     restart: unless-stopped
     networks: [lakehouse]
 
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:26.2.0
+    profiles: [query-ui]
+    mem_limit: 1g
+    depends_on:
+      trino:
+        condition: service_healthy
+    environment:
+      JAVA_OPTS: -Xmx768m
+    volumes:
+      - cloudbeaver_workspace:/opt/cloudbeaver/workspace
+    ports:
+      - "127.0.0.1:8978:8978"
+    restart: unless-stopped
+    networks: [lakehouse]
+
   spark-master:
     <<: *spark-image
     profiles: [spark]
@@ -453,6 +469,9 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks: [lakehouse]
+
+volumes:
+  cloudbeaver_workspace:
 
 networks:
   lakehouse:

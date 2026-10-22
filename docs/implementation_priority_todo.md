@@ -67,7 +67,7 @@ flowchart TD
 - [ ] Tạo tình huống thiếu một weather window; xác nhận chỉ window thiếu và bounded overlap được lập kế hoạch.
 - [ ] Tạo tình huống thiếu Bronze evidence của một object; xác nhận chỉ object đó được parse lại.
 - [ ] Sửa nhận diện `wv0010` trong static SoilGrids Bronze parser và tăng parser version.
-- [ ] Chốt semantic GSMaP `value_kind`: config hiện mô tả lượng mưa giờ trước nhưng parser ghi `rate`.
+- [x] Chốt semantic GSMaP `value_kind`: cấu hình và Bronze đều ghi `rate` (`mm/h`); Raw cũ mang nhãn `preceding_hour_sum` vẫn được nhận diện khi lập kế hoạch và tái sử dụng manifest.
 - [ ] Chạy contract/unit test Raw → Bronze.
 - [ ] Tạo checkpoint Git trước khi triển khai P1.
 

@@ -404,8 +404,10 @@ Parser kiểm tra:
 - Mở scoped NPZ.
 - Đọc `cell_indices` và `values` mà không cần geometry.
 - Tạo một slice precipitation cho cửa sổ object.
-- `unit = mm/h`, `value_kind = rate` theo implementation hiện tại.
+- `unit = mm/h`, `value_kind = rate`: giá trị là cường độ mưa cho cửa sổ của object; NOW có cửa sổ 1 giờ cập nhật mỗi 30 phút.
 - `valid_time = window_end`.
+
+Các manifest Raw GSMaP cũ có thể còn `options.value_kind = preceding_hour_sum`. Đây là nhãn cấu hình cũ, không phải phép đổi đơn vị. Planner nhận diện chúng tương đương với `rate` để backfill không tải lại; manifest bất biến vẫn giữ nguyên nhãn cũ, còn các object mới ghi `rate`.
 
 NOW và Standard dùng cùng source ID `gsmap`, nhưng phân biệt bằng `source_product`, `stream_id` trong selection, cycle, window và revision.
 

@@ -59,3 +59,24 @@ def test_query_commands_are_separate_from_base_stack() -> None:
     assert "query-smoke:" in makefile
     assert "query-down:" in makefile
     assert "--profile query" in makefile
+
+
+def test_cloudbeaver_is_optional_local_and_persistent() -> None:
+    config = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    ui = config["services"]["cloudbeaver"]
+    assert ui["profiles"] == ["query-ui"]
+    assert ui["ports"] == ["127.0.0.1:8978:8978"]
+    assert ui["depends_on"]["trino"]["condition"] == "service_healthy"
+    assert "lakehouse" in ui["networks"]
+    assert "cloudbeaver_workspace:/opt/cloudbeaver/workspace" in ui["volumes"]
+    assert "cloudbeaver_workspace" in config["volumes"]
+
+
+def test_query_ui_commands_do_not_rebuild_airflow() -> None:
+    makefile = (ROOT / "Makefile").read_text()
+    assert "query-ui-up: lakehouse-init" in makefile
+    assert "query-ui-status:" in makefile
+    assert "query-ui-down:" in makefile
+    ui_targets = makefile.split("query-ui-up:", 1)[1].split("spark-build:", 1)[0]
+    assert "--profile query --profile query-ui" in ui_targets
+    assert "airflow" not in ui_targets

@@ -30,6 +30,7 @@ from flashflood_data.pipelines.weather_ingest.models import (
 )
 from flashflood_data.pipelines.weather_ingest.planner import (
     advance_contiguous_cursor,
+    matches_legacy_gsmap_rate_options,
     operational_start,
     plan_expected_objects,
     provider_safe_end,
@@ -79,6 +80,12 @@ def _matches_planned_object(row, planned: PlannedWeatherObject) -> bool:
         selection = json.loads(row.selection_json)
     except (TypeError, json.JSONDecodeError):
         return False
+    if (
+        planned.source_id == "gsmap"
+        and isinstance(selection.get("options"), dict)
+        and matches_legacy_gsmap_rate_options(selection["options"], planned.options)
+    ):
+        selection["options"] = planned.options
     expected = {
         "stream_id": planned.stream_id,
         "spatial_scope_id": planned.spatial_scope_id,

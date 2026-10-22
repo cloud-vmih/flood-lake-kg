@@ -13,7 +13,8 @@ from flashflood_data.pipelines.weather_ingest.models import (
     ScopedWeatherObject,
     WeatherWindow,
 )
-from flashflood_data.storage.object_store import ObjectPublisher
+from flashflood_data.pipelines.weather_ingest.runtime import _matches_planned_object
+from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
 
 
 class MemoryObjectStore:
@@ -204,6 +205,61 @@ def test_rerun_reuses_identical_raw_object_without_duplicate_inventory(tmp_path:
     assert second.reused is True
     assert len(inventory.rows) == 1
     assert len(lifecycle.rows) == 1
+
+
+def test_gsmap_rate_label_reuses_legacy_raw_manifest_and_inventory(tmp_path: Path) -> None:
+    object_store = MemoryObjectStore()
+    inventory = MemoryInventory()
+    service = _service(object_store, inventory, MemoryMeta(), MemoryLifecycleBackend())
+    base = _scoped(tmp_path)
+    legacy = base.model_copy(
+        update={
+            "planned": base.planned.model_copy(
+                update={
+                    "source_id": "gsmap",
+                    "options": {"value_kind": "preceding_hour_sum", "aoi_bounds": [102, 20, 104, 22]},
+                    "request_fingerprint": "a" * 64,
+                }
+            )
+        }
+    )
+    current = legacy.model_copy(
+        update={
+            "planned": legacy.planned.model_copy(
+                update={
+                    "options": {"value_kind": "rate", "aoi_bounds": [102, 20, 104, 22]},
+                    "request_fingerprint": "b" * 64,
+                }
+            )
+        }
+    )
+
+    first = service.publish_and_register(legacy, run_id="run-legacy")
+    first_row = inventory.rows[first.object_id]
+    first_manifest = object_store.data[first_row.manifest_uri.removeprefix("s3://")]
+    assert _matches_planned_object(first_row, current.planned)
+    assert not _matches_planned_object(
+        first_row,
+        current.planned.model_copy(
+            update={"options": {"value_kind": "rate", "aoi_bounds": [102, 20, 105, 22]}}
+        ),
+    )
+
+    second = service.publish_and_register(current, run_id="run-current")
+
+    assert second.object_id == first.object_id
+    assert second.reused is True
+    assert len(inventory.rows) == 1
+    assert object_store.data[first_row.manifest_uri.removeprefix("s3://")] == first_manifest
+    changed_scope = current.model_copy(
+        update={
+            "planned": current.planned.model_copy(
+                update={"options": {"value_kind": "rate", "aoi_bounds": [102, 20, 105, 22]}}
+            )
+        }
+    )
+    with pytest.raises(ObjectConflict, match="immutable weather manifest conflict"):
+        service.publish_and_register(changed_scope, run_id="run-changed-scope")
 
 
 def test_publish_many_commits_one_inventory_lifecycle_and_attempt_batch(

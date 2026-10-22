@@ -1,4 +1,4 @@
-# Đọc bảng Iceberg bằng Trino và DBeaver
+# Đọc bảng Iceberg bằng Trino, CloudBeaver và DBeaver
 
 Trino là SQL engine đọc các bảng Iceberg hiện có qua Polaris REST catalog và MinIO. Service này thuộc Compose profile `query`, không khởi động cùng stack mặc định. Catalog Trino tên `lakehouse`; catalog Polaris phía sau tên `flood_lakehouse`. Trino Iceberg connector được cấu hình `READ_ONLY` để tránh sửa bảng trong lúc khảo sát.
 
@@ -14,7 +14,7 @@ make query-smoke
 
 `query-smoke` liệt kê bảng trong `meta` và đọc một `object_id` từ `meta.source_objects`. Nếu máy mới clone chưa ingest dữ liệu, bảng có thể chưa tồn tại; cần chạy Landing/Bronze hoặc chuyển snapshot MinIO/Polaris từ môi trường khác trước.
 
-Mở Trino Web UI tại <http://127.0.0.1:8083/> để xem trạng thái và lịch sử query. Web UI không phải SQL editor; dùng Trino CLI hoặc DBeaver để chạy SQL.
+Mở Trino Web UI tại <http://127.0.0.1:8083/> để xem trạng thái và lịch sử query. Để duyệt bảng và chạy SQL trên trình duyệt, dùng CloudBeaver ở phần dưới.
 
 ```bash
 docker compose --profile query exec -T trino trino \
@@ -28,7 +28,32 @@ Khi không cần query, chỉ dừng Trino; MinIO, Polaris và Airflow tiếp t�
 make query-down
 ```
 
-## Kết nối DBeaver
+## CloudBeaver: xem dữ liệu trên trình duyệt
+
+Khởi động riêng Trino và CloudBeaver, không build hay khởi động lại Airflow:
+
+```bash
+make query-ui-up
+make query-ui-status
+```
+
+Mở <http://127.0.0.1:8978/>. Lần đầu, hoàn tất màn hình thiết lập và tạo tài khoản quản trị CloudBeaver. Sau đó tạo kết nối **Trino** với các giá trị sau (nếu danh sách driver chưa có Trino, chọn JDBC và nhập URL):
+
+| Trường | Giá trị |
+| --- | --- |
+| Host | `trino` |
+| Port | `8080` |
+| Catalog | `lakehouse` |
+| Schema ban đầu | `bronze`, `silver` hoặc `meta` |
+| Username | `analyst` |
+| Password | Để trống |
+| JDBC URL nếu nhập thủ công | `jdbc:trino://trino:8080/lakehouse/bronze` |
+
+`trino:8080` là địa chỉ giữa hai container; không điền `127.0.0.1:8083` trong CloudBeaver. Lần kết nối đầu có thể cần tải JDBC driver. Dùng cây **Database Navigator** để mở schema/bảng, tab **Data** để xem các hàng, hoặc **SQL Editor** để chạy truy vấn mẫu dưới đây. Trino vẫn ở chế độ chỉ đọc đối với Iceberg, nên CloudBeaver không ghi sửa bảng qua kết nối này.
+
+Khi chỉ muốn tắt giao diện, chạy `make query-ui-down`; Trino vẫn chạy cho DBeaver/CLI. Nếu muốn tắt cả Trino, chạy tiếp `make query-down`. Tài khoản và kết nối CloudBeaver được giữ trong Docker volume `cloudbeaver_workspace` giữa các lần bật/tắt. Port `8978` chỉ bind vào localhost.
+
+## Kết nối DBeaver desktop
 
 Tạo kết nối **Trino** trong DBeaver với các giá trị:
 
@@ -99,4 +124,4 @@ LIMIT 1;
 
 `iceberg.security=READ_ONLY` chặn `CREATE`, `INSERT`, `UPDATE`, `DELETE` qua Iceberg connector. Đây là rào chắn chống ghi nhầm trong Trino, không phải cơ chế phân quyền theo người dùng: Trino local hiện chưa bật xác thực và container dùng credential của stack. Chỉ dùng profile này trên máy cá nhân hoặc mạng tin cậy.
 
-Trino không thay thế MinIO Console: MinIO Console xem file Raw, Trino đọc **các hàng của bảng Iceberg**. Trino Web UI chủ yếu hiển thị trạng thái query, còn DBeaver cung cấp SQL editor và bảng kết quả.
+Trino không thay thế MinIO Console: MinIO Console xem file Raw, Trino đọc **các hàng của bảng Iceberg**. CloudBeaver và DBeaver cung cấp trình duyệt bảng và SQL editor; Trino Web UI chủ yếu hiển thị trạng thái query.
