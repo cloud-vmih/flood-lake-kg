@@ -1,7 +1,10 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flashflood_data.pipelines.weather_ingest.fetch_audit import FetchAttemptSpool
+from flashflood_data.pipelines.weather_ingest.fetch_audit import (
+    FetchAttemptSpool,
+    finalize_fetch_attempt_batch,
+)
 from flashflood_data.pipelines.weather_ingest.models import FetchAttemptRecord
 
 
@@ -103,3 +106,25 @@ def test_fetch_attempt_spool_isolates_pipelines_with_the_same_run_id(
 
     assert spool.read_run("gsmap-standard", run_id) == []
     assert [row.asset_id for row in spool.read_run("gsmap-now", run_id)] == ["now"]
+
+
+def test_finalize_fetch_batch_marks_completed_fetches_without_publication() -> None:
+    ended_at = datetime(2026, 9, 29, 0, 2, tzinfo=UTC)
+    rows = [_record("a", 1, "running", "run-1")]
+
+    completed = finalize_fetch_attempt_batch(rows, failed=False, ended_at=ended_at)
+
+    assert completed[0].status == "succeeded"
+    assert completed[0].ended_at == ended_at
+    assert completed[0].error_code is None
+
+
+def test_finalize_fetch_batch_marks_prior_successes_skipped_on_batch_failure() -> None:
+    ended_at = datetime(2026, 9, 29, 0, 2, tzinfo=UTC)
+    rows = [_record("a", 1, "running", "run-1"), _record("b", 1, "failed", "run-1")]
+
+    completed = finalize_fetch_attempt_batch(rows, failed=True, ended_at=ended_at)
+
+    assert [row.status for row in completed] == ["skipped", "failed"]
+    assert completed[0].error_code == "BatchAborted"
+    assert completed[1] == rows[1]

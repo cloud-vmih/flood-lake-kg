@@ -84,7 +84,9 @@ chmod 600 "$ENV_FILE"
 mkdir -p \
     "$LAKEHOUSE_DATA_ROOT/airflow/logs" \
     "$LAKEHOUSE_DATA_ROOT/staging" \
+    "$LAKEHOUSE_DATA_ROOT/staging/spark-checkpoints" \
     "$LAKEHOUSE_DATA_ROOT/minio" \
     "$LAKEHOUSE_DATA_ROOT/postgres"
+chmod 1777 "$LAKEHOUSE_DATA_ROOT/staging/spark-checkpoints"
 
 printf '%s\n' 'Lakehouse local environment is ready.'

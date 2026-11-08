@@ -8,6 +8,16 @@
 > Mỗi package domain phải bổ sung `spark_job.py`; `runtime.py` chỉ submit/monitor application.
 > Chỉ job raster/hydrology/graph/NLP chuyên dụng mới fan-out bằng Python.
 
+> **Trạng thái code 07/11/2026:** Đã có `pipeline.py`, `runtime.py`, `spark_job.py`,
+> `airflow.py`, schema, DQ và test offline. Job pin Bronze snapshot rồi lọc theo tháng;
+> chưa có bước chỉ quét dirty window như các ví dụ service cũ ở Công việc 4.
+> Đã smoke tháng 01–02/2020 trên stack thật; chưa xác nhận toàn bộ 55 tháng.
+> Runtime hiện submit một application cho trọng số rồi tuần tự từng tháng cho weather,
+> manifest theo tháng hỗ trợ retry. Algorithm v3 ưu tiên GSMaP hợp lệ theo basin/window,
+> chỉ giữ mưa ERA5 làm fallback; publish trước rồi dọn fallback dư, manifest ghi sau cleanup.
+> Các bước service/PyIceberg writer bên dưới
+> chỉ là lịch sử plan, không phải API hiện hành.
+
 
 
 **Bản gốc:** `docs/superpowers/plans/2026-09-30-silver-weather-aggregation.md`
@@ -18,7 +28,7 @@
 
 **Mục tiêu:** Chuyển các raster slice Bronze thành giá trị thời tiết theo lưu vực L12 có version bằng bộ trọng số giao giữa source grid và basin có thể tái sử dụng.
 
-**Kiến trúc:** Chỉ tạo trọng số cho tổ hợp grid/basin/geometry version chưa có, ánh xạ mảng raster slice bằng `cell_index` ổn định, tổng hợp các cell hợp lệ theo diện tích giao và append idempotent bằng hash business key xác định. NOW, Standard, ERA5-Land và IFS vẫn là các quan sát riêng trong Silver.
+**Kiến trúc:** Chỉ tạo trọng số cho tổ hợp grid/basin/geometry version chưa có, ánh xạ mảng raster slice bằng `cell_index` ổn định, tổng hợp cell theo diện tích giao và MERGE idempotent bằng business key. Mưa ERA5 chỉ giữ làm fallback khi không có GSMaP hợp lệ đúng basin/window; NOW, Standard và các quan sát được giữ có source/revision riêng.
 
 **Công nghệ:** Python 3.11, Airflow 3 TaskFlow, Pydantic 2, NumPy, PyArrow, Shapely, PyProj, PySpark, Apache Spark, Apache Sedona, Apache Iceberg, pytest.
 
@@ -31,9 +41,10 @@
 - Tổng hợp theo basin không bao giờ coi cell missing/nodata là 0.
 - `valid_coverage_fraction` bằng diện tích giao hợp lệ chia cho diện tích basin.
 - Các cửa sổ NOW lệch nhau 30 phút vẫn là quan sát riêng; Standard không xóa hoặc overwrite NOW.
-- IFS và ERA5-Land vẫn là nguồn riêng dù có biến trùng nhau.
+- IFS và ERA5-Land có identity riêng; mưa ERA5 bị loại nếu có GSMaP hợp lệ đúng window.
+- Dọn ERA5 dư sau publish GSMaP, giữ fallback khi GSMaP null/coverage thấp; 0 mm vẫn hợp lệ.
 - Identity để rebuild trọng số gồm source grid version, basin version và geometry processing version.
-- Tính toán fan-out theo batch slice; mỗi bảng output chỉ có một Spark publish application.
+- Tính toán weather theo tháng; mỗi tháng một Spark application và một writer Iceberg.
 
 ---
 
@@ -48,22 +59,31 @@ src/flashflood_data/pipelines/silver_weather/
   models.py
   reader.py
   weights.py
+  normalize.py
   aggregate.py
+  preference.py
   revisions.py
   quality.py
   pipeline.py
   runtime.py
+  spark_job.py
+  airflow.py
 tests/unit/pipelines/silver_weather/
   test_config.py
   test_weights.py
+  test_normalize.py
   test_aggregate.py
   test_revisions.py
   test_quality.py
   test_pipeline.py
+  test_runtime.py
+  test_spark_job.py
 tests/integration/silver/test_weather_aggregation_pipeline.py
 ```
 
-Service đọc ba table contract, chỉ gọi `weights.py` cho tổ hợp còn thiếu, gọi `aggregate.py` cho slice key còn thiếu rồi publish qua writer/audit chung. Package này không được gọi API provider hoặc fetch object Raw.
+Service đọc ba table contract, chỉ gọi `weights.py` cho tổ hợp còn thiếu, gọi
+`normalize.py` để đổi đơn vị/biến/cửa sổ của Bronze trước `aggregate.py`, rồi publish
+qua writer/audit chung. Package này không được gọi API provider hoặc fetch object Raw.
 
 ### Công việc 1: Thêm schema, cấu hình và contract dòng dữ liệu
 
@@ -104,7 +124,7 @@ Mong đợi: FAIL vì config/models/schemas are absent.
 
 - [ ] **Bước 3: Triển khai chính sách đã validate và contract vật lý**
 
-YAML định nghĩa `geometry_processing_version`, CRS bảo toàn diện tích, ngưỡng coverage tối thiểu để publish, slice batch size, unit chuẩn và cách aggregate cho precipitation, các lớp soil moisture, surface runoff và subsurface runoff. Từ chối biến thiếu unit hoặc dùng cách aggregate khác `area_mean`.
+YAML định nghĩa `geometry_processing_version`, CRS bảo toàn diện tích, ngưỡng coverage tối thiểu để publish, unit chuẩn và cách aggregate cho precipitation, các lớp soil moisture, surface runoff và subsurface runoff. Runtime chia theo tháng cố định. Từ chối biến thiếu unit hoặc dùng cách aggregate khác `area_mean`.
 
 Thêm toàn bộ cột đã duyệt từ `docs/schema_contract/data.md`. Đăng ký cả hai dataset với `quality_policy_id: silver-weather-v1`.
 
@@ -178,13 +198,19 @@ git commit -m "feat: build source-grid basin weights"
 
 **Các file:**
 - Tạo: `src/flashflood_data/pipelines/silver_weather/aggregate.py`
+- Tạo: `src/flashflood_data/pipelines/silver_weather/normalize.py`
 - Tạo: `src/flashflood_data/pipelines/silver_weather/revisions.py`
 - Tạo: `src/flashflood_data/pipelines/silver_weather/quality.py`
 - Tạo: `tests/unit/pipelines/silver_weather/test_aggregate.py`
+- Tạo: `tests/unit/pipelines/silver_weather/test_normalize.py`
 - Tạo: `tests/unit/pipelines/silver_weather/test_revisions.py`
 - Tạo: `tests/unit/pipelines/silver_weather/test_quality.py`
 
 **Giao diện:**
+- Runtime Spark hiện tại: `normalize_weather_slices(spark, bronze_slices, config)`
+  tạo slice canonical; `aggregate_weather_slices(spark, normalized_slices, grid, weights, config)`
+  tính theo basin. IFS `runoff` tổng giữ riêng; instant soil moisture được phép có
+  `window_start = window_end`.
 - Đầu vào: one `weather_raster_slice`, cell-index lookup, relevant weights, basin/version, variable policy.
 - Đầu ra: `aggregate_slice(slice_row: Mapping[str, object], weights: Sequence[GridBasinWeightRow], context: AggregationContext) -> tuple[list[BasinWeatherValueRow], WeatherAggregationReport]`.
 - Đầu ra: `weather_business_key(row_without_hash) -> str`.

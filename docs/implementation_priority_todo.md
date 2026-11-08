@@ -1,6 +1,6 @@
 # TODO ưu tiên triển khai FloodLakeKG
 
-**Cập nhật:** 20/10/2026
+**Cập nhật:** 08/11/2026
 
 **Mục tiêu:** sắp xếp các plan hiện có theo dependency thực tế, tránh triển khai Silver rồi phải sửa lại toàn bộ vì DQ, revision hoặc idempotency chưa được chốt.
 
@@ -27,13 +27,19 @@ flowchart TD
     P4 --> P6["P6. River Network"]
     P2 --> P7["P7. Silver Flood Events"]
     P4 --> P7
-    P4 --> P8["P8. Exposure Network"]
-    P6 --> P8
+    P4 --> P8A["P8A. Facilities"]
+    P0 --> P8B["P8B. Population + AOI"]
+    P4 --> P8C["P8C. Road Network"]
+    P8C --> P8D["P8D. River Crossings"]
+    P6 --> P8D
     P5A --> P9["P9. Gold / Serving / KG"]
     P5B --> P9
     P6 --> P9
     P7 --> P9
-    P8 --> P9
+    P8A --> P9
+    P8B --> P9
+    P8C --> P9
+    P8D --> P9
 ```
 
 ## Trạng thái tổng quan
@@ -43,13 +49,16 @@ flowchart TD
 | P0 | Ổn định Raw → Bronze | Audit và sửa khoảng trống | Chưa nghiệm thu |
 | P1 | DQ framework + quarantine | Đã tích hợp Landing/Bronze, migration và runbook; chờ rollout audit dữ liệu thật | Sẵn sàng rollout |
 | P2 | Flood Event Sources Landing → Bronze | Đã có spec và plan cho news; historical cần plan riêng | Chưa có DAG |
-| P3 | Spark runtime + revision contract + Silver common | Shared foundation đã xong; còn revision contract và Airflow submit | Đang triển khai |
-| P4 | Silver Basin Topology | Triển khai plan đã có | Chưa triển khai |
-| P5A | Silver Static Basin Features | Triển khai plan đã có | Chưa triển khai |
-| P5B | Silver Weather Aggregation | Triển khai plan đã có | Chưa triển khai |
+| P3 | Spark runtime + revision contract + Silver common | Foundation/submit đã dùng cho Basin và Weather; policy revision theo domain | Đã có nền tảng; nghiệm thu từng domain |
+| P4 | Silver Basin Topology | Đã publish 179 basin Sơn La | Đã triển khai |
+| P5A | Silver Static Basin Features | Teammate triển khai plan hiện có | Đang triển khai |
+| P5B | Silver Weather Aggregation | Người dùng xác nhận hoàn thành implementation; giữ nghiệm thu nâng cao bên dưới | Đã triển khai |
 | P6 | Silver River Network | Triển khai plan đã có | Chưa triển khai |
 | P7 | Silver Flood Events | Triển khai sau P2 và P4 | Chưa triển khai |
-| P8 | Silver Exposure Network | Triển khai sau P4 và P6 | Chưa triển khai |
+| P8A | Silver Facilities | OSM + basin, không chờ River | Có plan riêng, chưa triển khai |
+| P8B | Silver Population | WorldPop + AOI, không chờ Static/River | Có plan riêng, chưa triển khai |
+| P8C | Silver Road Network | OSM + basin, không chờ River | Có plan riêng, chưa triển khai |
+| P8D | Silver River Crossings | Sau Road + River | Có plan riêng, chưa triển khai |
 | P9 | Gold, Serving, KG, dashboard | Lập plan sau khi Silver ổn định | Chưa bắt đầu |
 
 ---
@@ -362,27 +371,44 @@ Plan ngày 30/09 chỉ còn để tham chiếu lịch sử vì chưa hỗ trợ 
 
 ---
 
-## P8 — Silver Exposure Network
+## P8 — Exposure tách bốn pipeline
 
-**Phụ thuộc:** P4 basin và P6 river network.
+Không tạo DAG Exposure gom chung. [Master plan Silver còn lại](superpowers/plans/2026-11-08-silver-remaining-pipelines.vi.md)
+quy định dependency và số lượng: ngoài Static đang làm còn sáu domain / bảy DAG.
 
-- [ ] Chọn OSM/WorldPop revision authoritative.
-- [ ] Dùng Spark/Sedona xử lý OSM, spatial relation và population aggregation.
-- [ ] Chuẩn hóa facility, road, bridge và hydraulic structure.
-- [ ] Aggregate WorldPop theo basin/grid.
-- [ ] Xây road graph có version.
-- [ ] Liên kết facility/road với basin.
-- [ ] Xác định crossing road–river.
-- [ ] Phân biệt crossing có bằng chứng bridge/ford với giao hình học `unknown`.
-- [ ] Incremental theo source snapshot, basin version và river version.
+### P8A — Facilities
 
-**Plan:** [2026-09-30-silver-exposure-network.vi.md](superpowers/plans/2026-09-30-silver-exposure-network.vi.md)
+- [ ] Chuẩn hóa facility OSM, version, capacity có evidence và quan hệ basin.
+- [ ] Ghi `dim_facility`/`facility_basin`, DQ/quarantine, manifest và Meta.
+- [ ] Không bắt buộc River, khoảng cách chưa có input để null; retry/skip được kiểm chứng.
 
-### Tiêu chí nghiệm thu P8
+**Plan:** [Facilities](superpowers/plans/2026-11-08-silver-facilities.vi.md).
 
-- [ ] Facility/road identity ổn định theo OSM snapshot và processing version.
-- [ ] Population aggregation không tạo grid registry thứ hai.
-- [ ] Crossing classification không suy diễn quá mức bằng geometry.
+### P8B — Population
+
+- [ ] WorldPop theo block → staging → Spark; giữ semantics count/density và nodata.
+- [ ] Tách primitive grid giữ tương thích weather; cell identity không đổi khi crop.
+- [ ] Serialize mọi writer `source_grid` giữa Weather và Population.
+- [ ] Thêm population revision độc lập geometry grid; publish và replay có test.
+
+**Plan:** [Population](superpowers/plans/2026-11-08-silver-population.vi.md).
+
+### P8C — Road Network
+
+- [ ] Normalize tags/oneway, geometry-derived graph bảo thủ; không nối cầu/hầm khác level.
+- [ ] Publish node/edge/road–basin cùng version, giữ ford/layer evidence cho Crossing.
+- [ ] QA FK, metric length, completeness và giới hạn Bronze critical-road coverage.
+
+**Plan:** [Road](superpowers/plans/2026-11-08-silver-road-network.vi.md).
+
+### P8D — River Crossings
+
+- [ ] Pin Road + River từ Meta bundles hoàn tất, spatial join có pruning.
+- [ ] Giữ nhiều giao điểm trên cùng cặp; classification bridge/ford có evidence.
+- [ ] Geometry-only là unknown, không suy ngập/passability/deck height.
+- [ ] DQ/quarantine, versioned ID, replay/repair và empty-output được kiểm chứng.
+
+**Plan:** [Crossings](superpowers/plans/2026-11-08-silver-river-crossings.vi.md).
 
 ---
 
@@ -404,35 +430,20 @@ Chỉ lập plan chi tiết sau khi các Silver output cần thiết ổn địn
 - [ ] Static feature, weather và river pipeline có DQ/lineage/revision đầy đủ.
 - [ ] Ít nhất một end-to-end run có thể tái hiện từ pinned snapshots.
 
-## Thứ tự thực hiện ngắn gọn
+## Thứ tự thực hiện từ checkpoint 08/11/2026
 
-1. P0 — audit và checkpoint Raw → Bronze.
-2. P1 — DQ framework + quarantine.
-3. P2 — Flood Event Landing → Bronze.
-4. P3 — Spark runtime + revision contract + Silver common.
-5. P4 — Silver Basin Topology.
-6. P5A và P5B — Static Features và Weather Aggregation.
-7. P6 — River Network.
-8. P7 — Silver Flood Events.
-9. P8 — Exposure Network.
-10. P9 — Gold, Serving, KG và dashboard.
+1. Giữ Basin Topology và Weather đã triển khai; vận hành/nghiệm thu nâng cao theo backlog,
+   không giao lại phần implementation. Các checkbox chưa nghiệm thu phía trên vẫn giữ nguyên.
+2. Người 1 làm River Network; Người 2 hoàn thiện Static Feature đang làm.
+3. Người 1 làm Road Network; Người 2 làm hai DAG Flood Events sau khi Bronze evidence đủ.
+4. Facilities và Population làm độc lập; không phải đợi River/Static xong.
+5. River Crossings sau khi Road + River có bundle hoàn tất.
+6. Gold/Serving/KG khi các input cần thiết đạt gate, không tính vào phạm vi Silver.
 
-## Gợi ý chia hai người
+## Phân công hai người
 
-Sau khi P1 hoàn thành:
-
-| Người 1 | Người 2 |
-| --- | --- |
-| P2 Flood Event Landing → Bronze | P3 Spark Runtime + Revision + Silver Common |
-
-Sau khi P4 hoàn thành:
-
-| Người 1 | Người 2 |
-| --- | --- |
-| P5A Static Basin Features | P5B Weather Aggregation |
-
-Tiếp theo:
-
-| Người 1 | Người 2 |
-| --- | --- |
-| P6 River Network → P8 Exposure | P7 Silver Flood Events và integration test |
+Giữ phân công đã thống nhất: Người 1 Weather → River, Người 2 Static → Flood Events.
+Weather đã triển khai. Đề xuất phần mới: Người 1 nhận Road → Crossings; Người 2 nhận
+Facilities → Population sau Flood Events. Có thể đổi owner phần mới theo tiến độ.
+Chi tiết và checkpoint nằm tại [file phân công](phan_cong_trien_khai_silver_2_nguoi.md)
+và [master plan](superpowers/plans/2026-11-08-silver-remaining-pipelines.vi.md).

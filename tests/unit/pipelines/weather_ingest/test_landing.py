@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -89,6 +90,11 @@ class MemoryLifecycleBackend:
     def get_meta_row(self, identifier, key):
         assert identifier == ("meta", "object_lifecycle")
         return self.rows.get(key["object_id"])
+
+    def get_meta_rows(self, identifier, key_field, values):
+        assert identifier == ("meta", "object_lifecycle")
+        assert key_field == "object_id"
+        return [self.rows[value] for value in values if value in self.rows]
 
     def get_keyed_rows(self, identifier, key):
         assert identifier == ("meta", "object_lifecycle")
@@ -282,6 +288,32 @@ def test_publish_many_commits_one_inventory_lifecycle_and_attempt_batch(
     assert lifecycle.batch_upserts == 1
     assert meta.batch_calls == 1
     assert [row["status"] for row in meta.attempts] == ["succeeded", "succeeded"]
+
+
+def test_publish_many_logs_separate_raw_and_meta_phase_durations(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    service = _service(
+        MemoryObjectStore(), MemoryInventory(), MemoryMeta(), MemoryLifecycleBackend()
+    )
+
+    with caplog.at_level(logging.INFO):
+        service.publish_many([_scoped(tmp_path, b"hour-0", 0)], run_id="timed-run")
+
+    event = next(
+        record.message
+        for record in caplog.records
+        if record.message.startswith("weather_raw_publish_timings ")
+    )
+    metrics = json.loads(event.split("metrics_json=", 1)[1])
+    assert metrics["object_count"] == 1
+    assert set(metrics["phase_seconds"]) == {
+        "prepare_objects",
+        "inventory_commit",
+        "lifecycle_commit",
+        "attempts_commit",
+    }
+    assert all(seconds >= 0 for seconds in metrics["phase_seconds"].values())
 
 
 def test_revised_payload_gets_a_new_immutable_object(tmp_path: Path) -> None:

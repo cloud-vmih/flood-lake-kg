@@ -40,6 +40,12 @@ datasets:
   silver.basin_edge:
     description: "Directed downstream relationship and routing order for each basin version"
     quality_policy_id: silver_basin_topology-v1
+  silver.grid_basin_weight:
+    description: "Versioned area overlap between source-grid cells and L12 basins"
+    quality_policy_id: silver-weather-v1
+  silver.basin_weather_value:
+    description: "Canonical weather values aggregated by basin, source and revision"
+    quality_policy_id: silver-weather-v1
   quarantine.rejected_rows:
     description: "Row-level rejects retained with rule evidence for repair and replay"
     quality_policy_id: quarantine-row-rejection-v1

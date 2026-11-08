@@ -392,6 +392,8 @@ services:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?run make lakehouse-init}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run make lakehouse-init}
       AWS_REGION: us-east-1
+    volumes:
+      - ${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/staging/spark-checkpoints:/opt/flashflood/spark-checkpoints:z
     ports:
       - "127.0.0.1:8082:8081"
     healthcheck:
@@ -452,6 +454,7 @@ services:
       - ./config:/opt/flashflood/config:ro,Z
       - ./spark/jobs:/opt/spark/jobs:ro,Z
       - ./src:/opt/flashflood/src:ro,Z
+      - ${LAKEHOUSE_DATA_ROOT:-./dataset/lakehouse}/staging/spark-checkpoints:/opt/flashflood/spark-checkpoints:z
     depends_on:
       spark-master:
         condition: service_healthy

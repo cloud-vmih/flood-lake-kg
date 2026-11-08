@@ -80,6 +80,19 @@ class IcebergTableStore:
             raise ValueError(f"duplicate existing Meta key in {identifier[1]}")
         return None if not rows else rows[0]
 
+    def get_meta_rows(
+        self, identifier: tuple[str, str], key_field: str, values: Sequence[Any]
+    ) -> list[dict[str, Any]]:
+        """Read one Meta batch by a single business-key field."""
+        if (identifier[0] != "meta" and not identifier[0].startswith("smoke_")) or identifier[1] == "source_objects":
+            raise ValueError("get_meta_rows requires a mutable Meta table")
+        unique_values = tuple(dict.fromkeys(values))
+        if not unique_values:
+            return []
+        table = self.ensure_table(identifier)
+        table.refresh()
+        return table.scan(row_filter=In(key_field, unique_values)).to_arrow().to_pylist()
+
     def get_keyed_rows(
         self, identifier: tuple[str, str], key: Mapping[str, Any]
     ) -> list[dict[str, Any]]:
@@ -320,7 +333,38 @@ class IcebergTableStore:
         schema = table_schema(identifier)
         payload = pa.Table.from_pylist(requested, schema=schema)
         payload_rows = payload.to_pylist()
-        expression = _filters(keys)
+        run_ids = (
+            {row["pipeline_run_id"] for row in requested}
+            if identifier[1] == "quality_results" and "pipeline_run_id" in key_fields
+            else set()
+        )
+        run_scoped = len(run_ids) == 1
+        attempt_groups = (
+            {
+                (row["ingest_run_id"], row["source_id"], row["attempt_no"])
+                for row in requested
+            }
+            if identifier[1] == "ingest_attempts"
+            and key_fields == ("ingest_run_id", "source_id", "asset_id", "attempt_no")
+            else set()
+        )
+        # A batch's quality findings share one run. Keep the scan/overwrite
+        # predicate bounded instead of OR-ing every six-column finding key.
+        if run_scoped:
+            expression = EqualTo("pipeline_run_id", next(iter(run_ids)))
+        elif len(attempt_groups) == 1:
+            ingest_run_id, source_id, attempt_no = next(iter(attempt_groups))
+            expression = And(
+                And(EqualTo("ingest_run_id", ingest_run_id), EqualTo("source_id", source_id)),
+                And(
+                    EqualTo("attempt_no", attempt_no),
+                    In("asset_id", tuple(row["asset_id"] for row in requested)),
+                ),
+            )
+        elif len(key_fields) == 1 and len(keys) > 1:
+            expression = In(key_fields[0], tuple(key[key_fields[0]] for key in keys))
+        else:
+            expression = _filters(keys)
         table = self.ensure_table(identifier)
         last_error: CommitFailedException | None = None
         for _attempt in range(3):
@@ -335,6 +379,17 @@ class IcebergTableStore:
             payload_by_key = {
                 tuple(row[name] for name in key_fields): row for row in payload_rows
             }
+            if identifier[1] == "ingest_attempts":
+                for key, row in payload_by_key.items():
+                    stored = existing_by_key.get(key)
+                    if (
+                        stored is not None
+                        and stored["status"] == row["status"] == "succeeded"
+                        and stored["request_fingerprint"] == row["request_fingerprint"]
+                    ):
+                        # Fetch and Raw publication can report the same successful
+                        # attempt. Its first audit row is already durable.
+                        payload_by_key[key] = stored
             changed = any(
                 key in existing_by_key and existing_by_key[key] != row
                 for key, row in payload_by_key.items()
@@ -346,7 +401,11 @@ class IcebergTableStore:
                 return _snapshot_id(table)
             try:
                 if changed:
-                    table.overwrite(payload, overwrite_filter=expression)
+                    replacement = pa.Table.from_pylist(list(payload_by_key.values()), schema=schema)
+                    if run_scoped:
+                        merged = {**existing_by_key, **payload_by_key}
+                        replacement = pa.Table.from_pylist(list(merged.values()), schema=schema)
+                    table.overwrite(replacement, overwrite_filter=expression)
                 else:
                     table.append(pa.Table.from_pylist(missing, schema=schema))
             except CommitFailedException as error:

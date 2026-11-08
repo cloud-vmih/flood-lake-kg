@@ -17,3 +17,16 @@ def test_gateway_is_internal_and_part_of_spark_lifecycle() -> None:
     assert "SparkSubmitter" in source
     assert "TemporaryFile" in source
     assert "runner=_bounded_run" in source
+
+
+def test_spark_driver_and_worker_share_writable_checkpoint_staging() -> None:
+    import yaml
+
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    expected = "/opt/flashflood/spark-checkpoints:z"
+    for service in ("spark-worker", "spark-submit-gateway"):
+        volumes = compose["services"][service].get("volumes", [])
+        assert any(item.endswith(expected) for item in volumes)
+    bootstrap = (ROOT / "tools/bootstrap/init_lakehouse_env.sh").read_text(encoding="utf-8")
+    assert '"$LAKEHOUSE_DATA_ROOT/staging/spark-checkpoints"' in bootstrap
+    assert 'chmod 1777 "$LAKEHOUSE_DATA_ROOT/staging/spark-checkpoints"' in bootstrap

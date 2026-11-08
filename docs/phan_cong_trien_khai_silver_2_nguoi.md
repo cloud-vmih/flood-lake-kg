@@ -1,8 +1,9 @@
 # Phân công triển khai Bronze → Silver cho hai người
 
-> **Cập nhật 17/10/2026:** Phân công này chỉ bao gồm bốn pipeline Silver chuẩn bị triển khai.
-> Shared Spark foundation và basin topology không tính vào khối lượng bên dưới. Exposure network,
-> Gold, Knowledge Graph và các pipeline khác sẽ được phân công sau.
+> **Cập nhật 08/11/2026:** Weather đã hoàn thành implementation theo xác nhận người dùng;
+> Static Feature đang do teammate triển khai. Giữ phân công Người 1 River, Người 2 Flood Events.
+> Exposure đã tách bốn domain; [master plan hiện hành](superpowers/plans/2026-11-08-silver-remaining-pipelines.vi.md)
+> bổ sung trình tự và đề xuất owner ở mục 10. Shared foundation/Basin không tính lại.
 
 ## 1. Phạm vi và prerequisite
 
@@ -35,7 +36,11 @@ flowchart TB
     B --> S["Người 2: Basin static features"]
     B --> E["Người 2: Flood events"]
     F["Prerequisite: Flood Event Bronze"] --> E
-    R -. "để dành" .-> X["Exposure network: làm sau"]
+    B --> FC["Facilities"]
+    WP["WorldPop + AOI"] --> POP["Population"]
+    B --> RD["Road Network"]
+    RD --> X["River Crossings"]
+    R --> X
 ```
 
 Mỗi pipeline có một owner chính. Người còn lại review contract và cách sử dụng shared Spark,
@@ -51,7 +56,7 @@ không cùng sửa logic nghiệp vụ trên hai branch khác nhau.
 - DAG: `airflow/dags/silver_weather_aggregation.py`
 - Input chính:
   - `bronze.weather_raster_slice`;
-  - `bronze.source_grid`;
+  - `silver.source_grid`;
   - `silver.dim_basin`.
 - Output:
   - `silver.grid_basin_weight`;
@@ -219,7 +224,7 @@ test dữ liệu thật phải pin đúng basin snapshot.
 | --- | --- |
 | Static feature units, staging/derived-object ownership và flood-event revision/evidence semantics | Weather window/coverage/revision và river graph/basin relation |
 
-Sau bốn pipeline, team mới phân công Exposure Network và các pipeline tiếp theo.
+Sau bốn domain gốc, áp dụng kế hoạch tách Exposure tại mục 10; Gold/KG vẫn ngoài phạm vi.
 
 ## 6. Branch và thứ tự merge
 
@@ -319,11 +324,27 @@ Một pipeline chỉ được đánh dấu hoàn tất khi:
 
 Không nằm trong đợt phân công này:
 
-- Exposure network;
 - Gold feature/threat/routing;
 - Knowledge Graph và PostGIS serving;
 - API, dashboard và bản đồ;
 - embedding, vector database hoặc Qdrant.
 
-Exposure Network chỉ bắt đầu sau khi River Network ổn định vì nó cần river crossing và network
-version. Khi đó team sẽ lập phân công mới dựa trên tiến độ thực tế của bốn pipeline trên.
+Bốn domain Exposure đã được lập plan và đề xuất phân công tại mục 10. Chỉ River Crossings
+phải đợi River Network và Road Network; không dùng dependency đó để chặn Facilities/Population.
+
+## 10. Exposure tách domain — đề xuất phân công bổ sung 08/11/2026
+
+| Owner đề xuất | Pipeline | Plan |
+| --- | --- | --- |
+| Người 1, sau River | Road Network → River Crossings | [Road](superpowers/plans/2026-11-08-silver-road-network.vi.md), [Crossings](superpowers/plans/2026-11-08-silver-river-crossings.vi.md) |
+| Người 2, sau Static/Flood Events | Facilities → Population | [Facilities](superpowers/plans/2026-11-08-silver-facilities.vi.md), [Population](superpowers/plans/2026-11-08-silver-population.vi.md) |
+
+Đây là đề xuất owner cho phần mới, có thể đổi theo tiến độ. Facilities/Population không
+phụ thuộc River; chỉ Crossings cần cả Road và River hoàn tất. Không tạo DAG Exposure chung.
+Population dùng chung source-grid identity nhưng có population revision riêng; serialize writer
+bảng `source_grid` với weather. Không sửa package Static Feature đang làm để chuyển ownership
+population sang đó. Population per-grid và đặc trưng per-basin là hai output khác grain.
+
+Các yêu cầu dirty-window chi tiết ở mục Weather là gate nâng cao từ plan gốc, không có nghĩa
+runtime hiện tại đã thực hiện chúng: Weather hiện skip theo build/month manifest; khi input
+snapshot đổi có thể xét lại mọi tháng. Không đánh dấu tất cả checkbox cũ hoàn tất chỉ vì xong DAG.

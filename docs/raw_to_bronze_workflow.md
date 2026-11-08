@@ -266,7 +266,7 @@ Các DAG:
 | --- | --- | --- | --- |
 | `gsmap_now_ingest` | GSMaP Gauge NOW | phút 7 và 37 mỗi giờ | Một cửa sổ 1 giờ, planner bước 30 phút. |
 | `gsmap_standard_ingest` | GSMaP Gauge Standard | phút 27 mỗi 6 giờ | Một cửa sổ 1 giờ. |
-| `era5_land_ingest` | ERA5-Land reanalysis | 02:43 UTC hằng ngày | Một tháng lịch. |
+| `era5_land_ingest` | ERA5-Land reanalysis | 02:43 UTC hằng ngày | Một tháng lịch đến hết 09/2026; một ngày lịch từ 01/10/2026, sau độ trễ nguồn 5 ngày. |
 | `ifs_ingest` | IFS HRES qua Open-Meteo | phút 12 mỗi 6 giờ | Một model cycle 6 giờ chứa forecast horizon. |
 
 Các file DAG mỏng gọi factory chung tại [`pipelines/weather_ingest/airflow.py`](../src/flashflood_data/pipelines/weather_ingest/airflow.py). Policy từng nguồn nằm trong [`config/pipelines/weather/`](../config/pipelines/weather/).
@@ -327,7 +327,7 @@ Payload provider được tải vào staging, sau đó cắt về grid cell thu�
 | Source | Payload provider/staging | Raw được publish |
 | --- | --- | --- |
 | GSMaP | Binary gzip trên grid provider | NPZ deterministic gồm đúng hai array `cell_indices` và `values` của AOI. |
-| ERA5-Land | NetCDF theo request tháng/bbox | NetCDF chỉ giữ biến yêu cầu, các cell AOI và coordinate `cell_index`. |
+| ERA5-Land | NetCDF theo request tháng hoặc ngày/bbox | NetCDF chỉ giữ biến yêu cầu, các cell AOI và coordinate `cell_index`. |
 | IFS/Open-Meteo | JSON responses theo các grid point | JSON chỉ giữ response của grid point đã đăng ký và gắn `cell_index`. |
 
 Checksum và size của cả provider payload lẫn scoped payload được ghi trong manifest. Chỉ scoped payload được giữ làm Raw object chính trên MinIO.

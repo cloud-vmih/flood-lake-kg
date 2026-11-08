@@ -1,5 +1,13 @@
 # Kế hoạch triển khai mạng lưới phơi nhiễm ở Silver
 
+> **Thay thế ngày 08/11/2026:** Không triển khai DAG `silver_exposure_network` hoặc package
+> `silver_exposure` gom chung trong phần lịch sử bên dưới. Dùng [kế hoạch Silver còn lại](2026-11-08-silver-remaining-pipelines.vi.md)
+> và bốn plan [Facilities](2026-11-08-silver-facilities.vi.md),
+> [Population](2026-11-08-silver-population.vi.md),
+> [Road Network](2026-11-08-silver-road-network.vi.md),
+> [River Crossings](2026-11-08-silver-river-crossings.vi.md).
+> Chỉ Crossings bắt buộc có cả Road và River; ba domain kia không phải chờ River.
+
 > **Cập nhật runtime 10/10/2026:** Plan này giữ contract nghiệp vụ, schema, công thức và test domain.
 > Phần thực thi phải theo [kiến trúc Spark Bronze → Silver](../../spark_bronze_to_silver_architecture.md):
 > Airflow gọi `spark-submit`, Spark/Sedona transform + DQ + commit Iceberg, Python chỉ chạy job

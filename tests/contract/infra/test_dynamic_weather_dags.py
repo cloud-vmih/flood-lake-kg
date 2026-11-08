@@ -79,3 +79,17 @@ def test_dynamic_writers_have_dedicated_serial_pools() -> None:
     assert "airflow pools set weather_raw_writer 1" in compose
     assert "airflow pools set weather_bronze_writer 1" in compose
     assert "airflow pools set weather_fetch 4" in compose
+
+
+def test_cleanup_waits_for_every_mapped_raw_registration() -> None:
+    source = (ROOT / "src/flashflood_data/pipelines/weather_ingest/airflow.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    dependencies = {
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.BinOp)
+    }
+
+    assert "registered >> [raw_cleanup, staging_cleanup]" in dependencies

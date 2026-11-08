@@ -1,10 +1,14 @@
 """Immutable Raw publication for dynamic weather provider objects."""
 
 import json
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from time import perf_counter
 from typing import Protocol
 
 from flashflood_data.pipelines.static_landing.models import (
@@ -18,6 +22,23 @@ from flashflood_data.pipelines.weather_ingest.models import (
 )
 from flashflood_data.pipelines.weather_ingest.planner import matches_legacy_gsmap_rate_options
 from flashflood_data.storage.object_store import ObjectConflict, ObjectPublisher
+
+_LOGGER = logging.getLogger(__name__)
+_PUBLISH_PHASES = (
+    "prepare_objects",
+    "inventory_commit",
+    "lifecycle_commit",
+    "attempts_commit",
+)
+
+
+@contextmanager
+def _time_phase(timings: dict[str, float], phase: str) -> Iterator[None]:
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        timings[phase] += perf_counter() - started
 
 
 class _Inventory(Protocol):
@@ -261,35 +282,42 @@ class WeatherLandingService:
         prepared: list[_PreparedPublication] = []
         current = scoped_objects[0]
         started = datetime.now(UTC)
+        batch_started = perf_counter()
+        timings = {phase: 0.0 for phase in _PUBLISH_PHASES}
+        status = "failed"
         try:
-            for current in scoped_objects:
-                started = datetime.now(UTC)
-                prepared.append(self._prepare_publication(current, run_id=run_id))
-            batch = self.inventory.register_many([item.row for item in prepared])
-            self.lifecycle.register_many(
-                [
-                    (item.row.object_id, self.retention_class, item.published_at, run_id)
-                    for item in prepared
-                ]
-            )
+            with _time_phase(timings, "prepare_objects"):
+                for current in scoped_objects:
+                    started = datetime.now(UTC)
+                    prepared.append(self._prepare_publication(current, run_id=run_id))
+            with _time_phase(timings, "inventory_commit"):
+                batch = self.inventory.register_many([item.row for item in prepared])
+            with _time_phase(timings, "lifecycle_commit"):
+                self.lifecycle.register_many(
+                    [
+                        (item.row.object_id, self.retention_class, item.published_at, run_id)
+                        for item in prepared
+                    ]
+                )
             ended_at = datetime.now(UTC)
-            self.meta.record_attempts(
-                [
-                    {
-                        "ingest_run_id": run_id,
-                        "source_id": item.scoped.planned.source_id,
-                        "asset_id": item.scoped.planned.asset_id,
-                        "attempt_no": attempt_no,
-                        "request_fingerprint": item.scoped.planned.request_fingerprint,
-                        "status": "succeeded",
-                        "started_at": item.started_at,
-                        "ended_at": ended_at,
-                        "http_status": None,
-                        "error_code": None,
-                    }
-                    for item in prepared
-                ]
-            )
+            with _time_phase(timings, "attempts_commit"):
+                self.meta.record_attempts(
+                    [
+                        {
+                            "ingest_run_id": run_id,
+                            "source_id": item.scoped.planned.source_id,
+                            "asset_id": item.scoped.planned.asset_id,
+                            "attempt_no": attempt_no,
+                            "request_fingerprint": item.scoped.planned.request_fingerprint,
+                            "status": "succeeded",
+                            "started_at": item.started_at,
+                            "ended_at": ended_at,
+                            "http_status": None,
+                            "error_code": None,
+                        }
+                        for item in prepared
+                    ]
+                )
             results = tuple(
                 PublishedWeatherObject(
                     source_id=item.scoped.planned.source_id,
@@ -304,6 +332,7 @@ class WeatherLandingService:
                 )
                 for item in prepared
             )
+            status = "succeeded"
             return results
         except Exception as error:
             self.meta.record_attempt(
@@ -318,6 +347,24 @@ class WeatherLandingService:
                 error_code=type(error).__name__,
             )
             raise
+        finally:
+            metrics = {
+                "object_count": len(scoped_objects),
+                "prepared_count": len(prepared),
+                "reused_count": sum(item.reused for item in prepared),
+                "phase_seconds": {
+                    phase: round(timings[phase], 3) for phase in _PUBLISH_PHASES
+                },
+            }
+            _LOGGER.info(
+                "weather_raw_publish_timings source_id=%s run_id=%s status=%s "
+                "total_seconds=%.3f metrics_json=%s",
+                current.planned.source_id,
+                run_id,
+                status,
+                perf_counter() - batch_started,
+                json.dumps(metrics, sort_keys=True),
+            )
 
     def publish_and_register(
         self, scoped: ScopedWeatherObject, *, run_id: str, attempt_no: int = 1

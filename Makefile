@@ -1,4 +1,4 @@
-.PHONY: doctor bootstrap setup test lint lakehouse-aoi lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-dq-smoke lakehouse-init lakehouse-up lakehouse-all-up lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down query-ui-up query-ui-status query-ui-down spark-build spark-up spark-status spark-down spark-smoke dq-audit-plan
+.PHONY: doctor bootstrap setup test lint lakehouse-aoi lakehouse-python-setup lakehouse-build lakehouse-airflow-build lakehouse-python-smoke lakehouse-source-landing-smoke lakehouse-meta-bronze-smoke lakehouse-dq-smoke lakehouse-init lakehouse-up lakehouse-all-up lakehouse-all-down lakehouse-status lakehouse-smoke lakehouse-down query-up query-status query-smoke query-down query-ui-up query-ui-status query-ui-down spark-build spark-up spark-status spark-down spark-smoke dq-audit-plan
 MAKEFLAGS += --no-print-directory
 PYTHON ?= python3.11
 VENV_PYTHON := .venv/bin/python
@@ -56,7 +56,8 @@ lakehouse-up: lakehouse-init
 
 lakehouse-all-up: lakehouse-init
 	tools/bootstrap/check_docker_access.sh
-	docker compose --profile query --profile query-ui --profile spark up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor trino cloudbeaver spark-master spark-worker spark-submit-gateway
+	docker compose --profile query --profile query-ui --profile spark up -d --wait postgres minio polaris airflow-api-server airflow-scheduler airflow-dag-processor trino spark-master spark-worker spark-submit-gateway
+	docker compose --profile query --profile query-ui up -d --no-deps --force-recreate --wait cloudbeaver
 	docker compose run --no-deps --rm polaris-bootstrap
 
 lakehouse-status:
@@ -88,6 +89,10 @@ lakehouse-down:
 	tools/bootstrap/check_docker_access.sh
 	docker compose down
 
+lakehouse-all-down:
+	tools/bootstrap/check_docker_access.sh
+	docker compose --profile query --profile query-ui --profile spark down
+
 query-up: lakehouse-up
 	docker compose --profile query up -d --wait trino
 
@@ -107,7 +112,8 @@ query-down:
 
 query-ui-up: lakehouse-init
 	tools/bootstrap/check_docker_access.sh
-	docker compose --profile query --profile query-ui up -d --wait trino cloudbeaver
+	docker compose --profile query up -d --wait trino
+	docker compose --profile query --profile query-ui up -d --no-deps --force-recreate --wait cloudbeaver
 
 query-ui-status:
 	tools/bootstrap/check_docker_access.sh

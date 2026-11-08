@@ -30,7 +30,7 @@ hướng dẫn chạy lại pipeline đó.
 
 ## Trạng thái hiện tại
 
-Cập nhật ngày **20/10/2026**:
+Cập nhật ngày **08/11/2026** (số liệu Iceberg bên dưới là lần kiểm tra cũ, không phải số liệu Silver Weather):
 
 | Hạng mục | Trạng thái |
 | --- | --- |
@@ -42,6 +42,7 @@ Cập nhật ngày **20/10/2026**:
 | Spark/Sedona/Iceberg | Runtime local đã pin Spark 4.1.3, Scala 2.13, Java 17, Iceberg 1.11.0 và Sedona 1.9.1; Airflow submit qua gateway nội bộ và không chạy driver trong scheduler |
 | DQ/quarantine | Contract/policy/quarantine đã tích hợp vào Landing, Bronze và Silver basin; fatal chặn build, row reject vào quarantine và warning vẫn được publish có trạng thái |
 | Silver L12 | `silver_basin_topology` đã ghi `dim_basin` và `basin_edge` cho 179 basin thuộc AOI thủy văn Sơn La; Bronze vẫn giữ subset Việt Nam rộng hơn. Pipeline chọn revision, lọc AOI, normalize, dựng topology, DQ, MERGE và audit/lineage. |
+| Silver Weather | Đã smoke tháng 01–02/2020: 1.817 trọng số grid–basin và 1.805.759 dòng basin weather sau policy ưu tiên GSMaP; giữ 1.618 dòng mưa ERA5 fallback. Spark chạy từng tháng, retry dùng manifest. Chưa xác nhận toàn bộ backfill. |
 | GSMaP, ERA5-Land và IFS | Bốn DAG scoped Raw → Meta → Bronze đã hoàn tất; GSMaP Standard và ERA5-Land đã tối ưu giới hạn backfill, resume theo object thiếu và bốn fetch task song song; các DAG tạo mới đều pause |
 | Threat B0–B3, KG, routing và dashboard | Chưa triển khai |
 
@@ -110,6 +111,7 @@ make lakehouse-all-up
 make lakehouse-status
 make lakehouse-smoke
 make lakehouse-down
+make lakehouse-all-down
 ```
 
 `make lakehouse-all-up` bật cùng lúc stack cơ sở, Trino, CloudBeaver và Spark (master,
@@ -117,7 +119,9 @@ worker, submit gateway), đồng thời đăng ký catalog Polaris. Dùng sau kh
 máy mới. Lệnh chỉ khởi động các service chạy lâu dài; `spark-submit` là container chạy theo
 từng job nên không được bật thường trực. `make lakehouse-up` vẫn chỉ bật stack cơ sở.
 
-`make lakehouse-down` chỉ dừng container và network, không xóa state. Dữ liệu persistent nằm tại:
+`make lakehouse-down` dừng stack cơ sở. `make lakehouse-all-down` tắt toàn bộ service do
+`lakehouse-all-up` bật, gồm Trino, CloudBeaver và Spark. Cả hai lệnh giữ nguyên image,
+volume và dữ liệu để có thể bật lại. Dữ liệu persistent nằm tại:
 
 ```text
 dataset/lakehouse/postgres/
@@ -393,13 +397,18 @@ docker compose exec -T airflow-scheduler airflow dags trigger \
 | --- | --- | --- | ---: |
 | `gsmap_now_ingest` | phút 07 và 37 mỗi giờ | Gauge NOW v8 | 336 object = 7 ngày ở cadence 30 phút |
 | `gsmap_standard_ingest` | phút 27 mỗi 6 giờ | Gauge Standard v8 | 2.160 object = 90 ngày ở cadence 1 giờ |
-| `era5_land_ingest` | 02:43 hằng ngày | ERA5-Land hourly | 12 tháng hoàn chỉnh |
+| `era5_land_ingest` | 02:43 hằng ngày | ERA5-Land hourly | Tối đa 12 file tháng lịch sử và 12 file ngày gần hiện tại cho mỗi run |
 | `ifs_ingest` | phút 12 mỗi 6 giờ | IFS HRES Single Runs | 28 cycle |
 
 Schedule chỉ đánh thức DAG. Planner đọc watermark theo cả product và `spatial_scope_id`, lập các
 cửa sổ còn thiếu tới mốc an toàn của provider, rồi đối chiếu inventory Raw. Vì `catchup=False`,
 Airflow không sinh hàng loạt DAG run cho lúc Docker tắt; application tự bù dữ liệu thiếu khi stack
 chạy lại. Backfill explicit không đẩy cursor operational.
+ERA5-Land dùng file tháng đến hết 09/2026, sau đó dùng file ngày từ 01/10/2026. Stream ngày
+chỉ yêu cầu những ngày đã qua mốc trễ khoảng 5 ngày của nguồn; các ngày mới xuất hiện được bổ
+sung ở run sau. CDS không có giờ công bố cố định, nên request chưa sẵn sàng sẽ được retry và
+run kế tiếp tiếp tục từ watermark. Hai stream có watermark riêng, nên không cần chờ hết tháng
+để ingest tháng hiện tại.
 
 Luồng của mỗi DAG:
 
@@ -443,9 +452,12 @@ Sau khi review Meta/quarantine, trigger DAG với `mode=apply` cho batch nhỏ. 
 dataset, input snapshot, policy và object nên có thể chạy tiếp mà không làm lại object đã apply.
 Chi tiết xem [runbook DQ/quarantine](docs/runbooks/data_quality_and_quarantine.md).
 
-ERA5-Land Bronze giữ accumulation gốc từ 00 UTC; de-accumulate theo giờ thuộc Silver tương lai.
-`silver.grid_basin_weight` và `silver.basin_weather_value` chưa triển khai; hiện chưa có bước
+ERA5-Land Bronze giữ accumulation gốc từ 00 UTC; Silver Weather đổi thành lượng theo giờ rồi
 aggregate raster slice theo basin.
+`silver.grid_basin_weight` và `silver.basin_weather_value` đã có code Spark/DAG và schema;
+đã smoke trên stack và có dữ liệu Silver. Implementation hoàn tất theo xác nhận ngày 08/11;
+nghiệm thu backfill của mỗi run xem log/Meta. Xem
+[Silver Weather](src/flashflood_data/pipelines/silver_weather/README.md) trước khi chạy.
 
 Build lại image sau khi pull code vì Airflow cần thêm `cdsapi`:
 
@@ -481,11 +493,12 @@ docker compose exec -T airflow-scheduler airflow dags trigger gsmap_standard_ing
 ```
 
 `max_objects` trong DAG conf cho phép override giới hạn của một run. Mặc định GSMaP Standard xử
-lý 2.160 object giờ, tương đương 90 ngày; ERA5-Land xử lý 12 object tháng. Trong
-`mode=backfill`, planner loại object immutable đã có trước khi áp giới hạn và không replay overlap,
+lý 2.160 object giờ, tương đương 90 ngày; ERA5-Land xử lý tối đa 12 file mỗi stream
+(tháng lịch sử và ngày gần hiện tại). Trong `mode=backfill`, planner loại object immutable đã có
+trước khi áp giới hạn và không replay overlap,
 nên trigger lại cùng khoảng sẽ lấy tiếp phần còn thiếu. Catch-up operational vẫn giữ overlap để
-nhận revision: GSMaP Standard tiến ròng khoảng 87 ngày/run và ERA5-Land khoảng 11 tháng/run khi
-đang bù lịch sử.
+nhận revision: GSMaP Standard tiến ròng khoảng 87 ngày/run; stream tháng ERA5-Land tiến ròng
+khoảng 11 tháng/run khi đang bù lịch sử.
 
 Backfill cả khoảng có thể được trigger lại cho tới khi không còn object thiếu:
 
@@ -503,10 +516,27 @@ bốn và retry exponential backoff tối đa 30 phút. Mỗi fetch task ghi aud
 staging; task
 `commit_fetch_attempts` dùng `weather_raw_writer` một slot để commit toàn bộ audit vào Iceberg một
 lần. Publish Raw/Meta theo batch và Bronze dùng các writer pool một slot để tránh commit xung đột.
+Mỗi batch Raw/Meta tra lifecycle theo danh sách `object_id` trong một lần đọc. Log
+`weather_raw_publish_timings` tách thời gian chuẩn bị/upload object, commit inventory,
+commit lifecycle và commit ingest attempts để theo dõi hiệu năng. Khi ghi `meta.ingest_attempts`,
+batch đồng nhất run/source/attempt được tra theo danh sách `asset_id`, tránh bộ lọc OR cho từng
+khóa bốn cột. Nếu fetch đã ghi một attempt `succeeded` cùng request fingerprint, bước publish
+Raw giữ nguyên audit đó; bằng chứng publish nằm ở `meta.source_objects` và lifecycle. Nhờ vậy
+không phải overwrite bảng `ingest_attempts` cho từng batch thành công.
 Provider payload và bản scoped được giữ trong staging riêng theo pipeline/run để retry cả batch
-không mất input; task `cleanup_weather_staging` chỉ dọn chúng sau khi run đã kết thúc.
-Bronze cũng gom GSMaP Standard theo 24 object và NOW theo 48 object trong một mapped task; mỗi
+không mất input; task `cleanup_weather_staging` đợi toàn bộ task `register_raw_and_meta`
+và Bronze kết thúc trước khi dọn staging. Nếu run cũ đã dọn staging trong lúc task Raw còn chạy,
+hãy kết thúc run đó rồi trigger run mới sau khi build lại image Airflow; không clear riêng các
+task Raw của run cũ.
+Bronze cũng gom GSMaP Standard theo 96 object và NOW theo 48 object trong một mapped task; mỗi
 batch tạo một snapshot nhưng DQ, lineage và lifecycle vẫn được ghi theo từng `object_id`.
+Task `parse_bronze` ghi một dòng `weather_bronze_phase_timings` vào Airflow log và lưu
+`phase_seconds` trong `meta.pipeline_runs.metrics_json`: tra inventory, tra source grid, đọc Raw
+từ MinIO, kiểm checksum, parse, quality, audit trước commit, commit Bronze và audit sau commit.
+Audit sau commit còn được đo riêng theo snapshot ref, quality results, lineage edges và lifecycle
+evidence; `quality_result_count` cho biết số finding được ghi trong batch.
+Các thời gian là tổng theo batch (giây); `total_seconds` trong log còn gồm những thao tác ngoài
+các pha đo và lần ghi trạng thái run cuối cùng.
 Hiện `publish_bronze_update`
 vẫn chạy sau khi nhóm Bronze thành công kể cả khi danh sách object cần parse rỗng; downstream về
 sau phải dựa vào snapshot/lineage hoặc reconciliation, không dùng asset event làm nguồn sự thật.
@@ -622,6 +652,20 @@ docker compose exec -T airflow-api-server airflow dags trigger silver_basin_topo
 DAG manual này pin một Bronze snapshot, chọn đúng hai source revision, rồi build/repair/skip theo
 build signature. Dataset registry, output snapshots, DQ và lineage được ghi vào Meta trong cùng flow.
 
+`silver_weather_aggregation` đã được thêm dưới dạng DAG manual, mặc định paused. DAG pin snapshot
+Bronze weather, source grid và basin L12; Spark/Sedona tính trọng số giao còn thiếu, chuẩn hóa
+đơn vị/window, aggregate theo basin, DQ và MERGE. Runtime submit một application trọng số,
+rồi lần lượt một application cho mỗi tháng có dữ liệu trong snapshot Bronze. ERA5 đầu tháng
+đọc thêm giờ cuối tháng trước để tính sai phân; batch hoàn tất có manifest trong
+`staging/silver/silver_weather_aggregation/` để retry bỏ qua. Đã kiểm tra hai tháng trên stack
+thật; toàn bộ backfill vẫn cần theo dõi đến khi Meta ghi `succeeded`.
+
+Policy Silver ưu tiên mưa GSMaP hợp lệ theo đúng basin/version/window. Mưa ERA5 chỉ
+giữ làm fallback khi GSMaP thiếu hoặc không đạt coverage/chất lượng; giá trị GSMaP
+0 mm vẫn hợp lệ. Sau khi publish GSMaP, application dọn các dòng mưa ERA5 dư trong
+tháng rồi mới ghi manifest thành công. NOW/Standard và các window lệch 30 phút vẫn
+được giữ riêng. Raw/Bronze, runoff và soil moisture không bị xóa bởi policy này.
+
 Kiến trúc và lộ trình chi tiết nằm tại
 [docs/spark_bronze_to_silver_architecture.md](docs/spark_bronze_to_silver_architecture.md).
 
@@ -636,7 +680,8 @@ Kiến trúc và lộ trình chi tiết nằm tại
 │   ├── gsmap_standard_ingest.py       # GSMaP Standard scoped Raw → Bronze
 │   ├── era5_land_ingest.py            # ERA5-Land Raw → Bronze
 │   ├── ifs_ingest.py                  # IFS/Open-Meteo Raw → Bronze
-│   └── silver_basin_topology.py       # Bronze basin → Silver dimension + graph
+│   ├── silver_basin_topology.py       # Bronze basin → Silver dimension + graph
+│   └── silver_weather_aggregation.py  # Bronze weather → Silver basin values
 ├── config/
 │   ├── study_area.yaml                # L12, upstream hops, buffer và CRS
 │   ├── sources/*.yaml                 # Adapter, version và policy của nguồn
@@ -653,6 +698,7 @@ Kiến trúc và lộ trình chi tiết nằm tại
 │   ├── pipelines/static_landing/      # Landing flow, runtime và source adapters
 │   ├── pipelines/static_bronze/       # Discover, parse, quality và reconcile
 │   ├── pipelines/weather_ingest/      # Planner, provider, Raw/Bronze và DAG factory
+│   ├── pipelines/silver_weather/       # Spark normalize/weights/aggregate, DQ, runtime và DAG
 │   ├── pipelines/quality_migration/    # Audit/apply DQ cho Bronze cũ, không fetch provider
 │   ├── pipelines/flood_events/        # Parser/event logic đã tách khỏi static; DAG chưa có
 │   ├── pipelines/silver_static_features/ # Kernel DEM/soil/landcover/population cho Silver
@@ -683,6 +729,7 @@ Mỗi file trong `airflow/dags/` chỉ là entrypoint mỏng. Đọc code theo p
 - [Dynamic weather ingest](src/flashflood_data/pipelines/weather_ingest/README.md)
 - [Study area L12](src/flashflood_data/pipelines/study_area/README.md)
 - [Silver basin topology và normalize](src/flashflood_data/pipelines/silver_basin/README.md)
+- [Silver Weather aggregation](src/flashflood_data/pipelines/silver_weather/README.md)
 - [Silver static feature kernels](src/flashflood_data/pipelines/silver_static_features/README.md)
 - [Flood events](src/flashflood_data/pipelines/flood_events/README.md)
 - [Shared và storage](src/flashflood_data/shared/README.md)
@@ -707,10 +754,18 @@ Thứ tự triển khai dự kiến:
 
 1. Đối chiếu `silver_basin_topology` sau mỗi revision/AOI mới; build lại image Airflow trước khi trigger sau khi đổi code Python.
 2. Chạy `bronze_quality_backfill` ở `mode=audit` theo từng bảng, review reject/fatal rồi mới apply.
-3. Xây `silver_weather_aggregation` bằng Spark để kiểm chứng workload lớn và incremental load.
-4. Xây static features theo Spark planner/publisher + Python hydrology raster.
-5. Xây river network và flood event theo các Spark domain job riêng.
-6. Xây exposure, Gold, threat B0–B3, Knowledge Graph, routing, API và dashboard.
+3. Weather Aggregation đã hoàn tất implementation theo xác nhận người dùng; đối chiếu
+   backfill/DQ từng run trước khi dùng làm nguồn Gold, không giao lại implementation.
+4. Teammate đang xây Static Feature theo Spark planner/publisher + Python hydrology raster.
+5. Xây River Network và hai DAG Flood Events (mention → event/basin).
+6. Tách Exposure thành bốn DAG: Facilities, Population, Road Network, River Crossings.
+   Chỉ Crossings cần cả Road và River hoàn tất. Không tạo DAG Exposure gom chung.
+7. Gold, threat B0–B3, Knowledge Graph, routing, API và dashboard sau các input Silver cần thiết.
+
+Kế hoạch cập nhật **08/11/2026**, kèm plan riêng theo từng file cho bốn DAG mới:
+[Hoàn thiện Silver](docs/superpowers/plans/2026-11-08-silver-remaining-pipelines.vi.md).
+Ngoài Static đang làm còn sáu nhóm domain / bảy DAG Silver; pipeline Landing/Bronze
+event không nằm trong số này.
 
 Runbook kiểm tra/reprocess nằm tại
 [`docs/runbooks/data_quality_and_quarantine.md`](docs/runbooks/data_quality_and_quarantine.md).
@@ -718,6 +773,8 @@ Runbook kiểm tra/reprocess nằm tại
 Schema contract hiện tại nằm tại [docs/schema_contract/data.md](docs/schema_contract/data.md).
 Tổng quan pipeline và kế hoạch tiếp theo nằm tại
 [docs/pipeline_architecture_and_roadmap.md](docs/pipeline_architecture_and_roadmap.md).
+Nhật ký nguyên nhân, thay đổi và số đo tối ưu từng DAG nằm tại
+[docs/pipeline_performance_optimization_log.md](docs/pipeline_performance_optimization_log.md).
 Quyết định runtime Silver nằm tại
 [docs/spark_bronze_to_silver_architecture.md](docs/spark_bronze_to_silver_architecture.md).
 

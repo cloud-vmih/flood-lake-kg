@@ -1,5 +1,10 @@
 # Bronze to Silver Pipelines Design
 
+> **Exposure update 2026-11-08:** The combined Exposure design below is historical.
+> Use the [split-domain specification](2026-11-08-silver-exposure-split-design.vi.md)
+> and [remaining Silver roadmap](../plans/2026-11-08-silver-remaining-pipelines.vi.md).
+> Flood Events follows the [2026-10-09 plan](../plans/2026-10-09-flood-event-silver.vi.md), with mentions and no document chunks.
+
 > **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
 > tests. Execution follows the authoritative
 > [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow

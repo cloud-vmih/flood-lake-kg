@@ -42,28 +42,27 @@ Mỗi pipeline có package, cấu hình, DAG và test riêng. Phần dùng chung
 3. Basin static features.
 4. Weather basin aggregation.
 5. River network.
-6. Exposure network.
-7. Flood event to basin.
+6. Facilities, Population, Road Network và River Crossings (bốn pipeline riêng).
+7. Flood Event Mentions → Flood Events/Basin (hai DAG).
 
-### 2.2 Tạm hoãn
+### 2.2 Tạm hoãn và cập nhật scope
 
 - Gold, serving, PostGIS projection và KG.
-- Qdrant, embedding và semantic search.
-- `silver.source_document`.
-- `silver.document_chunk`.
-- `silver.event_evidence`.
-- Pipeline trích xuất tài liệu/OCR/NER.
+- Qdrant, embedding, semantic search và `silver.document_chunk`.
+- OCR/model NLP nâng cao có thể bổ sung sau rule extractor; không chặn pilot Events có evidence.
 
-Trong đợt này, flood event chỉ tạo `silver.observed_flood_event` và `silver.event_basin`. `observed_flood_event.source_document_id` và `event_basin.evidence_id` để `null`. Ba bảng tài liệu vẫn có thể được giữ trong contract dài hạn nhưng không xuất hiện trong DAG, code runtime hay task triển khai Silver hiện tại.
-
-Pipeline flood event Silver cần `bronze.historical_event_raw` làm đầu vào. Việc thu thập và parse nguồn flood event thành bảng Bronze này thuộc pipeline flood event landing/bronze riêng, không được ghép lại vào hai DAG static hiện có.
+Từ plan 09/10, `source_document`, `flood_event_mention`, `event_evidence` đã thuộc
+Silver Flood Events, không còn bị hoãn như thiết kế hai bảng ngày 30/09.
+DAG mention chuẩn hóa full text/revision và evidence span; DAG event hợp nhất và gán basin.
+Input là `bronze.historical_event_raw` và/hoặc `bronze.news_article_raw`.
+Landing/Bronze cho nguồn event là pipeline riêng, không ghép trở lại hai DAG static.
 
 `bronze.admin_boundary_raw` chưa có bảng dimension Silver tương ứng trong contract hiện tại. Nó chỉ được dùng như lookup tùy chọn để QA địa danh và hỗ trợ gán flood event vào basin; pipeline này không tự tạo thêm một bảng Silver ngoài contract.
 
 Hai chi tiết contract được chốt khi viết implementation plan:
 
 - Derived hydrology raster không được ghi vào `meta.source_objects` vì bảng đó chỉ kiểm kê Raw. Static-feature plan bổ sung `meta.derived_objects` và `object_kind` trong `silver.basin_feature_lineage` để phân biệt raw source với derived asset.
-- `silver.source_grid` là registry grid không gian dùng chung. Weather ingest tiếp tục đăng ký grid thời tiết; exposure pipeline dùng cùng registrar để bổ sung grid WorldPop trước khi ghi `silver.population_grid`.
+- `silver.source_grid` là registry grid không gian dùng chung. Weather ingest tiếp tục đăng ký grid thời tiết; Population dùng chung primitive identity nhưng Spark writer riêng để bổ sung WorldPop. Hai pipeline phải serialize commit `source_grid`, không dùng Python registrar để ghi Population Silver.
 
 ## 3. Trạng thái đầu vào trước khi triển khai
 
@@ -101,22 +100,33 @@ flowchart TB
   R --> RE["silver.river_reach_edge"]
   R --> RB["silver.river_basin"]
 
-  OF["bronze.osm_feature_raw"] --> X["Exposure pipeline"]
-  POP["WorldPop Bronze raster"] --> X
-  DB --> X
+  OF["bronze.osm_feature_raw"] --> F["Facilities"]
+  OF --> RD["Road Network"]
+  POP["WorldPop Bronze raster + AOI"] --> P["Population"]
+  DB --> F
+  DB --> RD
+  RD --> X["River Crossings"]
   DR --> X
-  X --> XT["Facility, population, road and crossing tables"]
+  F --> FT["dim_facility + facility_basin"]
+  P --> PT["population_grid + source_grid"]
+  RD --> RT["road node/edge + road_basin"]
+  X --> CT["river_crossing"]
 
-  HE["bronze.historical_event_raw"] --> E["Flood event pipeline"]
+  HE["Bronze historical/news"] --> EM["Flood Event Mentions"]
+  EM --> E["Silver Flood Events"]
   DB --> E
-  E --> OE["silver.observed_flood_event"]
-  E --> EB["silver.event_basin"]
+  E --> OE["observed_flood_event + event_evidence"]
+  E --> EB["event_basin"]
 
   C --> B
   C --> SF
   C --> W
   C --> R
+  C --> F
+  C --> P
+  C --> RD
   C --> X
+  C --> EM
   C --> E
 ```
 
@@ -124,15 +134,15 @@ Dependency bắt buộc:
 
 ```text
 shared foundation
-  -> basin topology
-       -> static features
-       -> weather aggregation
-       -> river network
-            -> exposure network
-       -> flood event
+  -> basin topology -> static features / weather / river / facilities / road
+  -> population (WorldPop Bronze + AOI)
+  -> flood event mentions (Bronze evidence) -> flood events (+ basin)
+road + river completed bundles -> river crossings
 ```
 
-Static features, weather và river có thể triển khai độc lập sau basin. Exposure cần cả basin và river. Flood event chỉ cần basin và Bronze event.
+Static/weather/river/facilities/road phát triển độc lập sau basin. Population
+không cần River/Static. Chỉ River Crossings cần cả Road và River hoàn tất.
+Chi tiết rollout mới theo [master plan](../plans/2026-11-08-silver-remaining-pipelines.vi.md).
 
 ## 5. Quy tắc tổ chức code
 
@@ -386,8 +396,9 @@ src/flashflood_data/pipelines/silver_weather/
 | `config.py` | Variable units, aggregation type, coverage threshold, geometry version và batch size. | Factory/service. | YAML + Pydantic. |
 | `models.py` | Weight row, basin value row và aggregation report. | Toàn domain. | Common models. |
 | `reader.py` | Discover slice revisions chưa xử lý; đọc aligned `cell_indices`/`values`, source grid và basin snapshot. | `pipeline.py`. | Iceberg store. |
-| `weights.py` | Overlay grid cell với basin trong equal-area CRS và sinh hai loại weight. | `pipeline.py`. | GeoPandas/Shapely/PyProj; không biết weather value. |
-| `aggregate.py` | Ánh xạ array value theo `cell_index`, bỏ nodata đúng cách, tính weighted value và coverage. | `pipeline.py`. | NumPy/PyArrow + weight rows. |
+| `weights.py` | Overlay grid cell với basin trong equal-area CRS và sinh hai loại weight. | `pipeline.py`. | Spark/Sedona; không biết weather value. |
+| `normalize.py` | Đổi tên biến, unit và cửa sổ theo source; de-accumulate ERA5 theo mốc giờ liền trước. | `pipeline.py`, trước `aggregate.py`. | Spark SQL, Bronze slices. |
+| `aggregate.py` | Ánh xạ array value theo `cell_index`, bỏ nodata đúng cách, tính weighted value và coverage. | `pipeline.py`. | Spark SQL + weight rows đã version. |
 | `revisions.py` | Giữ NOW/Standard/ERA5/IFS là observation riêng, tạo business key/revision và quy tắc exact-window preference metadata. | `pipeline.py`. | Common versioning. |
 | `quality.py` | Tổng trọng số, orphan cell, coverage, unit/window, NaN/nodata, uniqueness. | `pipeline.py`. | Shared DQ. |
 | `pipeline.py` | Ensure/reuse weights, aggregate missing slices theo batch, publish và audit. | DAG. | Domain modules + common. |
@@ -460,71 +471,31 @@ tests/unit/silver/river/
 tests/integration/silver/test_river_pipeline.py
 ```
 
-## 11. Kế hoạch 5 — Exposure network
+## 11. Exposure — tách bốn pipeline từ 08/11/2026
 
-### 11.1 Input và output
+Phần thiết kế gom chung cũ được thay bằng
+[thiết kế Exposure tách domain](2026-11-08-silver-exposure-split-design.vi.md).
+Không tạo `silver_exposure_network.py` hay package `silver_exposure`.
 
-| Input | Output |
-| --- | --- |
-| `bronze.osm_feature_raw` đã lọc nhóm phục vụ lũ | `silver.dim_facility`, `silver.facility_basin` |
-| WorldPop Bronze raster coverage/object | `silver.population_grid` |
-| `silver.dim_basin` | `silver.dim_road_node`, `silver.dim_road_edge`, `silver.road_basin` |
-| `silver.dim_river_reach` | `silver.river_crossing` |
+| DAG | Output | Plan riêng |
+| --- | --- | --- |
+| `silver_facilities` | `dim_facility`, `facility_basin` | [Facilities](../plans/2026-11-08-silver-facilities.vi.md) |
+| `silver_population` | `population_grid`, bổ sung `source_grid` | [Population](../plans/2026-11-08-silver-population.vi.md) |
+| `silver_road_network` | `dim_road_node`, `dim_road_edge`, `road_basin` | [Road](../plans/2026-11-08-silver-road-network.vi.md) |
+| `silver_river_crossings` | `river_crossing` | [Crossings](../plans/2026-11-08-silver-river-crossings.vi.md) |
 
-### 11.2 File production
-
-```text
-config/silver/exposure_network.yaml
-airflow/dags/silver_exposure_network.py
-src/flashflood_data/pipelines/silver_exposure/
-  __init__.py
-  config.py
-  models.py
-  reader.py
-  osm_tags.py
-  facilities.py
-  roads.py
-  population.py
-  basin_overlay.py
-  crossings.py
-  quality.py
-  pipeline.py
-  runtime.py
-```
-
-| File | Trách nhiệm | Được gọi bởi | Gọi / phụ thuộc |
-| --- | --- | --- | --- |
-| `config.py` | Facility/tag allowlist, road classes, graph/overlay versions, population semantics. | Factory/service. | YAML + Pydantic. |
-| `models.py` | Facility, population cell, road node/edge, relation, crossing row. | Domain modules. | Common models. |
-| `reader.py` | Đọc OSM, WorldPop, basin và river snapshots. | Service. | Iceberg/object store. |
-| `osm_tags.py` | Chuẩn hóa tag và quyết định facility/road classification. | Facilities/roads. | Config only. |
-| `facilities.py` | Stable ID, geometry và critical facility attributes. | Service. | `osm_tags.py`. |
-| `roads.py` | Tạo graph node/edge, oneway, bridge/tunnel, length và base travel time. | Service. | `osm_tags.py`, geometry library. |
-| `population.py` | Đọc raster population và tạo grid/value theo năm tham chiếu. | Service. | Raster reader; không suy children/elderly nếu nguồn không có. |
-| `basin_overlay.py` | Gán facility/road/population grid với basin. | Service. | Basin rows + spatial index. |
-| `crossings.py` | Phát hiện road-river intersection và phân biệt bridge/ford/unknown. | Service. | Road + river outputs. |
-| `quality.py` | Stable key, graph endpoint, geometry, tag allowlist, basin assignment và false crossing checks. | Service. | Shared DQ. |
-| `pipeline.py` | Điều phối compute batches và publish từng bảng qua một writer/table. | DAG. | Domain + common. |
-| `runtime.py` | Tạo exposure service. | DAG. | Common factory. |
-
-Không tạo một service duy nhất chứa toàn bộ OSM. Facility, road và crossing giữ module riêng nhưng chung một DAG vì cùng snapshot OSM và cùng version graph. Nếu runtime thực tế quá lớn, DAG có thể tách task group/publish phase mà không đổi package hay contract.
-
-### 11.3 Test
-
-```text
-tests/unit/silver/exposure/
-  test_osm_tags.py
-  test_facilities.py
-  test_roads.py
-  test_population.py
-  test_basin_overlay.py
-  test_crossings.py
-  test_quality.py
-  test_pipeline.py
-tests/integration/silver/test_exposure_pipeline.py
-```
+Facilities và Road cần OSM + basin; Population cần WorldPop + AOI; Crossings cần
+Road + River hoàn tất. Chỉ Crossings chờ River. Các package riêng dùng chung
+`shared/spark/`; primitive grid thuần được tách có regression weather, không dùng
+Python registrar weather để ghi Population Silver. Chi tiết từng file/interface,
+quality, repair và test nằm trong plan riêng.
 
 ## 12. Kế hoạch 6 — Flood event to basin
+
+> **Thay thế bởi plan 09/10/2026:** [Flood Event Mention → Event/Basin](../plans/2026-10-09-flood-event-silver.vi.md)
+> triển khai hai DAG, có versioned `source_document`, `flood_event_mention` và
+> `event_evidence` theo mention. Phần hai bảng phía dưới chỉ là thiết kế lịch sử;
+> không dùng nó để loại bỏ document/mention khỏi scope hiện tại. Không làm document chunk/Qdrant.
 
 ### 12.1 Input và output
 
@@ -617,7 +588,9 @@ DQ chung kiểm tra schema, primary/business key, null contract và commit row c
 
 ## 16. Thứ tự tạo implementation plan
 
-Sau khi tài liệu thiết kế này được duyệt, tạo bảy plan độc lập trong `docs/superpowers/plans/` theo thứ tự:
+Danh sách plan gốc dưới đây là lịch sử ngày 30/09. Kế hoạch hiện hành và thứ tự
+bàn giao theo [Silver còn lại](../plans/2026-11-08-silver-remaining-pipelines.vi.md);
+Exposure đã tách bốn plan và Flood Events dùng plan 09/10. Các plan gốc:
 
 1. `2026-09-30-silver-common-foundation.md`
 2. `2026-09-30-silver-basin-topology.md`

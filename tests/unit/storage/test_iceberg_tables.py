@@ -45,11 +45,13 @@ class _Table:
         self.appends = 0
         self.fail_next_overwrites = 0
         self.fail_next_appends = 0
+        self.scan_filters: list[object] = []
 
     def refresh(self) -> None:
         pass
 
     def scan(self, *, row_filter: object) -> _Scan:
+        self.scan_filters.append(row_filter)
         return _Scan(self, row_filter)
 
     def overwrite(self, data: pa.Table, *, overwrite_filter: object) -> None:
@@ -245,6 +247,172 @@ def test_meta_batch_upsert_commits_many_keys_once_and_preserves_other_rows() -> 
         "tile-1",
         "tile-2",
     }
+
+
+def test_quality_result_batch_uses_bounded_run_filter_and_preserves_retry_rows() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("meta", "quality_results")
+    keys = (
+        "pipeline_run_id",
+        "check_phase",
+        "dataset_id",
+        "rule_id",
+        "rule_version",
+        "scope_key",
+    )
+
+    def result(run_id: str, scope_key: str, phase: str = "post_commit") -> dict[str, object]:
+        return {
+            "pipeline_run_id": run_id,
+            "check_phase": phase,
+            "dataset_id": "bronze.weather_raster_slice",
+            "rule_id": "source_grid_complete",
+            "rule_version": "v1",
+            "scope_key": scope_key,
+            "severity": "fatal",
+            "status": "passed",
+            "observed_value_json": None,
+            "expected_value_json": None,
+            "failed_row_count": None,
+            "sample_uri": None,
+            "snapshot_table": "bronze.weather_raster_slice",
+            "snapshot_id": 7,
+            "checked_at": datetime(2026, 10, 24, tzinfo=UTC),
+        }
+
+    store.upsert_meta_rows(identifier, keys, [result("other-run", "other")])
+    store.upsert_meta_rows(identifier, keys, [result("run-a", "pre", "pre_commit")])
+    table = catalog.tables[identifier]
+    table.scan_filters.clear()
+    rows = [result("run-a", f"slice-{index}") for index in range(300)]
+
+    store.upsert_meta_rows(identifier, keys, rows)
+
+    assert len(table.scan_filters) == 1
+    assert isinstance(table.scan_filters[0], EqualTo)
+    assert table.scan_filters[0].term.name == "pipeline_run_id"
+    assert table.scan_filters[0].literal.value == "run-a"
+
+    changed = {**rows[0], "status": "failed"}
+    store.upsert_meta_rows(identifier, keys, [changed])
+    store.upsert_meta_rows(identifier, keys, [changed])
+    assert len(table.rows) == 302
+    assert next(row for row in table.rows if row["scope_key"] == "slice-0")["status"] == "failed"
+    assert {row["scope_key"] for row in table.rows} >= {"other", "pre", "slice-299"}
+
+
+def test_lifecycle_batch_uses_one_in_filter_for_read_and_upsert() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("meta", "object_lifecycle")
+
+    def lifecycle_row(object_id: str) -> dict[str, object]:
+        return {
+            "object_id": object_id,
+            "retention_class": "durable",
+            "storage_status": "available",
+            "expires_at": None,
+            "bronze_snapshot_id": None,
+            "quality_status": "pending",
+            "lineage_edge_id": None,
+            "deleted_at": None,
+            "last_checked_at": datetime(2026, 10, 27, tzinfo=UTC),
+            "reason": None,
+        }
+
+    store.upsert_meta_rows(identifier, ("object_id",), [lifecycle_row("a"), lifecycle_row("b")])
+    table = catalog.tables[identifier]
+    assert isinstance(table.scan_filters[-1], In)
+    table.scan_filters.clear()
+
+    rows = store.get_meta_rows(identifier, "object_id", ["a", "missing", "b"])
+
+    assert {row["object_id"] for row in rows} == {"a", "b"}
+    assert len(table.scan_filters) == 1
+    assert isinstance(table.scan_filters[0], In)
+
+
+def test_ingest_attempt_batch_filters_assets_without_rewriting_other_attempts() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("meta", "ingest_attempts")
+    keys = ("ingest_run_id", "source_id", "asset_id", "attempt_no")
+
+    def attempt(run_id: str, asset_id: str, number: int = 1) -> dict[str, object]:
+        return {
+            "ingest_run_id": run_id,
+            "source_id": "gsmap",
+            "asset_id": asset_id,
+            "attempt_no": number,
+            "request_fingerprint": f"fingerprint-{asset_id}",
+            "http_status": None,
+            "error_code": None,
+            "started_at": datetime(2026, 10, 27, tzinfo=UTC),
+            "ended_at": datetime(2026, 10, 27, tzinfo=UTC),
+            "status": "succeeded",
+        }
+
+    store.upsert_meta_rows(identifier, keys, [attempt("other-run", "hour-0")])
+    store.upsert_meta_rows(identifier, keys, [attempt("run-a", "hour-0", 2)])
+    table = catalog.tables[identifier]
+    table.scan_filters.clear()
+    batch = [attempt("run-a", f"hour-{index}") for index in range(24)]
+
+    store.upsert_meta_rows(identifier, keys, batch)
+
+    expression = table.scan_filters[-1]
+    assert isinstance(expression, And)
+    assert "In(" in str(expression)
+    assert _matches(batch[0], expression)
+    assert not _matches(attempt("other-run", "hour-0"), expression)
+    assert not _matches(attempt("run-a", "hour-0", 2), expression)
+
+    store.upsert_meta_rows(identifier, keys, [{**batch[0], "status": "failed"}])
+    assert len(table.rows) == 26
+    assert next(
+        row for row in table.rows
+        if row["ingest_run_id"] == "run-a" and row["asset_id"] == "hour-0"
+        and row["attempt_no"] == 1
+    )["status"] == "failed"
+    assert any(row["ingest_run_id"] == "other-run" for row in table.rows)
+    assert any(row["ingest_run_id"] == "run-a" and row["attempt_no"] == 2 for row in table.rows)
+
+
+def test_repeated_successful_ingest_attempt_keeps_first_audit_without_overwrite() -> None:
+    catalog = _Catalog()
+    store = IcebergTableStore(catalog)
+    identifier = ("meta", "ingest_attempts")
+    keys = ("ingest_run_id", "source_id", "asset_id", "attempt_no")
+    first = {
+        "ingest_run_id": "run-a",
+        "source_id": "gsmap",
+        "asset_id": "hour-0",
+        "attempt_no": 1,
+        "request_fingerprint": "same-request",
+        "http_status": 200,
+        "error_code": None,
+        "started_at": datetime(2026, 10, 27, 10, tzinfo=UTC),
+        "ended_at": datetime(2026, 10, 27, 10, 1, tzinfo=UTC),
+        "status": "succeeded",
+    }
+    snapshot = store.upsert_meta_rows(identifier, keys, [first])
+    table = catalog.tables[identifier]
+
+    repeated = {
+        **first,
+        "http_status": None,
+        "started_at": datetime(2026, 10, 27, 11, tzinfo=UTC),
+        "ended_at": datetime(2026, 10, 27, 11, 1, tzinfo=UTC),
+    }
+    assert store.upsert_meta_rows(identifier, keys, [repeated]) == snapshot
+    assert table.overwrites == 0
+    assert table.rows == [first]
+
+    failed = {**repeated, "status": "failed", "error_code": "PublishError"}
+    store.upsert_meta_rows(identifier, keys, [failed])
+    assert table.overwrites == 1
+    assert table.rows[0]["status"] == "failed"
 
 
 def test_meta_new_keys_use_one_append_without_planning_an_overwrite() -> None:

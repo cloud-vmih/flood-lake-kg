@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from flashflood_data.pipelines.weather_ingest.models import (
     IngestWatermark,
@@ -249,3 +249,51 @@ def test_calendar_month_chunking_never_cross_multiplies_dates() -> None:
         (1, 2, 1, 3),
         (1, 3, 1, 4),
     ]
+
+
+def test_era5_monthly_cutover_and_daily_tail_do_not_overlap() -> None:
+    monthly = _stream(
+        start_at=datetime(2020, 1, 1, tzinfo=UTC),
+        end_at=datetime(2026, 10, 1, tzinfo=UTC),
+        chunking="calendar_month",
+        chunk_minutes=44640,
+        availability_lag_minutes=7200,
+    )
+    daily = _stream(
+        start_at=datetime(2026, 10, 1, tzinfo=UTC),
+        chunking="calendar_day",
+        chunk_minutes=1440,
+        availability_lag_minutes=7200,
+        overlap_steps=120,
+    )
+    now = datetime(2026, 10, 27, 12, tzinfo=UTC)
+
+    monthly_end = provider_safe_end(now, monthly)
+    daily_end = provider_safe_end(now, daily)
+    assert monthly_end == datetime(2026, 10, 1, tzinfo=UTC)
+    assert daily_end == datetime(2026, 10, 22, tzinfo=UTC)
+
+    old = plan_expected_objects(
+        source_id="era5_land",
+        source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
+        stream=monthly,
+        start=datetime(2026, 9, 1, tzinfo=UTC),
+        end=monthly_end,
+    )
+    recent = plan_expected_objects(
+        source_id="era5_land",
+        source_version="v1",
+        spatial_scope_id="sonla-scope-v1",
+        stream=daily,
+        start=daily.start_at,
+        end=daily_end,
+    )
+
+    assert [(item.window.start, item.window.end) for item in old] == [
+        (datetime(2026, 9, 1, tzinfo=UTC), datetime(2026, 10, 1, tzinfo=UTC))
+    ]
+    assert len(recent) == 21
+    assert recent[0].window.start == old[-1].window.end
+    assert recent[-1].window.end == daily_end
+    assert all(item.window.end - item.window.start == timedelta(days=1) for item in recent)

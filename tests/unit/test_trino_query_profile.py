@@ -80,3 +80,11 @@ def test_query_ui_commands_do_not_rebuild_airflow() -> None:
     ui_targets = makefile.split("query-ui-up:", 1)[1].split("spark-build:", 1)[0]
     assert "--profile query --profile query-ui" in ui_targets
     assert "airflow" not in ui_targets
+    assert "up -d --wait trino" in ui_targets
+    assert "up -d --no-deps --force-recreate --wait cloudbeaver" in ui_targets
+
+
+def test_all_up_recreates_cloudbeaver_after_the_other_services() -> None:
+    makefile = (ROOT / "Makefile").read_text()
+    all_up = makefile.split("lakehouse-all-up:", 1)[1].split("lakehouse-status:", 1)[0]
+    assert "up -d --no-deps --force-recreate --wait cloudbeaver" in all_up

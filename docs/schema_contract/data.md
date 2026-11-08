@@ -1,6 +1,6 @@
 # Data schema contract — FloodLakeKG Sơn La
 
-Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và [class diagram draw.io](../son_la_flood_class_diagram.drawio). Meta, Quarantine, các bảng Bronze static, `bronze.weather_raster_slice` và bảng tham chiếu `silver.source_grid` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Các bảng Silver nghiệp vụ trở đi vẫn là thiết kế đích.
+Tài liệu này là **data dictionary của schema đích** cho toàn bộ đường đi `raw/Meta → Bronze → Silver → Gold → Serving → Knowledge Graph`. Đọc cùng [schema contract tổng quan](../son_la_flood_schema_contract.md) và các sơ đồ Mermaid trong tài liệu này. Meta, Quarantine, các bảng Bronze static, `bronze.weather_raster_slice` và bảng tham chiếu `silver.source_grid` đã có schema vật lý trong code; bảng chỉ được tạo trong Polaris khi pipeline đầu tiên gọi `ensure_table`. Basin Topology và Weather Silver đã có pipeline; các domain Silver còn lại và Gold/Serving/KG là thiết kế đích, trừ trạng thái ghi rõ tại từng bảng.
 
 Các sơ đồ Mermaid dưới đây biểu diễn quan hệ logic; bảng dữ liệu bên dưới mới là danh sách thuộc tính. `PK`/`FK` là ràng buộc cần pipeline kiểm tra vì Iceberg không tự thực thi khóa ngoại. `!` là không null, `?` là có thể null. Kiểu `timestamp` là UTC; `geometry_wkb` là WKB `binary` kèm `crs`/bbox. `json` nghĩa là chuỗi JSON có schema version cho tới khi có `struct`/`map` vật lý. ID basin luôn là chuỗi `HYBAS_ID` **level 12**; mọi tham chiếu tới basin dùng đủ `(basin_id, basin_version)`. `object_id` là SHA-256 ổn định, còn Iceberg snapshot ID là `long` và phải đi với tên bảng.
 
@@ -523,20 +523,44 @@ chỉ payload Raw NOW/IFS có thể hết hạn sau 7 ngày theo `meta.object_li
 flowchart LR
   B["dim_basin L12"] --> BE["basin_edge"]
   B --> SF["basin_static_feature"] --> FL["basin_feature_lineage"]
-  G["source_grid"] --> GB["grid_basin_weight — chưa triển khai"] --> B
-  GB --> GV["basin_weather_value — chưa triển khai"]
+  G["source_grid"] --> GB["grid_basin_weight"] --> B
+  GB --> GV["basin_weather_value"]
   G --> PG["population_grid"]
   R["dim_river_reach"] --> RE["river_reach_edge"]
   R --> RB["river_basin"] --> B
   RN["dim_road_node"] --> RD["dim_road_edge"] --> RDB["road_basin"] --> B
   RD --> X["river_crossing"] --> R
   F["dim_facility"] --> FB["facility_basin"] --> B
-  D["source_document"] --> C["document_chunk"]
-  D --> E["observed_flood_event"] --> EB["event_basin"] --> B
-  C --> EE["event_evidence"] --> E
+  D["source_document versioned"] --> M["flood_event_mention"]
+  M --> E["observed_flood_event"] --> EB["event_basin"] --> B
+  M --> EE["event_evidence"] --> E
+  D -. "projection tương lai" .-> C["document_chunk: chưa triển khai"]
 ```
 
 Các bảng Silver dưới đây là **đích**. Khóa ghép ghi đầy đủ ở tiêu đề; nếu bảng có cột `source_object_id`/`raw_object_id`, cột đó trỏ về `meta.source_objects.object_id`. Tất cả geometry sau harmonize dùng EPSG:4326 trừ khi `crs` ghi khác. Phiên bản business key không được thay bằng cờ `is_current`.
+
+**Ownership cập nhật 08/11/2026:** Exposure không còn một DAG gom chung. Các bảng
+dưới đây là contract đích; bổ sung `population_version`, `ford`, `osm_layer` và
+contract mention chưa đồng nghĩa schema vật lý đã được migrate. Pipeline owner
+phải đồng bộ schema/registry/test trước publish. [Master plan Silver](../superpowers/plans/2026-11-08-silver-remaining-pipelines.vi.md)
+ghi thứ tự bàn giao và trạng thái hiện tại.
+
+| Pipeline / DAG sở hữu | Bảng Silver |
+| --- | --- |
+| `silver_basin_topology` | `dim_basin`, `basin_edge` |
+| `silver_basin_static_features` (đang triển khai) | `basin_static_feature`, `basin_feature_lineage` |
+| `silver_weather_aggregation` | `grid_basin_weight`, `basin_weather_value` |
+| Weather ingest + `silver_population` (writer phải serialize) | `source_grid`, mỗi pipeline chỉ quản lý phần grid nguồn của mình và giữ membership cũ |
+| `silver_river_network` (kế hoạch) | `dim_river_reach`, `river_reach_edge`, `river_basin` |
+| `silver_facilities` (kế hoạch) | `dim_facility`, `facility_basin` |
+| `silver_population` (kế hoạch) | `population_grid` |
+| `silver_road_network` (kế hoạch) | `dim_road_node`, `dim_road_edge`, `road_basin` |
+| `silver_river_crossings` (kế hoạch) | `river_crossing` |
+| `flood_event_mentions` (kế hoạch) | `source_document`, `flood_event_mention` |
+| `silver_flood_events` (kế hoạch) | `observed_flood_event`, `event_evidence`, `event_basin` |
+
+`document_chunk` là projection tùy chọn cho tìm kiếm tương lai; không thuộc gate
+hoàn tất Silver hiện tại và không là dependency của event evidence.
 
 ### `silver.dim_basin` — `(basin_id, basin_version)`
 
@@ -672,7 +696,9 @@ SoilGrids 0–30 cm cần tổng hợp có trọng số theo bề dày các kho�
 
 ### `silver.source_grid` — `(source_id, source_grid_version, source_grid_id)`; **đã có contract vật lý**
 
-**Vai trò:** Định nghĩa identity, hình học và membership AOI của ô lưới thời tiết. Pipeline đăng
+**Vai trò:** Định nghĩa identity, hình học và membership AOI của ô lưới nguồn. Weather đã có;
+WorldPop được bổ sung bởi pipeline Population theo plan mới, không tạo registry thứ hai.
+Pipeline weather đăng
 ký phần lưới giao `vietnam_hydrological_aoi`; khi scope Sơn La mở rộng, ô cũ giữ nguyên
 `source_grid_id` và `cell_index` để raster slice cũ vẫn đọc được.
 
@@ -693,7 +719,7 @@ ký phần lưới giao `vietnam_hydrological_aoi`; khi scope Sơn La mở rộn
 | `crs` | string ! | CRS geometry. |
 | `scope_ids` | list<string> ! | Các scope AOI hiện chứa ô này; append membership, không đổi cell identity. |
 
-### `silver.grid_basin_weight` — `(source_id, source_grid_version, source_grid_id, basin_id, basin_version, geometry_processing_version)`; **chưa triển khai**
+### `silver.grid_basin_weight` — `(source_id, source_grid_version, source_grid_id, basin_id, basin_version, geometry_processing_version)`; đã có pipeline và dữ liệu smoke
 
 **Vai trò:** Lưu trọng số giao nhau giữa ô lưới và basin để aggregate dữ liệu động theo lưu vực.
 
@@ -710,13 +736,19 @@ ký phần lưới giao `vietnam_hydrological_aoi`; khi scope Sơn La mở rộn
 | `weight_by_grid` | double ! | `intersection_area / grid_cell_area`. |
 | `quality_status` | string ! | QA tổng trọng số, clipping, sliver. |
 
-### `silver.basin_weather_value` — một dòng / `business_key_hash`; **chưa triển khai**
+### `silver.basin_weather_value` — một dòng / `business_key_hash`; đã có pipeline và dữ liệu smoke
 
 **Vai trò:** Chuẩn hóa và aggregate một raster slice thành giá trị theo basin L12 bằng
 `grid_basin_weight`, kèm coverage để không nhầm dữ liệu thiếu với giá trị 0.
 
+Policy Silver v3 ưu tiên GSMaP hợp lệ cho mưa: ERA5 precipitation chỉ giữ làm
+fallback khi không có GSMaP đạt coverage và kiểm tra giá trị cho cùng basin/version,
+window, layer, unit và value kind. Mưa 0 mm là hợp lệ; các window NOW lệch nhau vẫn
+giữ riêng. Khi GSMaP đến muộn, pipeline publish trước rồi dọn ERA5 dư trong batch tháng.
+Độ ẩm đất, runoff và dữ liệu Raw/Bronze không bị loại bởi policy này.
+
 Hash khóa business phải bao gồm basin/version, nguồn/product/grid version, biến/level/cycle,
-valid time/window và revision; pipeline tương lai kiểm tra uniqueness của tuple trước khi hash.
+valid time/window và revision; pipeline kiểm tra uniqueness của business key trước publish.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
@@ -827,9 +859,14 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 | `distance_to_outlet_m` | double ? | Khoảng cách tới outlet. |
 | `quality_status` | string ! | QA gán basin. |
 
-### `silver.population_grid` — `(source_id, source_grid_version, source_grid_id, reference_year)`
+### `silver.population_grid` — `(source_id, source_grid_version, source_grid_id, reference_year, population_version)`
 
 **Vai trò:** Lưu ước tính dân số theo ô lưới và năm tham chiếu để tính exposure.
+
+Pipeline `silver_population` sở hữu bảng này. `source_grid_version` chỉ mô tả
+alignment/hình học; `population_version` nhận diện revision giá trị cùng năm.
+Count thuộc toàn cell gốc; crop AOI không tự nhân tỷ lệ diện tích. Gold mới tổng
+hợp cell vào basin theo phương pháp có version. Nodata không tự đổi thành 0.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
@@ -837,6 +874,7 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 | `source_grid_version` | string ! PK/FK | Grid của sản phẩm. |
 | `source_grid_id` | string ! PK/FK | Ô dân số. |
 | `reference_year` | int ! PK | Năm dân số. |
+| `population_version` | string ! PK | Hash revision nguồn/checksum, semantics, scope và processing policy; giữ nhiều bản cùng năm khi provider sửa dữ liệu. |
 | `population_count` | double ? | Tổng người ước tính. |
 | `population_density` | double ? | Mật độ theo unit sản phẩm. |
 | `children_population` | double ? | Chỉ từ nguồn tuổi riêng, không suy từ tổng. |
@@ -879,6 +917,8 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 | `surface` | string ? | Loại mặt đường. |
 | `bridge` | boolean ? | Có cầu. |
 | `tunnel` | boolean ? | Có hầm. |
+| `ford` | boolean ? | Tag xác nhận đường qua ngầm/lòng suối; null nếu thiếu hoặc chưa phân giải. Contract bổ sung dự kiến. |
+| `osm_layer` | string ? | Giá trị layer OSM được chuẩn hóa có kiểm chứng; phục vụ QA tách mức giao thông. Contract bổ sung dự kiến. |
 | `source_object_id` | string ! FK | Snapshot OSM gốc. |
 
 ### `silver.road_basin` — `(road_edge_id, road_version, basin_id, basin_version, geometry_processing_version)`
@@ -900,6 +940,11 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 
 **Vai trò:** Xác định vị trí đường cắt sông, phục vụ kiểm tra cầu/điểm vượt và rủi ro gián đoạn.
 
+Pipeline `silver_river_crossings` chỉ tạo quan hệ road–river có evidence. Geometry
+giao nhau chưa chứng minh có cầu hoặc bị ngập. Một cặp road–reach có thể có nhiều
+giao điểm; ID xác định từ cặp có version, method và vị trí canonical, không từ thứ
+tự iterator. Khả năng đi qua và gián đoạn theo scenario thuộc Gold.
+
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
 | `crossing_id` | string ! PK | ID ổn định của giao cắt. |
@@ -914,21 +959,50 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 | `geometry_processing_version` | string ! | Cách phát hiện giao cắt. |
 | `quality_status` | string ! | QA false intersection. |
 
-### `silver.source_document` — một dòng / `document_id`
+### `silver.source_document` — `(document_id, document_version)`
 
-**Vai trò:** Quản lý tài liệu nguồn đã chuẩn hóa và liên kết về file gốc.
+**Vai trò:** Giữ tài liệu nguồn có full text và revision chuẩn hóa để trích mention
+lại mà không crawl/parse Bronze lại. Contract theo plan Flood Events 09/10/2026.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
 | `document_id` | string ! PK | ID tài liệu sau chuẩn hóa. |
+| `document_version` | string ! PK | Hash nội dung chuẩn hóa + source revision; không dùng run ID. |
 | `raw_object_id` | string ! FK | File gốc. |
 | `source_uri` | string ! | URI nơi công bố. |
 | `title` | string ? | Tiêu đề. |
+| `full_text` | string ! | Văn bản chuẩn hóa; evidence offsets trỏ đúng vào bản này. |
 | `document_type` | string ! | Báo cáo, tin, bảng sự kiện, v.v. |
 | `source_valid_time` | string ? | Thời gian nguồn mô tả nếu chưa đủ chính xác để cast. |
 | `extraction_version` | string ! | Phiên bản OCR/parse. |
 
-### `silver.document_chunk` — một dòng / `chunk_id`
+### `silver.flood_event_mention` — một dòng / `mention_id`; contract đích
+
+**Vai trò:** Lưu các thông tin/candidate sự kiện được rule hoặc NLP trích ra,
+kèm vị trí chứng cứ trong đúng document version. Chưa phải sự kiện canonical.
+Một tài liệu có nhiều mention; nhiều mention có thể hợp nhất thành một event.
+
+| Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
+| --- | --- | --- |
+| `mention_id` | string ! PK | Hash document/version, span và extractor/version/candidate xác định. |
+| `document_id` | string ! FK | Tài liệu nguồn. |
+| `document_version` | string ! FK | Version full text dùng để trích. |
+| `source_record_id` | string ? | Record lịch sử có cấu trúc nếu nguồn là bảng sự kiện. |
+| `evidence_start`, `evidence_end` | int ! | Khoảng ký tự nửa mở trong full text. |
+| `evidence_text` | string ! | Văn bản chứng cứ, phải khớp span. |
+| `evidence_text_hash` | string ! | SHA-256 của evidence text theo quy ước encoding. |
+| `event_start`, `event_end` | timestamp ? | Thời gian được trích, chưa tự suy nếu thiếu. |
+| `time_precision` | string ! | Độ chính xác thời gian trích được, gồm unknown. |
+| `reported_place` | string ? | Địa danh nguồn mô tả. |
+| `resolved_admin_id` | string ? | Địa danh hành chính đã resolve nếu đủ evidence. |
+| `geometry_wkb`, `crs` | binary ?, string ? | Vị trí/hình học nếu resolve được, có CRS. |
+| `extracted_facts_json` | json ! | Severity/casualties/affected population/damage cùng unit và evidence; schema có version trong config Events. |
+| `extractor_name`, `extractor_version` | string ! | Rule/model đã tạo mention. |
+| `confidence_score` | double ? | Score có phương pháp, không tự xem là xác suất đã hiệu chỉnh. |
+| `review_status`, `quality_status` | string ! | Trạng thái duyệt và DQ. |
+| `pipeline_run_id` | string ! FK | Provenance run extraction. |
+
+### `silver.document_chunk` — một dòng / `chunk_id`; projection tương lai, ngoài scope hiện tại
 
 **Vai trò:** Chia văn bản tài liệu thành các đoạn có thể tìm kiếm và trích dẫn.
 
@@ -962,7 +1036,7 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 | `is_current` | boolean ! | Revision được chọn phục vụ truy vấn. |
 | `pipeline_run_id` | string ! FK | Run extraction/harmonize. |
 
-### `silver.event_basin` — `(flood_event_id, event_revision, basin_id, basin_version)`
+### `silver.event_basin` — `(flood_event_id, event_revision, basin_id, basin_version, relation_type)`
 
 **Vai trò:** Liên kết một sự kiện lũ với một hoặc nhiều basin, kèm diện tích ảnh hưởng theo từng basin khi có footprint đáng tin cậy.
 
@@ -972,6 +1046,7 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 | `event_revision` | int ! PK/FK | Revision sự kiện. |
 | `basin_id` | string ! PK/FK | Basin được gán. |
 | `basin_version` | string ! PK/FK | Geometry version. |
+| `relation_type` | string ! PK | Loại bằng chứng gán: footprint, reported location hoặc administrative reference theo policy Events. |
 | `spatial_relation` | string ! | Nằm trong/giao/địa danh liên quan. |
 | `affected_area_km2` | double ? | Diện tích giao giữa footprint ngập được xác minh và polygon basin, tính trong CRS bảo toàn diện tích. |
 | `affected_fraction_of_basin` | double ? | `affected_area_km2 / basin_area_km2`, trong khoảng 0–1. |
@@ -981,17 +1056,19 @@ valid time/window và revision; pipeline tương lai kiểm tra uniqueness của
 
 Nếu nguồn chỉ cho biết một điểm hoặc địa danh hành chính, vẫn có thể gán `spatial_relation`, nhưng để hai cột diện tích là `null`. Không dùng diện tích huyện/xã được nhắc trong báo cáo như diện tích thực sự bị ngập.
 
-### `silver.event_evidence` — `(flood_event_id, event_revision, chunk_id, evidence_role)`
+### `silver.event_evidence` — `(flood_event_id, event_revision, mention_id, evidence_role)`
 
-**Vai trò:** Liên kết sự kiện lũ với các đoạn tài liệu hỗ trợ, phản bác hoặc bổ sung bối cảnh.
+**Vai trò:** Liên kết event revision với mention hỗ trợ, phản bác hoặc bổ sung bối cảnh.
 
-Một sự kiện có thể được xác nhận hoặc bác bỏ bởi nhiều đoạn tài liệu; một đoạn có thể nhắc nhiều sự kiện. Bảng bridge này là provenance cho nhãn sự kiện trước khi đưa sang Gold/KG.
+Một sự kiện có thể được xác nhận hoặc bác bỏ bởi nhiều mention. Mention giữ span/hash
+về document version; không cần tạo `document_chunk` hoặc Qdrant. Bảng bridge này
+là provenance cho nhãn sự kiện trước khi đưa sang Gold/KG.
 
 | Thuộc tính | Kiểu / ràng buộc | Ý nghĩa |
 | --- | --- | --- |
 | `flood_event_id` | string ! PK/FK | Sự kiện được nói đến. |
 | `event_revision` | int ! PK/FK | Revision diễn giải. |
-| `chunk_id` | string ! PK/FK | Đoạn tài liệu làm chứng cứ. |
+| `mention_id` | string ! PK/FK | Mention chứa evidence span/hash trong tài liệu nguồn có version. |
 | `evidence_role` | string ! PK | `supports`, `contradicts`, `context`. |
 | `extraction_version` | string ! | Phiên bản rule/NER/linking. |
 | `confidence_score` | double ? | Độ tin cậy liên kết, 0–1. |

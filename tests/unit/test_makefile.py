@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -47,3 +48,17 @@ def test_readme_documents_national_hydro_subset_and_explicit_reset() -> None:
     assert "hydrorivers_vietnam_h1.zip" in readme
     assert "docker compose down -v --remove-orphans" in readme
     assert "make lakehouse-aoi" in readme
+
+
+def test_all_down_matches_all_up_profiles_without_removing_data() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "lakehouse-all-down"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "docker compose --profile query --profile query-ui --profile spark down" in result.stdout
+    assert "down -v" not in result.stdout
+    assert "--rmi" not in result.stdout

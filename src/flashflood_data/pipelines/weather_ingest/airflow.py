@@ -8,6 +8,7 @@ from airflow.sdk import Asset, dag, get_current_context, task, task_group
 
 from flashflood_data.core.paths import ProjectPaths
 from flashflood_data.pipelines.weather_ingest.config import load_weather_config
+from flashflood_data.pipelines.weather_ingest.fetch_audit import finalize_fetch_attempt_batch
 from flashflood_data.pipelines.weather_ingest.grids import GridRegistration
 from flashflood_data.pipelines.weather_ingest.models import (
     FetchAttemptRecord,
@@ -148,20 +149,11 @@ def build_weather_dag(dag_id: str, config_path: Path):
                 )
                 failure = error
                 break
+        ended_at = datetime.now(UTC)
+        attempts = finalize_fetch_attempt_batch(
+            attempts, failed=failure is not None, ended_at=ended_at
+        )
         if failure is not None:
-            ended_at = datetime.now(UTC)
-            attempts = [
-                row.model_copy(
-                    update={
-                        "status": "skipped",
-                        "ended_at": ended_at,
-                        "error_code": "BatchAborted",
-                    }
-                )
-                if row.status == "running"
-                else row
-                for row in attempts
-            ]
             attempted_ids = {row.asset_id for row in attempts}
             attempts.extend(
                 FetchAttemptRecord(
@@ -363,7 +355,7 @@ def build_weather_dag(dag_id: str, config_path: Path):
             scoped_documents=scoped
         )
         verified = verify_contiguous_coverage(plan, registered)
-        return advance_cursor(plan, verified, weather_run_id)
+        return advance_cursor(plan, verified, weather_run_id), registered
 
     @task_group(group_id="bronze")
     def bronze_group(
@@ -391,13 +383,14 @@ def build_weather_dag(dag_id: str, config_path: Path):
         requested_end = "{{ dag_run.conf.get('end', '') if dag_run else '' }}"
         requested_limit = "{{ dag_run.conf.get('max_objects', '') if dag_run else '' }}"
         force_reprocess = "{{ dag_run.conf.get('force_reprocess', false) if dag_run else false }}"
-        landed = landing_raw_group(
+        landed, registered = landing_raw_group(
             weather_run_id, mode, requested_start, requested_end, requested_limit
         )
         bronze_result = bronze_group(landed, weather_run_id, force_reprocess)
         raw_cleanup = expire_transient_raw()
         staging_cleanup = cleanup_weather_staging(weather_run_id)
         bronze_result >> [raw_cleanup, staging_cleanup]
+        registered >> [raw_cleanup, staging_cleanup]
         finalize_weather_run(bronze_result, raw_cleanup, staging_cleanup)
 
     return weather_dag()

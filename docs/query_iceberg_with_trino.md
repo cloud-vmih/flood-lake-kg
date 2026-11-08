@@ -37,6 +37,10 @@ make query-ui-up
 make query-ui-status
 ```
 
+Lệnh `query-ui-up` tạo lại container CloudBeaver để nối vào Docker network hiện tại;
+volume `cloudbeaver_workspace` vẫn giữ tài khoản và các kết nối đã tạo. Cách này cũng
+áp dụng khi Docker báo `network ... not found` sau khi stack được dựng lại.
+
 Mở <http://127.0.0.1:8978/>. Lần đầu, hoàn tất màn hình thiết lập và tạo tài khoản quản trị CloudBeaver. Sau đó tạo kết nối **Trino** với các giá trị sau (nếu danh sách driver chưa có Trino, chọn JDBC và nhập URL):
 
 | Trường | Giá trị |

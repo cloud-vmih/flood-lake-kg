@@ -127,14 +127,20 @@ Chi tiết ETL: [silver_basin_static_features_etl.md](silver_basin_static_featur
 
 ```text
 bronze.weather_raster_slice
+  -> silver_weather.normalize: source variable/unit/window -> canonical slice
   JOIN silver.source_grid
   JOIN silver.grid_basin_weight
   GROUP BY basin/version/source/product/variable/window/revision
   -> silver.basin_weather_value
 ```
 
-Weight được tạo bằng Sedona trong CRS bảo toàn diện tích và cache theo grid version, basin version,
-geometry processing version. Late/revised slice chỉ làm dirty business window liên quan.
+Weight được tạo bằng Sedona trong CRS bảo toàn diện tích và chỉ bổ sung tổ hợp grid version,
+basin version, geometry processing version chưa có. Build signature đổi khi input snapshot đổi;
+job hiện tại đọc lại toàn bộ Bronze snapshot đã pin rồi MERGE idempotent. Lọc riêng các business
+window bị ảnh hưởng bởi late/revised slice là bước tối ưu tiếp theo, chưa có trong code.
+GSMaP `mm/h` đổi sang `mm` theo độ dài cửa sổ; ERA5-Land đổi tích lũy `m` thành gia số
+giờ `mm` bằng mốc liền trước, thiếu mốc thì giữ giá trị null. IFS `runoff` tổng vẫn là
+`runoff`, không gán nhầm vào `surface_runoff` hoặc `subsurface_runoff`.
 
 ### 6.4 River network
 
@@ -143,8 +149,16 @@ topology phức tạp có thể chạy Python theo snapshot. Spark publish dimen
 
 ### 6.5 Exposure network
 
-Spark/Sedona xử lý OSM lớn, tạo facility/road, road–basin, facility–basin, river crossing và tổng
-hợp WorldPop. Thuật toán graph routing chưa thuộc Silver; chỉ xây graph/version ở đây.
+Từ 08/11/2026, tách thành bốn DAG/package: `silver_facilities`, `silver_population`,
+`silver_road_network`, `silver_river_crossings`. Spark/Sedona xử lý OSM/spatial;
+Population đọc raster block qua staging rồi Spark publish. Facilities/Road cần
+basin; Population chỉ cần WorldPop + AOI; Crossings đọc Road + River hoàn tất.
+Mỗi domain có audit riêng, giữ shared runtime và single writer/table. Population
+dùng cùng `source_grid` với weather, writer được serialize xuyên pipeline.
+Thuật toán graph routing chưa thuộc Silver; graph geometry-derived không tự đủ
+điều kiện sơ tán. [Thiết kế mới](superpowers/specs/2026-11-08-silver-exposure-split-design.vi.md)
+và [master plan](superpowers/plans/2026-11-08-silver-remaining-pipelines.vi.md)
+thay phần Exposure gom chung trong plan 30/09.
 
 ### 6.6 Flood events
 

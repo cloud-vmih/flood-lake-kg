@@ -9,10 +9,19 @@ class MemoryStore:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, object]] = {}
         self.batch_upserts = 0
+        self.single_reads = 0
+        self.batch_reads = 0
 
     def get_meta_row(self, identifier, key):
         assert identifier == ("meta", "object_lifecycle")
+        self.single_reads += 1
         return self.rows.get(key["object_id"])
+
+    def get_meta_rows(self, identifier, key_field, values):
+        assert identifier == ("meta", "object_lifecycle")
+        assert key_field == "object_id"
+        self.batch_reads += 1
+        return [self.rows[value] for value in values if value in self.rows]
 
     def get_keyed_rows(self, identifier, key):
         assert identifier == ("meta", "object_lifecycle")
@@ -113,6 +122,7 @@ def test_bronze_evidence_for_an_object_batch_uses_one_lifecycle_upsert() -> None
     published = datetime(2026, 9, 1, tzinfo=UTC)
     lifecycle.register("object-1", "transient_7d", published, "run-1")
     lifecycle.register("object-2", "transient_7d", published, "run-1")
+    backend.single_reads = 0
 
     lifecycle.mark_bronze_evidence_many(
         [
@@ -122,5 +132,57 @@ def test_bronze_evidence_for_an_object_batch_uses_one_lifecycle_upsert() -> None
     )
 
     assert backend.batch_upserts == 1
+    assert backend.batch_reads == 1
+    assert backend.single_reads == 0
     assert backend.rows["object-1"]["lineage_edge_id"] == "edge-1"
     assert backend.rows["object-2"]["lineage_edge_id"] == "edge-2"
+
+
+def test_bronze_evidence_batch_rejects_missing_or_expired_without_writing() -> None:
+    backend = MemoryStore()
+    lifecycle = ObjectLifecycleStore(backend)
+    published = datetime(2026, 9, 1, tzinfo=UTC)
+    lifecycle.register("existing", "transient_7d", published, "run-1")
+
+    with pytest.raises(KeyError, match="missing"):
+        lifecycle.mark_bronze_evidence_many(
+            [
+                ("existing", 42, "passed", "edge-1", published),
+                ("missing", 42, "passed", "edge-2", published),
+            ]
+        )
+    assert backend.batch_upserts == 0
+    assert backend.rows["existing"]["bronze_snapshot_id"] is None
+
+    backend.rows["existing"]["storage_status"] = "expired"
+    with pytest.raises(ValueError, match="expired"):
+        lifecycle.mark_bronze_evidence_many(
+            [("existing", 42, "passed", "edge-1", published)]
+        )
+    assert backend.batch_upserts == 0
+
+
+def test_registration_batch_reads_once_and_preserves_existing_bronze_evidence() -> None:
+    backend = MemoryStore()
+    lifecycle = ObjectLifecycleStore(backend)
+    published = datetime(2026, 10, 27, tzinfo=UTC)
+    lifecycle.register("existing", "durable", published, "old-run")
+    lifecycle.mark_bronze_evidence("existing", 42, "passed", "edge-1", published)
+    backend.single_reads = 0
+
+    lifecycle.register_many(
+        [
+            ("existing", "durable", published, "new-run"),
+            ("new", "durable", published, "new-run"),
+        ]
+    )
+
+    assert backend.batch_reads == 1
+    assert backend.single_reads == 0
+    assert backend.rows["existing"]["bronze_snapshot_id"] == 42
+    assert backend.rows["existing"]["lineage_edge_id"] == "edge-1"
+    assert backend.rows["new"]["quality_status"] == "pending"
+
+    with pytest.raises(ValueError, match="conflicting lifecycle policy"):
+        lifecycle.register_many([("existing", "transient_7d", published, "new-run")])
+    assert backend.rows["existing"]["retention_class"] == "durable"

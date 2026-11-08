@@ -13,6 +13,8 @@ from flashflood_data.pipelines.weather_ingest.models import (
 class _LifecycleBackend(Protocol):
     def get_meta_row(self, identifier, key): ...
 
+    def get_meta_rows(self, identifier, key_field, values): ...
+
     def get_keyed_rows(self, identifier, key): ...
 
     def upsert_meta_row(self, identifier, key_fields, row): ...
@@ -63,12 +65,21 @@ class ObjectLifecycleStore:
         """Register one Raw batch in a single keyed Iceberg commit."""
         if not entries:
             raise ValueError("lifecycle registration batch cannot be empty")
+        existing_rows = self.store.get_meta_rows(
+            self.IDENTIFIER, "object_id", [object_id for object_id, *_ in entries]
+        )
+        existing: dict[str, dict[str, object]] = {}
+        for row in existing_rows:
+            object_id = str(row["object_id"])
+            if object_id in existing:
+                raise ValueError(f"duplicate existing object lifecycle: {object_id}")
+            existing[object_id] = row
         rows: list[dict[str, object]] = []
         for object_id, retention_class, published_at, run_id in entries:
             rows.append(
-                self._registration_row(object_id, retention_class, published_at, run_id).model_dump(
-                    mode="python"
-                )
+                self._registration_row_from_existing(
+                    object_id, retention_class, published_at, run_id, existing.get(object_id)
+                ).model_dump(mode="python")
             )
         return self.store.upsert_meta_rows(self.IDENTIFIER, self.KEY_FIELDS, rows)
 
@@ -79,11 +90,23 @@ class ObjectLifecycleStore:
         published_at: datetime,
         run_id: str,
     ) -> ObjectLifecycleRow:
+        existing = self.store.get_meta_row(self.IDENTIFIER, {"object_id": object_id})
+        return self._registration_row_from_existing(
+            object_id, retention_class, published_at, run_id, existing
+        )
+
+    @staticmethod
+    def _registration_row_from_existing(
+        object_id: str,
+        retention_class: RetentionClass,
+        published_at: datetime,
+        run_id: str,
+        existing: dict[str, object] | None,
+    ) -> ObjectLifecycleRow:
         if not object_id or not run_id:
             raise ValueError("lifecycle registration requires object and run IDs")
         published_at = _utc(published_at)
         expires_at = published_at + timedelta(days=7) if retention_class == "transient_7d" else None
-        existing = self.store.get_meta_row(self.IDENTIFIER, {"object_id": object_id})
         if existing is not None:
             current = ObjectLifecycleRow.model_validate(existing)
             if current.retention_class != retention_class or current.expires_at != expires_at:
@@ -128,7 +151,26 @@ class ObjectLifecycleStore:
         """Attach per-object Bronze evidence for one published batch in one commit."""
         if not entries:
             raise ValueError("Bronze lifecycle evidence batch cannot be empty")
-        rows = [self._bronze_evidence_row(*entry).model_dump(mode="python") for entry in entries]
+        object_ids = [object_id for object_id, *_ in entries]
+        if len(set(object_ids)) != len(object_ids):
+            raise ValueError("duplicate object lifecycle in Bronze evidence batch")
+        existing_rows = self.store.get_meta_rows(self.IDENTIFIER, "object_id", object_ids)
+        existing: dict[str, ObjectLifecycleRow] = {}
+        for row in existing_rows:
+            current = ObjectLifecycleRow.model_validate(row)
+            if current.object_id in existing:
+                raise ValueError(f"duplicate existing object lifecycle: {current.object_id}")
+            existing[current.object_id] = current
+        rows = []
+        for object_id, snapshot_id, quality_status, lineage_edge_id, checked_at in entries:
+            current = existing.get(object_id)
+            if current is None:
+                raise KeyError(f"object lifecycle does not exist: {object_id}")
+            rows.append(
+                self._bronze_evidence_row_from_current(
+                    current, snapshot_id, quality_status, lineage_edge_id, checked_at
+                ).model_dump(mode="python")
+            )
         return self.store.upsert_meta_rows(self.IDENTIFIER, self.KEY_FIELDS, rows)
 
     def _bronze_evidence_row(
@@ -140,6 +182,18 @@ class ObjectLifecycleStore:
         checked_at: datetime,
     ) -> ObjectLifecycleRow:
         current = self._load(object_id)
+        return self._bronze_evidence_row_from_current(
+            current, snapshot_id, quality_status, lineage_edge_id, checked_at
+        )
+
+    @staticmethod
+    def _bronze_evidence_row_from_current(
+        current: ObjectLifecycleRow,
+        snapshot_id: int,
+        quality_status: str,
+        lineage_edge_id: str,
+        checked_at: datetime,
+    ) -> ObjectLifecycleRow:
         if current.storage_status == "expired":
             raise ValueError("cannot attach Bronze evidence to an expired object")
         if snapshot_id < 0 or not lineage_edge_id:

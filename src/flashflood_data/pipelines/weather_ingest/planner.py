@@ -47,8 +47,10 @@ def operational_start(stream: WeatherStreamConfig, watermark: IngestWatermark | 
     if watermark is None:
         return stream.start_at
     replay = watermark.cursor_time - timedelta(minutes=stream.step_minutes * stream.overlap_steps)
-    if stream.chunking == "calendar_month":
-        replay = replay.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if stream.chunking in {"calendar_day", "calendar_month"}:
+        replay = replay.replace(hour=0, minute=0, second=0, microsecond=0)
+        if stream.chunking == "calendar_month":
+            replay = replay.replace(day=1)
     return max(stream.start_at, replay)
 
 
@@ -60,8 +62,12 @@ def provider_safe_end(now: datetime, stream: WeatherStreamConfig) -> datetime:
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     steps = int((candidate - epoch).total_seconds() // (stream.step_minutes * 60))
     safe_end = epoch + timedelta(minutes=steps * stream.step_minutes)
-    if stream.chunking == "calendar_month":
-        return safe_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if stream.chunking in {"calendar_day", "calendar_month"}:
+        safe_end = safe_end.replace(hour=0, minute=0, second=0, microsecond=0)
+        if stream.chunking == "calendar_month":
+            safe_end = safe_end.replace(day=1)
+    if stream.end_at is not None:
+        safe_end = min(safe_end, stream.end_at)
     return safe_end
 
 
@@ -80,6 +86,11 @@ def plan_expected_objects(
         raise ValueError("planning bounds must be timezone-aware")
     start = start.astimezone(UTC)
     end = end.astimezone(UTC)
+    if stream.chunking == "calendar_day" and any(
+        (value.hour, value.minute, value.second, value.microsecond) != (0, 0, 0, 0)
+        for value in (start, end)
+    ):
+        raise ValueError("calendar_day planning bounds must be midnight UTC")
     if end <= start:
         return ()
     chunk = timedelta(minutes=stream.chunk_minutes)
@@ -98,6 +109,8 @@ def plan_expected_objects(
                 microsecond=0,
             )
             window_end = min(window_end, end)
+        elif stream.chunking == "calendar_day":
+            window_end = min(cursor + timedelta(days=1), end)
         else:
             window_end = cursor + chunk
             if window_end > end:
@@ -136,7 +149,7 @@ def plan_expected_objects(
         )
         cursor = (
             window_end
-            if stream.chunking == "calendar_month"
+            if stream.chunking in {"calendar_day", "calendar_month"}
             else cursor + timedelta(minutes=stream.step_minutes)
         )
     return tuple(objects)

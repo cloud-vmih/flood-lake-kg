@@ -48,7 +48,7 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     assert standard.retention_class == "durable"
     assert standard.retention_days is None
     assert standard.task_batch_size == 24
-    assert standard.bronze_task_batch_size == 24
+    assert standard.bronze_task_batch_size == 96
     assert standard.max_objects_per_run == 2160
     assert standard.backfill_max_objects_per_run == 2160
     assert now.schedule == "7,37 * * * *"
@@ -98,6 +98,20 @@ def test_configs_cover_the_approved_dynamic_variables() -> None:
     assert ifs.retention_class == "transient_7d"
     assert ifs.retention_days == 7
     assert ifs.bronze_task_batch_size == 1
+
+
+def test_era5_config_switches_from_monthly_archive_to_daily_available_data() -> None:
+    era5 = load_weather_config(ROOT / "config/pipelines/weather/era5_land.yaml")
+
+    assert [(stream.stream_id, stream.chunking) for stream in era5.streams] == [
+        ("hourly_reanalysis", "calendar_month"),
+        ("hourly_recent", "calendar_day"),
+    ]
+    assert era5.streams[0].end_at == era5.streams[1].start_at == datetime(
+        2026, 10, 1, tzinfo=UTC
+    )
+    assert all(stream.availability_lag_minutes == 7200 for stream in era5.streams)
+    assert era5.streams[1].chunk_minutes == 1440
 
 
 def test_weather_window_rejects_naive_or_empty_ranges() -> None:

@@ -1,7 +1,9 @@
 import json
+import logging
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from time import sleep
 
 import pytest
 
@@ -56,11 +58,7 @@ class Writer:
     def replace_object_partitions(self, identifier, accepted_by_object, blocked_object_ids):
         assert identifier == ("bronze", "weather_raster_slice")
         replaced = set(accepted_by_object) | set(blocked_object_ids)
-        incoming = [
-            row
-            for object_rows in accepted_by_object.values()
-            for row in object_rows
-        ]
+        incoming = [row for object_rows in accepted_by_object.values() for row in object_rows]
         assert all(row["object_id"] in accepted_by_object for row in incoming)
         self.rows = [row for row in self.rows if row["object_id"] not in replaced] + incoming
         self.commits += 1
@@ -258,6 +256,7 @@ def test_weather_bronze_quarantines_object_when_every_slice_is_rejected(tmp_path
 
     assert writer.rows == []
     assert meta.runs[-1]["status"] == "failed_data_quality"
+    assert "phase_seconds" in json.loads(meta.runs[-1]["metrics_json"])
     assert len(writer.quarantine["rejected_rows"]) == 1
     assert len(writer.quarantine["rejected_objects"]) == 1
 
@@ -311,7 +310,13 @@ def test_revised_raw_object_remains_beside_previous_revision(tmp_path: Path) -> 
 
 def test_weather_bronze_batch_commits_multiple_objects_once_with_per_object_evidence(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    class SlowObjectStore(ObjectStore):
+        def download(self, key: str, local_path: Path) -> None:
+            sleep(0.01)
+            super().download(key, local_path)
+
     def payload(value: float) -> bytes:
         return json.dumps(
             {
@@ -339,7 +344,7 @@ def test_weather_bronze_batch_commits_multiple_objects_once_with_per_object_evid
     lifecycle = Lifecycle()
     service = WeatherBronzeService(
         inventory=Inventory(first, second),
-        object_store=ObjectStore(
+        object_store=SlowObjectStore(
             {
                 "raw/weather/raw-1.json": first_payload,
                 "raw/weather/raw-2.json": second_payload,
@@ -352,12 +357,13 @@ def test_weather_bronze_batch_commits_multiple_objects_once_with_per_object_evid
         staging_root=tmp_path,
     )
 
-    result = service.process_batch(
-        "ifs_openmeteo",
-        ("raw-1", "raw-2"),
-        run_id="airflow-run",
-        parser_version="ifs-v1",
-    )
+    with caplog.at_level(logging.INFO, logger="flashflood_data.pipelines.weather_ingest.bronze"):
+        result = service.process_batch(
+            "ifs_openmeteo",
+            ("raw-1", "raw-2"),
+            run_id="airflow-run",
+            parser_version="ifs-v1",
+        )
 
     assert result["status"] == "succeeded"
     assert result["object_ids"] == ["raw-1", "raw-2"]
@@ -365,6 +371,27 @@ def test_weather_bronze_batch_commits_multiple_objects_once_with_per_object_evid
     assert writer.commits == 1
     assert {row["input_object_id"] for row in meta.lineage} == {"raw-1", "raw-2"}
     assert {entry[0] for entry in lifecycle.evidence} == {"raw-1", "raw-2"}
+    metrics = json.loads(meta.runs[-1]["metrics_json"])
+    assert metrics["object_count"] == 2
+    assert metrics["quality_result_count"] == len(meta.qualities)
+    assert set(metrics["phase_seconds"]) == {
+        "inventory_lookup",
+        "source_grid_lookup",
+        "raw_download",
+        "checksum",
+        "parse",
+        "quality",
+        "precommit_audit",
+        "bronze_commit",
+        "postcommit_audit",
+        "audit_snapshot_ref",
+        "audit_quality_results",
+        "audit_lineage_edges",
+        "audit_lifecycle_evidence",
+    }
+    assert all(seconds >= 0 for seconds in metrics["phase_seconds"].values())
+    assert metrics["phase_seconds"]["raw_download"] >= 0.02
+    assert "weather_bronze_phase_timings" in caplog.text
 
 
 def test_weather_bronze_batch_commits_valid_object_and_quarantines_invalid_object(

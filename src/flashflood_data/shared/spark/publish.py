@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from flashflood_data.shared.spark.models import PublishedSnapshot
@@ -30,6 +32,29 @@ def _column(name: str, alias: str | None = None) -> str:
         raise ValueError(f"unsafe Spark column identifier: {name}")
     quoted = f"`{name}`"
     return f"{alias}.{quoted}" if alias else quoted
+
+
+@dataclass(frozen=True)
+class TimestampMergeScope:
+    """Half-open UTC range on a timestamp field included in the merge key."""
+
+    column: str
+    start: datetime
+    end: datetime
+
+    def __post_init__(self) -> None:
+        _column(self.column)
+        if any(value.tzinfo is None or value.utcoffset() != timedelta(0)
+               for value in (self.start, self.end)):
+            raise ValueError("merge scope timestamps must use UTC")
+        if self.start >= self.end:
+            raise ValueError("merge scope bounds must be increasing")
+
+    def predicate(self, alias: str | None = None) -> str:
+        column = _column(self.column, alias)
+        start = self.start.strftime("%Y-%m-%d %H:%M:%S.%f")
+        end = self.end.strftime("%Y-%m-%d %H:%M:%S.%f")
+        return f"{column} >= TIMESTAMP '{start}' AND {column} < TIMESTAMP '{end}'"
 
 
 def _value(row: object, name: str) -> object:
@@ -73,6 +98,7 @@ def merge_sql(
     key_fields: Sequence[str],
     *,
     update_matches: bool,
+    merge_scope: TimestampMergeScope | None = None,
 ) -> str:
     target = _quoted(target_table)
     source = _column(source_view)
@@ -82,6 +108,10 @@ def merge_sql(
     join = " AND ".join(
         f"{_column(key, 't')} <=> {_column(key, 's')}" for key in keys
     )
+    if merge_scope is not None:
+        if merge_scope.column not in keys:
+            raise ValueError("merge scope column must be part of the key")
+        join += f" AND ({merge_scope.predicate('t')})"
     names = ", ".join(_column(name) for name in columns)
     values = ", ".join(_column(name, "s") for name in columns)
     matched = ""
@@ -108,7 +138,10 @@ class SparkTablePublisher:
         self.table = table
         self._committed = False
 
-    def _validate_frame(self, frame: Any, key_fields: tuple[str, ...], view: str) -> None:
+    def _validate_frame(
+        self, frame: Any, key_fields: tuple[str, ...], view: str,
+        merge_scope: TimestampMergeScope | None = None,
+    ) -> None:
         columns = tuple(frame.columns)
         target_frame = self.spark.table(self.table)
         target_columns = tuple(target_frame.columns)
@@ -127,10 +160,16 @@ class SparkTablePublisher:
             dict.fromkeys((*key_fields, *_required_fields(target_frame.schema)))
         )
         nulls = " OR ".join(f"{_column(name)} IS NULL" for name in nonnull_fields)
+        scope_check = (
+            f", SUM(CASE WHEN COALESCE(({merge_scope.predicate()}), FALSE) "
+            "THEN 0 ELSE 1 END) AS out_of_scope_count"
+            if merge_scope is not None else ""
+        )
         rows = self.spark.sql(
             "SELECT COUNT(*) AS total_count, "
             f"COUNT(DISTINCT struct({keys})) AS distinct_count, "
-            f"SUM(CASE WHEN {nulls} THEN 1 ELSE 0 END) AS null_count FROM {_column(view)}"
+            f"SUM(CASE WHEN {nulls} THEN 1 ELSE 0 END) AS null_count"
+            f"{scope_check} FROM {_column(view)}"
         ).collect()
         if not rows:
             raise RuntimeError("Spark publish validation returned no aggregate row")
@@ -141,6 +180,8 @@ class SparkTablePublisher:
             raise ValueError("cannot publish an empty Spark DataFrame")
         if distinct != total or null_count:
             raise ValueError("publish business keys must be non-null and unique")
+        if merge_scope is not None and int(_value(rows[0], "out_of_scope_count") or 0):
+            raise ValueError("publish source contains rows outside merge scope")
 
     def _conflict_count(
         self,
@@ -166,10 +207,13 @@ class SparkTablePublisher:
         source_view: str,
         columns: tuple[str, ...],
         key_fields: tuple[str, ...],
+        merge_scope: TimestampMergeScope | None = None,
     ) -> int:
         join = " AND ".join(
             f"{_column(key, 't')} <=> {_column(key, 's')}" for key in key_fields
         )
+        if merge_scope is not None:
+            join += f" AND ({merge_scope.predicate('t')})"
         equal = " AND ".join(
             f"{_column(name, 't')} <=> {_column(name, 's')}" for name in columns
         )
@@ -203,6 +247,7 @@ class SparkTablePublisher:
         key_fields: Sequence[str],
         mode: PublishMode,
         overwrite_filter: str | None = None,
+        merge_scope: TimestampMergeScope | None = None,
     ) -> PublishedSnapshot:
         if self._committed:
             raise RuntimeError(f"publisher already committed table: {self.table}")
@@ -216,19 +261,21 @@ class SparkTablePublisher:
             raise ValueError("overwrite mode requires a bounded safe filter")
 
         keys = tuple(key_fields)
+        if merge_scope is not None and (mode != "merge" or merge_scope.column not in keys):
+            raise ValueError("merge scope requires merge mode and its column in the key")
         view = "_flashflood_publish_" + hashlib.sha256(
             self.table.encode("utf-8")
         ).hexdigest()[:16]
         frame.createOrReplaceTempView(view)
         try:
-            self._validate_frame(frame, keys, view)
+            self._validate_frame(frame, keys, view, merge_scope)
             columns = tuple(frame.columns)
             if mode in {"append", "merge"}:
                 if mode == "append":
                     conflicts = self._conflict_count(view, columns, keys)
                     if conflicts:
                         raise ValueError("immutable append key conflicts with existing target row")
-                if mode != "merge" or self._change_count(view, columns, keys):
+                if mode != "merge" or self._change_count(view, columns, keys, merge_scope):
                     self.spark.sql(
                         merge_sql(
                             self.table,
@@ -236,6 +283,7 @@ class SparkTablePublisher:
                             columns,
                             keys,
                             update_matches=mode == "merge",
+                            merge_scope=merge_scope,
                         )
                     )
             else:

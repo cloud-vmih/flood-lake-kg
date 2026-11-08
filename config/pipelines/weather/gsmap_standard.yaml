@@ -13,7 +13,7 @@ license_uri: https://sharaku.eorc.jaxa.jp/GSMaP/guide.html
 max_objects_per_run: 2160
 backfill_max_objects_per_run: 2160
 task_batch_size: 24
-bronze_task_batch_size: 24
+bronze_task_batch_size: 96
 streams:
   - stream_id: gauge_standard
     product: gauge_standard_v8

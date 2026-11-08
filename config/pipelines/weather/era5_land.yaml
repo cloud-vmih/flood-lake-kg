@@ -16,10 +16,36 @@ streams:
   - stream_id: hourly_reanalysis
     product: reanalysis-era5-land
     start_at: 2020-01-01T00:00:00Z
+    end_at: 2026-10-01T00:00:00Z
     step_minutes: 60
     chunk_minutes: 44640
     chunking: calendar_month
-    availability_lag_minutes: 14400
+    availability_lag_minutes: 7200
+    overlap_steps: 120
+    variables:
+      - total_precipitation
+      - volumetric_soil_water_layer_1
+      - volumetric_soil_water_layer_2
+      - volumetric_soil_water_layer_3
+      - volumetric_soil_water_layer_4
+      - surface_runoff
+      - sub_surface_runoff
+    media_type: application/x-netcdf
+    filename_suffix: .nc
+    endpoint: https://cds.climate.copernicus.eu/api
+    credential_env: [CDSAPI_URL, CDSAPI_KEY]
+    options:
+      dataset: reanalysis-era5-land
+      data_format: netcdf
+      download_format: unarchived
+      grid_resolution_degrees: 0.1
+  - stream_id: hourly_recent
+    product: reanalysis-era5-land
+    start_at: 2026-10-01T00:00:00Z
+    step_minutes: 60
+    chunk_minutes: 1440
+    chunking: calendar_day
+    availability_lag_minutes: 7200
     overlap_steps: 120
     variables:
       - total_precipitation

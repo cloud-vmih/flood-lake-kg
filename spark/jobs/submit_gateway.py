@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tempfile import TemporaryFile
 
 from flashflood_data.shared.spark.models import SparkApplicationRequest
-from flashflood_data.shared.spark.submit import SparkSubmitter
+from flashflood_data.shared.spark.submit import RESULT_PREFIX, SparkSubmitter
 
 _MAX_REQUEST_BYTES = 1024 * 1024
 _MAX_PROCESS_TAIL_BYTES = 2 * 1024 * 1024
@@ -22,6 +23,22 @@ def _tail(stream, limit: int = _MAX_PROCESS_TAIL_BYTES) -> str:
     size = stream.tell()
     stream.seek(max(0, size - limit))
     return stream.read().decode("utf-8", errors="replace")
+
+
+def _traceback_diagnostic(stream) -> str | None:
+    """Find the last Python traceback even if later Spark logs exceed the tail."""
+    stream.seek(0)
+    traceback_bytes = bytearray()
+    found = False
+    for line in stream:
+        if b"Traceback (most recent call last):" in line:
+            traceback_bytes.clear()
+            found = True
+        if found and len(traceback_bytes) < 65536:
+            traceback_bytes.extend(line[: 65536 - len(traceback_bytes)])
+    if found:
+        return traceback_bytes.decode("utf-8", errors="replace")
+    return None
 
 
 def _bounded_run(command, *, text, capture_output, check, timeout):
@@ -36,11 +53,29 @@ def _bounded_run(command, *, text, capture_output, check, timeout):
             check=check,
             timeout=timeout,
         )
+        stdout_tail = _tail(stdout)
+        stderr_tail = _tail(stderr)
+        failed_marker = any(
+            line.startswith(RESULT_PREFIX) and '"status":"failed"' in line
+            for line in stdout_tail.splitlines()
+        )
+        if completed.returncode != 0 or failed_marker:
+            diagnostic = (
+                _traceback_diagnostic(stderr)
+                or _traceback_diagnostic(stdout)
+                or stderr_tail[-16384:]
+            )
+            print(
+                f"spark-submit failed (exit={completed.returncode}):\n"
+                f"{diagnostic}",
+                file=sys.stderr,
+                flush=True,
+            )
         return subprocess.CompletedProcess(
             command,
             completed.returncode,
-            stdout=_tail(stdout),
-            stderr=_tail(stderr),
+            stdout=stdout_tail,
+            stderr=stderr_tail,
         )
 
 

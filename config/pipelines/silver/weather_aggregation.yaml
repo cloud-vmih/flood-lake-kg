@@ -1,0 +1,41 @@
+# Silver weather aggregation targets. Source-specific unit and time-window
+# conversion happens before these canonical values are aggregated by basin.
+pipeline_id: silver_weather_aggregation
+contract_version: "1.0"
+
+weather_table: bronze.weather_raster_slice
+grid_table: silver.source_grid
+basin_table: silver.dim_basin
+weight_table: silver.grid_basin_weight
+output_table: silver.basin_weather_value
+
+# EPSG:6933 preserves area for grid-cell/basin intersections.
+equal_area_crs: EPSG:6933
+geometry_processing_version: equal-area-overlay-v1
+quality_policy_id: silver-weather-v1
+min_valid_coverage_fraction: 0.8
+# Silver keeps ERA5 precipitation only as fallback where no GSMaP value passes
+# coverage and physical checks for the exact basin/version/hour window.
+# NOW and Standard observations remain separate; their windows may differ.
+
+variables:
+  precipitation:
+    unit: mm
+    aggregation: area_mean
+    value_kind: interval_sum
+  runoff:
+    unit: mm
+    aggregation: area_mean
+    value_kind: interval_sum
+  surface_runoff:
+    unit: mm
+    aggregation: area_mean
+    value_kind: interval_sum
+  subsurface_runoff:
+    unit: mm
+    aggregation: area_mean
+    value_kind: interval_sum
+  soil_moisture:
+    unit: m3/m3
+    aggregation: area_mean
+    value_kind: instantaneous #tức thi

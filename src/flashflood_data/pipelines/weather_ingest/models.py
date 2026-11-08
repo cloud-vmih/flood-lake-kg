@@ -37,9 +37,10 @@ class WeatherStreamConfig(ImmutableModel):
     stream_id: str
     product: str
     start_at: datetime
+    end_at: datetime | None = None
     step_minutes: int = Field(gt=0)
     chunk_minutes: int = Field(gt=0)
-    chunking: Literal["fixed", "calendar_month"] = "fixed"
+    chunking: Literal["fixed", "calendar_day", "calendar_month"] = "fixed"
     availability_lag_minutes: int = Field(ge=0)
     overlap_steps: int = Field(default=0, ge=0)
     variables: tuple[str, ...]
@@ -50,11 +51,13 @@ class WeatherStreamConfig(ImmutableModel):
     credential_env: tuple[str, ...] = ()
     options: dict[str, object] = Field(default_factory=dict)
 
-    @field_validator("start_at")
+    @field_validator("start_at", "end_at")
     @classmethod
-    def start_must_be_utc(cls, value: datetime) -> datetime:
+    def bounds_must_be_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
-            raise ValueError("stream start_at must be timezone-aware UTC")
+            raise ValueError("stream bounds must be timezone-aware UTC")
         return value
 
     @model_validator(mode="after")
@@ -63,6 +66,19 @@ class WeatherStreamConfig(ImmutableModel):
             raise ValueError("chunk_minutes must be a multiple of step_minutes")
         if self.chunking == "calendar_month" and self.start_at.day != 1:
             raise ValueError("calendar_month streams must start on the first day")
+        if self.chunking in {"calendar_day", "calendar_month"} and (
+            self.start_at.hour or self.start_at.minute or self.start_at.second
+        ):
+            raise ValueError("calendar streams must start at midnight UTC")
+        if self.end_at is not None:
+            if self.end_at <= self.start_at:
+                raise ValueError("stream end_at must follow start_at")
+            if self.chunking in {"calendar_day", "calendar_month"} and (
+                self.end_at.hour or self.end_at.minute or self.end_at.second
+            ):
+                raise ValueError("calendar stream end_at must be midnight UTC")
+            if self.chunking == "calendar_month" and self.end_at.day != 1:
+                raise ValueError("calendar_month end_at must be first day of month")
         if not self.variables:
             raise ValueError("weather stream must define variables")
         if self.endpoint is None and self.endpoint_env is None:

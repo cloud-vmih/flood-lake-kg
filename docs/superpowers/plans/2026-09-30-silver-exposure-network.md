@@ -1,5 +1,11 @@
 # Silver Exposure Network Implementation Plan
 
+> **Superseded 2026-11-08:** The combined DAG/package below is historical. Implement the
+> four independent domains in the current Vietnamese plans:
+> [Facilities](2026-11-08-silver-facilities.vi.md), [Population](2026-11-08-silver-population.vi.md),
+> [Road Network](2026-11-08-silver-road-network.vi.md), [River Crossings](2026-11-08-silver-river-crossings.vi.md).
+> See the [remaining Silver roadmap](2026-11-08-silver-remaining-pipelines.vi.md).
+
 > **Runtime update (2026-10-10):** This plan retains its domain contracts, schemas, formulas, and
 > tests. Execution follows the authoritative
 > [Spark Bronze-to-Silver architecture](../../spark_bronze_to_silver_architecture.md): Airflow

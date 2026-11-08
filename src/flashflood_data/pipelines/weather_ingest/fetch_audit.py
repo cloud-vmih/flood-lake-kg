@@ -3,10 +3,30 @@
 import json
 import shutil
 from collections.abc import Sequence
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 
 from flashflood_data.pipelines.weather_ingest.models import FetchAttemptRecord
+
+
+def finalize_fetch_attempt_batch(
+    rows: Sequence[FetchAttemptRecord], *, failed: bool, ended_at: datetime
+) -> list[FetchAttemptRecord]:
+    """Record provider fetch outcomes before the separate Raw publication step."""
+    status = "skipped" if failed else "succeeded"
+    return [
+        row.model_copy(
+            update={
+                "status": status,
+                "ended_at": ended_at,
+                "error_code": "BatchAborted" if failed else None,
+            }
+        )
+        if row.status == "running"
+        else row
+        for row in rows
+    ]
 
 
 class FetchAttemptSpool:

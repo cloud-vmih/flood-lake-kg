@@ -1,10 +1,14 @@
 """Object-scoped Raw-to-Bronze service for dynamic weather sources."""
 
 import json
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
+from time import perf_counter
 from urllib.parse import urlsplit
 
 from pyiceberg.expressions import EqualTo, In
@@ -29,6 +33,45 @@ from flashflood_data.shared.quality import (
 )
 
 _SOURCES = frozenset({"gsmap", "era5_land", "ifs_openmeteo"})
+_PHASES = (
+    "inventory_lookup",
+    "source_grid_lookup",
+    "raw_download",
+    "checksum",
+    "parse",
+    "quality",
+    "precommit_audit",
+    "bronze_commit",
+    "postcommit_audit",
+    "audit_snapshot_ref",
+    "audit_quality_results",
+    "audit_lineage_edges",
+    "audit_lifecycle_evidence",
+)
+_LOGGER = logging.getLogger(__name__)
+
+
+@contextmanager
+def _time_phase(timings: dict[str, float], phase: str) -> Iterator[None]:
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        timings[phase] += perf_counter() - started
+
+
+def _timing_metrics(
+    object_count: int, timings: dict[str, float], quality_result_count: int = 0
+) -> str:
+    return json.dumps(
+        {
+            "object_count": object_count,
+            "quality_result_count": quality_result_count,
+            "phase_seconds": {phase: round(timings[phase], 3) for phase in _PHASES},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _raw_key(row: SourceObjectRow, bucket: str) -> tuple[str, str]:
@@ -185,68 +228,74 @@ class WeatherBronzeService:
         temporary_root: Path,
         object_index: int,
         grid_cache: dict[tuple[str, str, str], set[int]],
+        timings: dict[str, float],
     ) -> QualityEvaluation:
         """Download one object, then classify deterministic data defects."""
-        selection = json.loads(row.selection_json)
-        source_grid_version = str(selection["source_grid_version"])
-        spatial_scope_id = str(selection["spatial_scope_id"])
-        grid_key = (row.source_id, source_grid_version, spatial_scope_id)
-        allowed_indices = grid_cache.get(grid_key)
-        if allowed_indices is None:
-            helper = getattr(self.writer, "source_grid_indices", None)
-            if helper is not None:
-                allowed_indices = set(helper(*grid_key))
-            else:
-                grid_rows = self.writer.get_keyed_rows(
-                    ("silver", "source_grid"),
-                    {
-                        "source_id": row.source_id,
-                        "source_grid_version": source_grid_version,
-                    },
-                )
-                allowed_indices = {
-                    int(item["cell_index"])
-                    for item in grid_rows
-                    if spatial_scope_id in item["scope_ids"]
-                }
-            if not allowed_indices:
-                raise ValueError("weather source grid has no cells for the registered scope")
-            grid_cache[grid_key] = allowed_indices
+        with _time_phase(timings, "source_grid_lookup"):
+            selection = json.loads(row.selection_json)
+            source_grid_version = str(selection["source_grid_version"])
+            spatial_scope_id = str(selection["spatial_scope_id"])
+            grid_key = (row.source_id, source_grid_version, spatial_scope_id)
+            allowed_indices = grid_cache.get(grid_key)
+            if allowed_indices is None:
+                helper = getattr(self.writer, "source_grid_indices", None)
+                if helper is not None:
+                    allowed_indices = set(helper(*grid_key))
+                else:
+                    grid_rows = self.writer.get_keyed_rows(
+                        ("silver", "source_grid"),
+                        {
+                            "source_id": row.source_id,
+                            "source_grid_version": source_grid_version,
+                        },
+                    )
+                    allowed_indices = {
+                        int(item["cell_index"])
+                        for item in grid_rows
+                        if spatial_scope_id in item["scope_ids"]
+                    }
+                if not allowed_indices:
+                    raise ValueError("weather source grid has no cells for the registered scope")
+                grid_cache[grid_key] = allowed_indices
         key, filename = _raw_key(row, self.raw_bucket)
         object_root = temporary_root / f"object-{object_index:04d}"
         object_root.mkdir()
         local = object_root / filename
-        self.object_store.download(key, local)
-        checksum_valid = (
-            local.stat().st_size == row.size_bytes and sha256_file(local) == row.checksum
-        )
+        with _time_phase(timings, "raw_download"):
+            self.object_store.download(key, local)
+        with _time_phase(timings, "checksum"):
+            checksum_valid = (
+                local.stat().st_size == row.size_bytes and sha256_file(local) == row.checksum
+            )
         current: list[dict[str, object]] = []
         readable = checksum_valid
         parse_error: str | None = None
-        if checksum_valid:
-            try:
-                current = list(
-                    parse_weather_object(
-                        row,
-                        local,
-                        run_id=run_id,
-                        parser_version=parser_version,
+        with _time_phase(timings, "parse"):
+            if checksum_valid:
+                try:
+                    current = list(
+                        parse_weather_object(
+                            row,
+                            local,
+                            run_id=run_id,
+                            parser_version=parser_version,
+                        )
                     )
-                )
-            except (KeyError, TypeError, ValueError) as error:
-                readable = False
-                parse_error = str(error)
-        return evaluate_weather_slices(
-            current,
-            allowed_indices,
-            self.quality_policy,
-            object_context={
-                "object_id": row.object_id,
-                "checksum_valid": checksum_valid,
-                "readable": readable,
-                "error": parse_error,
-            },
-        )
+                except (KeyError, TypeError, ValueError) as error:
+                    readable = False
+                    parse_error = str(error)
+        with _time_phase(timings, "quality"):
+            return evaluate_weather_slices(
+                current,
+                allowed_indices,
+                self.quality_policy,
+                object_context={
+                    "object_id": row.object_id,
+                    "checksum_valid": checksum_valid,
+                    "readable": readable,
+                    "error": parse_error,
+                },
+            )
 
     def _record_quarantine(
         self,
@@ -316,14 +365,18 @@ class WeatherBronzeService:
             raise ValueError(f"unsupported dynamic weather source: {source_id}")
         if not object_ids or len(set(object_ids)) != len(object_ids):
             raise ValueError("weather Bronze batch object IDs must be non-empty and unique")
-        available = {
-            row.object_id: row
-            for row in self.inventory.available_objects(source_id)
-            if row.source_type == "dynamic"
-        }
-        if any(object_id not in available for object_id in object_ids):
-            raise LookupError("weather Bronze batch contains an unavailable Raw object")
-        source_rows = [available[object_id] for object_id in object_ids]
+        batch_started = perf_counter()
+        timings = {phase: 0.0 for phase in _PHASES}
+        quality_result_count = 0
+        with _time_phase(timings, "inventory_lookup"):
+            available = {
+                row.object_id: row
+                for row in self.inventory.available_objects(source_id)
+                if row.source_type == "dynamic"
+            }
+            if any(object_id not in available for object_id in object_ids):
+                raise LookupError("weather Bronze batch contains an unavailable Raw object")
+            source_rows = [available[object_id] for object_id in object_ids]
         dataset_id = f"{self.catalog_name}.{self.bronze_namespace}.weather_raster_slice"
         started_at = datetime.now(UTC)
         identity = json.dumps(
@@ -354,7 +407,8 @@ class WeatherBronzeService:
             "metrics_json": json.dumps({"object_count": len(object_ids)}),
             "error_code": None,
         }
-        self.meta.record_run(run_record)
+        with _time_phase(timings, "precommit_audit"):
+            self.meta.record_run(run_record)
         try:
             self.staging_root.mkdir(parents=True, exist_ok=True)
             evaluations: dict[str, QualityEvaluation] = {}
@@ -369,6 +423,7 @@ class WeatherBronzeService:
                         temporary_root=temporary_root,
                         object_index=index,
                         grid_cache=grid_cache,
+                        timings=timings,
                     )
 
             accepted_by_object = {
@@ -382,45 +437,50 @@ class WeatherBronzeService:
                 if evaluation.disposition == "block_object"
             )
             now = datetime.now(UTC)
-            for object_id, evaluation in evaluations.items():
-                self._record_quarantine(
-                    evaluation=evaluation,
-                    pipeline_run_id=pipeline_run_id,
-                    dataset_id=dataset_id,
-                    source_id=source_id,
-                    object_id=object_id,
-                    parser_version=parser_version,
-                    rejected_at=now,
-                )
+            with _time_phase(timings, "precommit_audit"):
+                for object_id, evaluation in evaluations.items():
+                    self._record_quarantine(
+                        evaluation=evaluation,
+                        pipeline_run_id=pipeline_run_id,
+                        dataset_id=dataset_id,
+                        source_id=source_id,
+                        object_id=object_id,
+                        parser_version=parser_version,
+                        rejected_at=now,
+                    )
 
-            if blocked_object_ids:
-                self.meta.record_qualities(
-                    [
-                        row
-                        for object_id in blocked_object_ids
-                        for row in quality_rows(
-                            evaluations[object_id],
-                            QualityAuditContext(
-                                pipeline_run_id=pipeline_run_id,
-                                dataset_id=dataset_id,
-                                check_phase="pre_commit",
-                                checked_at=now,
-                            ),
-                        )
-                    ]
-                )
+                if blocked_object_ids:
+                    self.meta.record_qualities(
+                        [
+                            row
+                            for object_id in blocked_object_ids
+                            for row in quality_rows(
+                                evaluations[object_id],
+                                QualityAuditContext(
+                                    pipeline_run_id=pipeline_run_id,
+                                    dataset_id=dataset_id,
+                                    check_phase="pre_commit",
+                                    checked_at=now,
+                                ),
+                            )
+                        ]
+                    )
             if not accepted_by_object:
-                self.writer.replace_object_partitions(
-                    (self.bronze_namespace, "weather_raster_slice"),
-                    {},
-                    blocked_object_ids,
-                )
+                with _time_phase(timings, "bronze_commit"):
+                    self.writer.replace_object_partitions(
+                        (self.bronze_namespace, "weather_raster_slice"),
+                        {},
+                        blocked_object_ids,
+                    )
                 self.meta.record_run(
                     {
                         **run_record,
                         "finished_at": now,
                         "status": "failed_data_quality",
                         "quality_result_json": '{"status":"blocked"}',
+                        "metrics_json": _timing_metrics(
+                            len(object_ids), timings, quality_result_count
+                        ),
                         "error_code": "data_quality_block",
                     }
                 )
@@ -429,16 +489,15 @@ class WeatherBronzeService:
                     evaluations[blocked_object_ids[0]],
                 )
 
-            snapshot_id = self.writer.replace_object_partitions(
-                (self.bronze_namespace, "weather_raster_slice"),
-                accepted_by_object,
-                blocked_object_ids,
-            )
+            with _time_phase(timings, "bronze_commit"):
+                snapshot_id = self.writer.replace_object_partitions(
+                    (self.bronze_namespace, "weather_raster_slice"),
+                    accepted_by_object,
+                    blocked_object_ids,
+                )
             accepted_object_ids = tuple(accepted_by_object)
             parsed_rows = [
-                row
-                for object_rows in accepted_by_object.values()
-                for row in object_rows
+                row for object_rows in accepted_by_object.values() for row in object_rows
             ]
             rejected_count = sum(len(item.rejected_rows) for item in evaluations.values())
             warning_count = sum(
@@ -451,68 +510,75 @@ class WeatherBronzeService:
                 if blocked_object_ids or rejected_count or warning_count
                 else "succeeded"
             )
-            self.meta.record_snapshot_ref(
-                pipeline_run_id=pipeline_run_id,
-                table_name=dataset_id,
-                iceberg_snapshot_id=snapshot_id,
-                role="output",
-                quality_status="warning" if status == "succeeded_with_warning" else "passed",
-                created_at=now,
-            )
-            self.meta.record_qualities(
-                [
-                    row
-                    for object_id in accepted_object_ids
-                    for row in quality_rows(
-                        evaluations[object_id],
-                        QualityAuditContext(
-                            pipeline_run_id=pipeline_run_id,
-                            dataset_id=dataset_id,
-                            check_phase="post_commit",
-                            checked_at=now,
-                            snapshot_table=dataset_id,
-                            snapshot_id=snapshot_id,
+            with _time_phase(timings, "postcommit_audit"):
+                with _time_phase(timings, "audit_snapshot_ref"):
+                    self.meta.record_snapshot_ref(
+                        pipeline_run_id=pipeline_run_id,
+                        table_name=dataset_id,
+                        iceberg_snapshot_id=snapshot_id,
+                        role="output",
+                        quality_status=(
+                            "warning" if status == "succeeded_with_warning" else "passed"
                         ),
+                        created_at=now,
                     )
-                ]
-            )
-            lineage_edge_ids = self.meta.record_lineages(
-                [
-                    {
-                        "pipeline_run_id": pipeline_run_id,
-                        "input_object_id": object_id,
-                        "output_table": dataset_id,
-                        "output_snapshot_id": snapshot_id,
-                        "transform_role": "source",
-                        "mapping_version": parser_version,
-                        "created_at": now,
-                    }
-                    for object_id in accepted_object_ids
-                ]
-            )
-            self.lifecycle.mark_bronze_evidence_many(
-                [
-                    (
-                        object_id,
-                        snapshot_id,
-                        (
-                            "failed"
-                            if evaluations[object_id].rejected_rows
-                            else "warning"
-                            if any(
-                                row.get("quality_status") == "warning"
-                                for row in evaluations[object_id].accepted_rows
+                with _time_phase(timings, "audit_quality_results"):
+                    quality_audit_rows = [
+                        row
+                        for object_id in accepted_object_ids
+                        for row in quality_rows(
+                            evaluations[object_id],
+                            QualityAuditContext(
+                                pipeline_run_id=pipeline_run_id,
+                                dataset_id=dataset_id,
+                                check_phase="post_commit",
+                                checked_at=now,
+                                snapshot_table=dataset_id,
+                                snapshot_id=snapshot_id,
+                            ),
+                        )
+                    ]
+                    quality_result_count = len(quality_audit_rows)
+                    self.meta.record_qualities(quality_audit_rows)
+                with _time_phase(timings, "audit_lineage_edges"):
+                    lineage_edge_ids = self.meta.record_lineages(
+                        [
+                            {
+                                "pipeline_run_id": pipeline_run_id,
+                                "input_object_id": object_id,
+                                "output_table": dataset_id,
+                                "output_snapshot_id": snapshot_id,
+                                "transform_role": "source",
+                                "mapping_version": parser_version,
+                                "created_at": now,
+                            }
+                            for object_id in accepted_object_ids
+                        ]
+                    )
+                with _time_phase(timings, "audit_lifecycle_evidence"):
+                    self.lifecycle.mark_bronze_evidence_many(
+                        [
+                            (
+                                object_id,
+                                snapshot_id,
+                                (
+                                    "failed"
+                                    if evaluations[object_id].rejected_rows
+                                    else "warning"
+                                    if any(
+                                        row.get("quality_status") == "warning"
+                                        for row in evaluations[object_id].accepted_rows
+                                    )
+                                    else "passed"
+                                ),
+                                lineage_edge_id,
+                                now,
                             )
-                            else "passed"
-                        ),
-                        lineage_edge_id,
-                        now,
+                            for object_id, lineage_edge_id in zip(
+                                accepted_object_ids, lineage_edge_ids, strict=True
+                            )
+                        ]
                     )
-                    for object_id, lineage_edge_id in zip(
-                        accepted_object_ids, lineage_edge_ids, strict=True
-                    )
-                ]
-            )
             self.meta.record_run(
                 {
                     **run_record,
@@ -520,6 +586,9 @@ class WeatherBronzeService:
                     "published_at": now,
                     "status": status,
                     "output_row_count": len(parsed_rows),
+                    "metrics_json": _timing_metrics(
+                        len(object_ids), timings, quality_result_count
+                    ),
                     "quality_result_json": json.dumps(
                         {
                             "status": "warning" if status == "succeeded_with_warning" else "passed",
@@ -552,10 +621,23 @@ class WeatherBronzeService:
                     **run_record,
                     "finished_at": datetime.now(UTC),
                     "status": "failed",
+                    "metrics_json": _timing_metrics(
+                        len(object_ids), timings, quality_result_count
+                    ),
                     "error_code": type(error).__name__,
                 }
             )
             raise
+        finally:
+            _LOGGER.info(
+                "weather_bronze_phase_timings source_id=%s pipeline_run_id=%s "
+                "object_count=%d total_seconds=%.3f metrics_json=%s",
+                source_id,
+                pipeline_run_id,
+                len(object_ids),
+                perf_counter() - batch_started,
+                _timing_metrics(len(object_ids), timings, quality_result_count),
+            )
 
     def process_object(
         self,

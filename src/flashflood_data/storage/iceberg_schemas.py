@@ -374,6 +374,41 @@ _DEFINITIONS = {
         crs string !
         scope_ids list_string !
     """,
+    ("silver", "grid_basin_weight"): """
+        source_id string !
+        source_grid_version string !
+        source_grid_id string !
+        basin_id string !
+        basin_version string !
+        geometry_processing_version string !
+        intersection_area_m2 double !
+        weight_by_basin double !
+        weight_by_grid double !
+        quality_status string !
+    """,
+    ("silver", "basin_weather_value"): """
+        business_key_hash string !
+        basin_id string !
+        basin_version string !
+        source_id string !
+        source_product string !
+        source_grid_version string !
+        source_slice_id string !
+        source_cycle_id string !
+        model_run_time timestamp ?
+        valid_time timestamp !
+        window_start timestamp !
+        window_end timestamp !
+        variable string !
+        vertical_level string !
+        value double ?
+        unit string !
+        value_kind string !
+        source_revision int !
+        available_at timestamp !
+        valid_coverage_fraction double !
+        quality_flags_json json !
+    """,
 }
 
 
